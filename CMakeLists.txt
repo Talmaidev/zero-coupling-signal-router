@@ -21,6 +21,12 @@ zcsr_module(signal)    #
 zcsr_module(hsm)       # 
 zcsr_module(overlay)   # 
 zcsr_module(platform)  # 
+
+# --- Task #7: Classic 2D Game Core extension (zero-coupling, builds on the contracts above) ---
+zcsr_module(input)     #  — input / window / 60FPS timer
+zcsr_module(audio)     #  — WAV audio (signals only)
+zcsr_module(render)    # Game Core  — PNG (stb_image) + batch sprite renderer
+zcsr_module(gamelogic) #  — AABB collision + binary save/load
 if(UNIX AND NOT APPLE)
   find_package(X11 REQUIRED)
   target_link_libraries(zcsr_platform PUBLIC ${X11_LIBRARIES})
