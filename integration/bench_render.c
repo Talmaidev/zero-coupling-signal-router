@@ -6,16 +6,31 @@
 #include "zcsr/platform.h"
 #include <stdio.h>
 #include <stdint.h>
-#include <time.h>
 
 #define SPRITES 200
 #define ITERS   1000
 
+/* Monotonic timestamp in nanoseconds, cross-platform (Windows has no clock_gettime). */
+#if defined(_WIN32)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+static uint64_t now_ns(void) {
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER ctr;
+    if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&ctr);
+    return (uint64_t)((double)ctr.QuadPart * 1.0e9 / (double)freq.QuadPart);
+}
+#else
+#  include <time.h>
 static uint64_t now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
+#endif
 
 int main(void) {
     zcsr_surface* win = zcsr_surface_create("zcsr render bench", (zcsr_rect){ 0, 0, 640, 480 });

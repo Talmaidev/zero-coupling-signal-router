@@ -474,7 +474,7 @@ zcsr_mixer* zcsr_mix_start(void) {
     for (int i = 0; i < ZCSR_MIX_POOL; ++i) {
         zcsr_mixer* m = &g_mix_pool[i];
         if (m->in_use) continue;
-        *m = (zcsr_mixer){ 0 };
+        memset(m, 0, sizeof(*m));
         m->in_use = true;
         atomic_store(&m->running, true);
         for (int c = 0; c < ZCSR_MIX_CHANNELS; ++c) {
@@ -488,7 +488,7 @@ zcsr_mixer* zcsr_mix_start(void) {
         m->thread_started = pthread_create(&m->thread, 0, zcsr_mix_thread_main, m) == 0;
 #endif
         if (!m->thread_started) {
-            *m = (zcsr_mixer){ 0 };
+            memset(m, 0, sizeof(*m));
             return 0;
         }
         g_active_mixer = m;
@@ -509,7 +509,7 @@ void zcsr_mix_stop(zcsr_mixer* m) {
 #endif
     }
     if (g_active_mixer == m) g_active_mixer = 0;
-    *m = (zcsr_mixer){ 0 };
+    memset(m, 0, sizeof(*m));
 }
 
 bool zcsr_mix_register_wav(zcsr_mixer* m, const char* id, const char* wav_path) {

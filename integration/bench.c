@@ -1,9 +1,30 @@
 /* Agent 6 — micro-benchmark harness.
  * Targets (spec): single frame render < 1ms; 1000 refreshes/sec; < 0.1 FPS impact. */
-#define _POSIX_C_SOURCE 199309L
 #include "zcsr/overlay.h"
 #include <stdio.h>
-#include <time.h>
+#include <stdint.h>
+
+/* Monotonic timestamp in nanoseconds, cross-platform (Windows has no clock_gettime). */
+#if defined(_WIN32)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+static uint64_t now_ns(void) {
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER ctr;
+    if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&ctr);
+    return (uint64_t)((double)ctr.QuadPart * 1.0e9 / (double)freq.QuadPart);
+}
+#else
+#  include <time.h>
+static uint64_t now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+#endif
 
 int main(void) {
     zcsr_overlay* ovl = zcsr_overlay_create(0);
@@ -13,11 +34,10 @@ int main(void) {
         return 0;
     }
     enum { N = 1000 };
-    struct timespec t0, t1;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    uint64_t t0 = now_ns();
     for (int i = 0; i < N; ++i) zcsr_overlay_render(ovl);
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    double ms = (t1.tv_sec - t0.tv_sec) * 1000.0 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+    uint64_t t1 = now_ns();
+    double ms = (double)(t1 - t0) / 1.0e6;
     printf("bench: %d renders in %.3f ms  ->  %.4f ms/frame, %.0f refresh/s\n",
            N, ms, ms / N, N / (ms / 1000.0));
     int pass = (ms / N) < 1.0 && (N / (ms / 1000.0)) >= 1000.0;

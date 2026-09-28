@@ -14,8 +14,12 @@
 typedef struct zcsr_gl_renderer zcsr_gl_renderer; /* opaque; instance-owned */
 typedef uint32_t zcsr_gl_texture;                 /* GPU texture handle; 0 = invalid */
 
-/* Create a GL 3.3 Core context on the surface (Win32 wgl / X11 GLX / Cocoa NSOpenGL|CGL) and the
- * renderer state inside the caller buffer. NULL on failure / buffer too small. */
+/* Create a GL 3.3 Core context on the surface (Win32 wgl / X11 GLX / Cocoa NSOpenGL) and the
+ * renderer state inside the caller buffer. NULL on failure / buffer too small.
+ *
+ * The renderer is large: a fixed vertex batch sized for the 10k-sprite cap dominates it (~2.3 MiB),
+ * so give the buffer a few MiB (the bundled tests/benches use 8 MiB). The layout is opaque and is
+ * never heap-allocated; an oversized static/arena buffer is the intended usage. */
 zcsr_gl_renderer* zcsr_gl_create(zcsr_surface* surface, void* buffer, size_t bytes);
 void              zcsr_gl_destroy(zcsr_gl_renderer*);
 void              zcsr_gl_set_vsync(zcsr_gl_renderer*, bool on);
