@@ -3,7 +3,13 @@ project(zcsr C)
 
 set(CMAKE_C_STANDARD 11)          # C11/C17 — no C++
 set(CMAKE_C_STANDARD_REQUIRED ON)
-add_compile_options(-Wall -Wextra -Wpedantic)
+# Warning flags differ by toolchain: GCC/Clang use -Wall -Wextra -Wpedantic; MSVC uses /W4.
+if(MSVC)
+  add_compile_options(/W4 /experimental:c11atomics) # audiomix uses C11 <stdatomic.h>
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS) # fopen/strncpy/... are fine here, not C4996
+else()
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
 
 # macOS backends are Objective-C (.m). Enable only on Apple so Linux/Windows builds stay pure C.
 if(APPLE)
@@ -57,6 +63,10 @@ if(NOT WIN32)
 else()
   target_link_libraries(zcsr_audio PUBLIC winmm)
 endif()
+# --- glrender: vendored minimal glad loader compiles on every platform ---------------------
+target_sources(zcsr_glrender PRIVATE ${CMAKE_SOURCE_DIR}/third_party/glad/src/glad.c)
+target_include_directories(zcsr_glrender PRIVATE ${CMAKE_SOURCE_DIR}/third_party/glad/include)
+
 if(UNIX AND NOT APPLE)
   find_package(X11 REQUIRED)
   target_link_libraries(zcsr_platform PUBLIC ${X11_LIBRARIES})
@@ -70,10 +80,13 @@ if(UNIX AND NOT APPLE)
   target_link_libraries(zcsr_inputext PUBLIC ${X11_LIBRARIES})
   target_include_directories(zcsr_inputext PRIVATE ${X11_INCLUDE_DIR})
   find_package(OpenGL REQUIRED)
-  target_sources(zcsr_glrender PRIVATE ${CMAKE_SOURCE_DIR}/third_party/glad/src/glad.c)
-  target_include_directories(zcsr_glrender PRIVATE ${CMAKE_SOURCE_DIR}/third_party/glad/include)
   target_link_libraries(zcsr_glrender PUBLIC ${X11_LIBRARIES} OpenGL::GL m)
   target_include_directories(zcsr_glrender PRIVATE ${X11_INCLUDE_DIR})
+elseif(WIN32)
+  # GL 1.1 entry points (textures, glDrawArrays, ...) live in opengl32; the WGL/DC calls
+  # (ChoosePixelFormat / SetPixelFormat / SwapBuffers / GetDC / ReleaseDC) live in gdi32. The
+  # GL 2.0+ entry points are resolved at run time by glad via wglGetProcAddress.
+  target_link_libraries(zcsr_glrender PUBLIC opengl32 gdi32)
 endif()
 
 if(APPLE)
@@ -86,6 +99,12 @@ if(APPLE)
   foreach(m platform overlay render input audio)
     target_link_libraries(zcsr_${m} PUBLIC ${COCOA_FRAMEWORK})
   endforeach()
+  # glrender's NSOpenGL backend (glrender_cocoa.m) needs Cocoa plus the OpenGL framework.
+  find_library(OPENGL_FRAMEWORK OpenGL)
+  if(NOT OPENGL_FRAMEWORK)
+    message(FATAL_ERROR "OpenGL framework not found — required for the macOS glrender backend.")
+  endif()
+  target_link_libraries(zcsr_glrender PUBLIC ${COCOA_FRAMEWORK} ${OPENGL_FRAMEWORK})
 endif()
 
 # --- Agent 6: Integration & Validation (architecture/review owned) ---

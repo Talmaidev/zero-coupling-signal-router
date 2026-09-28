@@ -5,15 +5,30 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#include <time.h>
 
 enum { BENCH_W = 512, BENCH_H = 512, BENCH_ITERS = 50 };
 
+/* Monotonic timestamp in nanoseconds, cross-platform (Windows has no clock_gettime). */
+#if defined(_WIN32)
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+static uint64_t zcsr_now_ns(void) {
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER ctr;
+    if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&ctr);
+    return (uint64_t)((double)ctr.QuadPart * 1.0e9 / (double)freq.QuadPart);
+}
+#else
+#  include <time.h>
 static uint64_t zcsr_now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
+#endif
 
 static void report(const char* name, uint64_t best_ns) {
     double ms = (double)best_ns / 1.0e6;

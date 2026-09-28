@@ -1,93 +1,27 @@
-/* Engine-ext Agent 1 — GPU rendering (OpenGL 3.3). Additive optional renderer.
- * Linux/GLX is implemented first; Win32/Cocoa remain clean stubs until their native backends land.
- * Includes ONLY shared contracts + the vendored glad loader (zero-coupling).
+/* Engine-ext Agent 1 — GPU rendering (OpenGL 3.3 Core). Additive optional renderer.
+ *
+ * This file holds the platform-independent GL logic plus the Linux/GLX and Windows/WGL backends.
+ * The macOS/NSOpenGL backend is glrender_cocoa.m (compiled only when APPLE); the two share the
+ * renderer layout and the platform hooks declared in glrender_internal.h.
+ *
+ * Includes ONLY shared contracts, the vendored glad loader, and native platform headers
+ * (zero-coupling). No runtime heap: renderer state lives in the caller-provided buffer; GPU
+ * objects and the native context are owned by the driver/OS.
  */
-#include "zcsr/gl_render.h"
+#include "glrender_internal.h"
 
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h> /* memset: zero the ~2.3 MB renderer in place, never via a stack compound literal */
 
 #if defined(__linux__)
-#include "glad/glad.h"
-#include <GL/glx.h>
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
+#include <GL/glxext.h> /* GLX_CONTEXT_*_ARB + 3.3 core profile attributes */
 #endif
 
-enum {
-    ZCSR_GL_MAX_SPRITES = 10000,
-    ZCSR_GL_MAX_VERTICES = ZCSR_GL_MAX_SPRITES * 6,
-    ZCSR_GL_MAX_TEXTURES = 128
-};
-
-typedef struct {
-    float x, y;
-    float u, v;
-    float r, g, b, a;
-    float mode, amount;
-} zcsr_gl_vertex;
-
-typedef struct {
-    unsigned int id;
-    int w, h;
-    bool in_use;
-} zcsr_gl_tex_entry;
-
-typedef struct {
-    unsigned int texture;
-    size_t first;
-    size_t count;
-} zcsr_gl_draw;
-
-struct zcsr_gl_renderer {
-    zcsr_surface* surface;
-    int width;
-    int height;
-    zcsr_gl_vertex vertices[ZCSR_GL_MAX_VERTICES];
-    size_t vertex_count;
-    zcsr_gl_draw draws[ZCSR_GL_MAX_SPRITES];
-    size_t draw_count;
-    zcsr_gl_tex_entry textures[ZCSR_GL_MAX_TEXTURES];
-#if defined(__linux__)
-    Display* display;
-    Window window;
-    GLXContext ctx;
-    unsigned int program;
-    unsigned int vao;
-    unsigned int vbo;
-    unsigned int white_tex;
-    unsigned int fbo;
-    zcsr_gl_texture target;
-    int uniform_view;
-    int uniform_tex;
-#endif
-};
-
-#if defined(__linux__)
-typedef GLXContext (*zcsr_glx_create_context_attribs_fn)(Display*, GLXFBConfig, GLXContext, Bool, const int*);
-typedef void (*zcsr_glx_swap_interval_ext_fn)(Display*, GLXDrawable, int);
-typedef int (*zcsr_glx_swap_interval_mesa_fn)(unsigned int);
-typedef int (*zcsr_glx_swap_interval_sgi_fn)(int);
-
-typedef union {
-    __GLXextFuncPtr glx;
-    GLADgenericproc glad;
-    zcsr_glx_create_context_attribs_fn create_context_attribs;
-    zcsr_glx_swap_interval_ext_fn swap_interval_ext;
-    zcsr_glx_swap_interval_mesa_fn swap_interval_mesa;
-    zcsr_glx_swap_interval_sgi_fn swap_interval_sgi;
-} zcsr_glx_proc;
-
-static zcsr_glx_proc zcsr_gl_get_proc(const char* name) {
-    zcsr_glx_proc p;
-    p.glx = glXGetProcAddressARB((const GLubyte*)name);
-    return p;
-}
-
-static GLADgenericproc zcsr_gl_load(const char* name) {
-    return zcsr_gl_get_proc(name).glad;
-}
+/* ===========================================================================================
+ * Platform-independent GL helpers (glad must already be loaded by zcsr_gl_platform_init)
+ * =========================================================================================== */
 
 static unsigned int zcsr_gl_compile(unsigned int type, const char* src) {
     unsigned int shader = glCreateShader(type);
@@ -161,49 +95,6 @@ static unsigned int zcsr_gl_make_program(void) {
     return p;
 }
 
-static GLXFBConfig zcsr_gl_choose_config(Display* display, int screen, VisualID visual_id) {
-    int attrs[] = {
-        GLX_X_RENDERABLE, True,
-        GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT,
-        GLX_RENDER_TYPE, GLX_RGBA_BIT,
-        GLX_X_VISUAL_TYPE, GLX_TRUE_COLOR,
-        GLX_RED_SIZE, 8,
-        GLX_GREEN_SIZE, 8,
-        GLX_BLUE_SIZE, 8,
-        GLX_ALPHA_SIZE, 8,
-        GLX_DEPTH_SIZE, 0,
-        GLX_STENCIL_SIZE, 0,
-        GLX_DOUBLEBUFFER, True,
-        None
-    };
-    int count = 0;
-    GLXFBConfig result = 0;
-    GLXFBConfig* configs = glXChooseFBConfig(display, screen, attrs, &count);
-    if (!configs) return 0;
-    for (int i = 0; i < count; ++i) {
-        XVisualInfo* info = glXGetVisualFromFBConfig(display, configs[i]);
-        if (info) {
-            if (info->visualid == visual_id && !result) result = configs[i];
-            XFree(info);
-        }
-    }
-    XFree(configs);
-    return result;
-}
-
-static bool zcsr_gl_make_current(zcsr_gl_renderer* r) {
-    return r && r->display && r->window && r->ctx && glXMakeCurrent(r->display, r->window, r->ctx);
-}
-
-static void zcsr_gl_update_size(zcsr_gl_renderer* r) {
-    XWindowAttributes a;
-    if (!r || !r->display || !r->window) return;
-    if (XGetWindowAttributes(r->display, r->window, &a)) {
-        r->width = a.width > 0 ? a.width : 1;
-        r->height = a.height > 0 ? a.height : 1;
-    }
-}
-
 static unsigned int zcsr_gl_create_white_texture(void) {
     unsigned char px[4] = { 255, 255, 255, 255 };
     unsigned int tex = 0;
@@ -218,16 +109,18 @@ static unsigned int zcsr_gl_create_white_texture(void) {
 }
 
 static zcsr_gl_tex_entry* zcsr_gl_find_tex(zcsr_gl_renderer* r, zcsr_gl_texture t) {
+    size_t i;
     if (!r || t == 0) return 0;
-    for (size_t i = 0; i < ZCSR_GL_MAX_TEXTURES; ++i) {
+    for (i = 0; i < ZCSR_GL_MAX_TEXTURES; ++i) {
         if (r->textures[i].in_use && r->textures[i].id == t) return &r->textures[i];
     }
     return 0;
 }
 
 static zcsr_gl_tex_entry* zcsr_gl_free_tex(zcsr_gl_renderer* r) {
+    size_t i;
     if (!r) return 0;
-    for (size_t i = 0; i < ZCSR_GL_MAX_TEXTURES; ++i) {
+    for (i = 0; i < ZCSR_GL_MAX_TEXTURES; ++i) {
         if (!r->textures[i].in_use) return &r->textures[i];
     }
     return 0;
@@ -254,7 +147,8 @@ static void zcsr_gl_push_quad(zcsr_gl_renderer* r, zcsr_rectf dst, float rot,
     float px[4] = { -hw, hw, hw, -hw };
     float py[4] = { -hh, -hh, hh, hh };
     float vx[4], vy[4];
-    for (int i = 0; i < 4; ++i) {
+    int i;
+    for (i = 0; i < 4; ++i) {
         vx[i] = cx + px[i] * c - py[i] * s;
         vy[i] = cy + px[i] * s + py[i] * c;
     }
@@ -270,58 +164,15 @@ static void zcsr_gl_record_draw(zcsr_gl_renderer* r, unsigned int texture, size_
     if (!r || r->draw_count >= ZCSR_GL_MAX_SPRITES || count == 0) return;
     r->draws[r->draw_count++] = (zcsr_gl_draw){ texture, first, count };
 }
-#endif /* __linux__ */
 
-zcsr_gl_renderer* zcsr_gl_create(zcsr_surface* surface, void* buffer, size_t bytes) {
-#if defined(__linux__)
-    zcsr_gl_renderer* r;
-    Display* display;
-    Window window;
-    XWindowAttributes attrs;
-    GLXFBConfig config;
-    zcsr_glx_create_context_attribs_fn create_context;
-    int context_attrs[] = {
-        GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
-        GLX_CONTEXT_MINOR_VERSION_ARB, 3,
-        GLX_CONTEXT_PROFILE_MASK_ARB, GLX_CONTEXT_CORE_PROFILE_BIT_ARB,
-        None
-    };
-    int screen;
-    if (!surface || !buffer || bytes < sizeof(zcsr_gl_renderer)) return 0;
-    display = (Display*)zcsr_surface_native_display(surface);
-    window = (Window)(uintptr_t)zcsr_surface_native_handle(surface);
-    if (!display || !window || !XGetWindowAttributes(display, window, &attrs)) return 0;
-    screen = DefaultScreen(display);
-    config = zcsr_gl_choose_config(display, screen, XVisualIDFromVisual(attrs.visual));
-    if (!config) return 0;
-    create_context = zcsr_gl_get_proc("glXCreateContextAttribsARB").create_context_attribs;
-    if (!create_context) return 0;
-
-    r = (zcsr_gl_renderer*)buffer;
-    *r = (zcsr_gl_renderer){ 0 };
-    r->surface = surface;
-    r->display = display;
-    r->window = window;
-    r->ctx = create_context(display, config, 0, True, context_attrs);
-    if (!r->ctx) return 0;
-    if (!zcsr_gl_make_current(r)) {
-        glXDestroyContext(display, r->ctx);
-        *r = (zcsr_gl_renderer){ 0 };
-        return 0;
-    }
-    if (!gladLoadGLLoader(zcsr_gl_load)) {
-        glXDestroyContext(display, r->ctx);
-        *r = (zcsr_gl_renderer){ 0 };
-        return 0;
-    }
-    zcsr_gl_update_size(r);
+/* Allocate the shared GPU resources (program, VAO/VBO, FBO, white texture). Runs after a context
+ * is current and the GL function table is loaded. */
+static bool zcsr_gl_init_gl(zcsr_gl_renderer* r) {
     r->program = zcsr_gl_make_program();
-    if (!r->program) {
-        zcsr_gl_destroy(r);
-        return 0;
-    }
+    if (!r->program) return false;
     r->uniform_view = glGetUniformLocation(r->program, "u_view");
     r->uniform_tex = glGetUniformLocation(r->program, "u_tex");
+
     glGenVertexArrays(1, &r->vao);
     glGenBuffers(1, &r->vbo);
     glBindVertexArray(r->vao);
@@ -335,21 +186,17 @@ zcsr_gl_renderer* zcsr_gl_create(zcsr_surface* surface, void* buffer, size_t byt
     glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(zcsr_gl_vertex), (void*)offsetof(zcsr_gl_vertex, r));
     glEnableVertexAttribArray(3);
     glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(zcsr_gl_vertex), (void*)offsetof(zcsr_gl_vertex, mode));
+
     glGenFramebuffers(1, &r->fbo);
     r->white_tex = zcsr_gl_create_white_texture();
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    return r;
-#else
-    (void)surface; (void)buffer; (void)bytes; return 0;
-#endif
+    return r->vao != 0 && r->vbo != 0 && r->fbo != 0 && r->white_tex != 0;
 }
 
-void zcsr_gl_destroy(zcsr_gl_renderer* r) {
-#if defined(__linux__)
-    if (!r) return;
-    if (r->display && r->ctx) zcsr_gl_make_current(r);
-    for (size_t i = 0; i < ZCSR_GL_MAX_TEXTURES; ++i) {
+static void zcsr_gl_destroy_gl(zcsr_gl_renderer* r) {
+    size_t i;
+    for (i = 0; i < ZCSR_GL_MAX_TEXTURES; ++i) {
         if (r->textures[i].in_use && r->textures[i].id) glDeleteTextures(1, &r->textures[i].id);
     }
     if (r->white_tex) glDeleteTextures(1, &r->white_tex);
@@ -357,35 +204,300 @@ void zcsr_gl_destroy(zcsr_gl_renderer* r) {
     if (r->vbo) glDeleteBuffers(1, &r->vbo);
     if (r->vao) glDeleteVertexArrays(1, &r->vao);
     if (r->program) glDeleteProgram(r->program);
+}
+
+/* ===========================================================================================
+ * Linux / GLX backend
+ * =========================================================================================== */
+#if defined(__linux__)
+typedef GLXContext (*zcsr_glx_create_context_attribs_fn)(Display*, GLXFBConfig, GLXContext, Bool, const int*);
+typedef void (*zcsr_glx_swap_interval_ext_fn)(Display*, GLXDrawable, int);
+typedef int (*zcsr_glx_swap_interval_mesa_fn)(unsigned int);
+typedef int (*zcsr_glx_swap_interval_sgi_fn)(int);
+
+static GLADgenericproc zcsr_glx_load(const char* name) {
+    return (GLADgenericproc)glXGetProcAddressARB((const GLubyte*)name);
+}
+
+static GLXFBConfig zcsr_gl_choose_config(Display* display, int screen, VisualID visual_id) {
+    int attrs[] = {
+        GLX_X_RENDERABLE, True,
+        GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT,
+        GLX_RENDER_TYPE, GLX_RGBA_BIT,
+        GLX_X_VISUAL_TYPE, GLX_TRUE_COLOR,
+        GLX_RED_SIZE, 8,
+        GLX_GREEN_SIZE, 8,
+        GLX_BLUE_SIZE, 8,
+        GLX_ALPHA_SIZE, 8,
+        GLX_DEPTH_SIZE, 0,
+        GLX_STENCIL_SIZE, 0,
+        GLX_DOUBLEBUFFER, True,
+        None
+    };
+    int count = 0;
+    int i;
+    GLXFBConfig result = 0;
+    GLXFBConfig* configs = glXChooseFBConfig(display, screen, attrs, &count);
+    if (!configs) return 0;
+    for (i = 0; i < count; ++i) {
+        XVisualInfo* info = glXGetVisualFromFBConfig(display, configs[i]);
+        if (info) {
+            if (info->visualid == visual_id && !result) result = configs[i];
+            XFree(info);
+        }
+    }
+    XFree(configs);
+    return result;
+}
+
+bool zcsr_gl_make_current(zcsr_gl_renderer* r) {
+    return r && r->display && r->window && r->ctx && glXMakeCurrent(r->display, r->window, r->ctx);
+}
+
+void zcsr_gl_update_size(zcsr_gl_renderer* r) {
+    XWindowAttributes a;
+    if (!r || !r->display || !r->window) return;
+    if (XGetWindowAttributes(r->display, r->window, &a)) {
+        r->width = a.width > 0 ? a.width : 1;
+        r->height = a.height > 0 ? a.height : 1;
+    }
+}
+
+bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface) {
+    Display* display = (Display*)zcsr_surface_native_display(surface);
+    Window window = (Window)(uintptr_t)zcsr_surface_native_handle(surface);
+    XWindowAttributes attrs;
+    GLXFBConfig config;
+    zcsr_glx_create_context_attribs_fn create_context;
+    int context_attrs[] = {
+        GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
+        GLX_CONTEXT_MINOR_VERSION_ARB, 3,
+        GLX_CONTEXT_PROFILE_MASK_ARB, GLX_CONTEXT_CORE_PROFILE_BIT_ARB,
+        None
+    };
+    int screen;
+    if (!display || !window || !XGetWindowAttributes(display, window, &attrs)) return false;
+    screen = DefaultScreen(display);
+    config = zcsr_gl_choose_config(display, screen, XVisualIDFromVisual(attrs.visual));
+    if (!config) return false;
+    create_context = (zcsr_glx_create_context_attribs_fn)
+        glXGetProcAddressARB((const GLubyte*)"glXCreateContextAttribsARB");
+    if (!create_context) return false;
+
+    r->display = display;
+    r->window = window;
+    r->ctx = create_context(display, config, 0, True, context_attrs);
+    if (!r->ctx) return false;
+    if (!zcsr_gl_make_current(r)) {
+        zcsr_gl_platform_destroy(r);
+        return false;
+    }
+    if (!gladLoadGLLoader(zcsr_glx_load)) {
+        zcsr_gl_platform_destroy(r);
+        return false;
+    }
+    zcsr_gl_update_size(r);
+    return true;
+}
+
+void zcsr_gl_platform_destroy(zcsr_gl_renderer* r) {
     if (r->display && r->ctx) {
         glXMakeCurrent(r->display, None, 0);
         glXDestroyContext(r->display, r->ctx);
     }
-    *r = (zcsr_gl_renderer){ 0 };
-#else
-    (void)r;
-#endif
+    r->ctx = 0;
+    r->display = 0;
+    r->window = 0;
 }
 
-void zcsr_gl_set_vsync(zcsr_gl_renderer* r, bool on) {
-#if defined(__linux__)
+void zcsr_gl_swap(zcsr_gl_renderer* r) {
+    if (r && r->display && r->window) glXSwapBuffers(r->display, r->window);
+}
+
+void zcsr_gl_platform_set_vsync(zcsr_gl_renderer* r, bool on) {
     zcsr_glx_swap_interval_ext_fn ext;
     zcsr_glx_swap_interval_mesa_fn mesa;
     zcsr_glx_swap_interval_sgi_fn sgi;
     if (!r || !zcsr_gl_make_current(r)) return;
-    ext = zcsr_gl_get_proc("glXSwapIntervalEXT").swap_interval_ext;
+    ext = (zcsr_glx_swap_interval_ext_fn)glXGetProcAddressARB((const GLubyte*)"glXSwapIntervalEXT");
     if (ext) { ext(r->display, r->window, on ? 1 : 0); return; }
-    mesa = zcsr_gl_get_proc("glXSwapIntervalMESA").swap_interval_mesa;
-    if (mesa) { (void)mesa(on ? 1u : 0u); return; }
-    sgi = zcsr_gl_get_proc("glXSwapIntervalSGI").swap_interval_sgi;
+    mesa = (zcsr_glx_swap_interval_mesa_fn)glXGetProcAddressARB((const GLubyte*)"glXSwapIntervalMESA");
+    if (mesa) { mesa(on ? 1u : 0u); return; }
+    sgi = (zcsr_glx_swap_interval_sgi_fn)glXGetProcAddressARB((const GLubyte*)"glXSwapIntervalSGI");
     if (sgi && on) (void)sgi(1);
-#else
-    (void)r; (void)on;
+}
+
+/* ===========================================================================================
+ * Windows / WGL backend
+ * =========================================================================================== */
+#elif defined(_WIN32)
+/* WGL extension entry points (the Windows SDK ships no wglext.h): typed locally. */
+typedef HGLRC (WINAPI *zcsr_wgl_create_context_attribs_fn)(HDC, HGLRC, const int*);
+typedef BOOL (WINAPI *zcsr_wgl_swap_interval_fn)(int);
+
+#define ZCSR_WGL_CONTEXT_MAJOR_VERSION_ARB   0x2091
+#define ZCSR_WGL_CONTEXT_MINOR_VERSION_ARB   0x2092
+#define ZCSR_WGL_CONTEXT_PROFILE_MASK_ARB    0x9126
+#define ZCSR_WGL_CONTEXT_CORE_PROFILE_BIT_ARB 0x00000001
+
+static GLADgenericproc zcsr_wgl_load(const char* name) {
+    return (GLADgenericproc)wglGetProcAddress(name);
+}
+
+bool zcsr_gl_make_current(zcsr_gl_renderer* r) {
+    return r && r->hdc && r->ctx && wglMakeCurrent(r->hdc, r->ctx) == TRUE;
+}
+
+void zcsr_gl_update_size(zcsr_gl_renderer* r) {
+    RECT rect;
+    if (!r || !r->hwnd) return;
+    if (GetClientRect(r->hwnd, &rect)) {
+        r->width = (rect.right - rect.left) > 0 ? (rect.right - rect.left) : 1;
+        r->height = (rect.bottom - rect.top) > 0 ? (rect.bottom - rect.top) : 1;
+    }
+}
+
+bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface) {
+    HWND hwnd = (HWND)zcsr_surface_native_handle(surface);
+    HDC hdc;
+    PIXELFORMATDESCRIPTOR pfd;
+    int pf;
+    HGLRC tmp;
+    HGLRC ctx;
+    zcsr_wgl_create_context_attribs_fn create33;
+    int attribs[] = {
+        ZCSR_WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
+        ZCSR_WGL_CONTEXT_MINOR_VERSION_ARB, 3,
+        ZCSR_WGL_CONTEXT_PROFILE_MASK_ARB, ZCSR_WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
+        0
+    };
+    if (!hwnd) return false;
+    hdc = GetDC(hwnd);
+    if (!hdc) return false;
+
+    ZeroMemory(&pfd, sizeof(pfd));
+    pfd.nSize = sizeof(PIXELFORMATDESCRIPTOR);
+    pfd.nVersion = 1;
+    pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+    pfd.iPixelType = PFD_TYPE_RGBA;
+    pfd.cColorBits = 32;
+    pfd.cDepthBits = 24;
+    pfd.iLayerType = PFD_MAIN_PLANE;
+    pf = ChoosePixelFormat(hdc, &pfd);
+    if (!pf || !SetPixelFormat(hdc, pf, &pfd)) {
+        ReleaseDC(hwnd, hdc);
+        return false;
+    }
+
+    /* A legacy GL context is required before wglCreateContextAttribsARB can be queried; it is
+     * used only to fetch the extension, then discarded in favour of the 3.3 Core context. */
+    tmp = wglCreateContext(hdc);
+    if (!tmp) {
+        ReleaseDC(hwnd, hdc);
+        return false;
+    }
+    if (!wglMakeCurrent(hdc, tmp)) {
+        wglDeleteContext(tmp);
+        ReleaseDC(hwnd, hdc);
+        return false;
+    }
+    create33 = (zcsr_wgl_create_context_attribs_fn)wglGetProcAddress("wglCreateContextAttribsARB");
+    if (!create33) {
+        wglMakeCurrent(NULL, NULL);
+        wglDeleteContext(tmp);
+        ReleaseDC(hwnd, hdc);
+        return false;
+    }
+    ctx = create33(hdc, NULL, attribs);
+    if (!ctx) {
+        wglMakeCurrent(NULL, NULL);
+        wglDeleteContext(tmp);
+        ReleaseDC(hwnd, hdc);
+        return false;
+    }
+    wglMakeCurrent(NULL, NULL);
+    wglDeleteContext(tmp);
+    if (!wglMakeCurrent(hdc, ctx)) {
+        wglDeleteContext(ctx);
+        ReleaseDC(hwnd, hdc);
+        return false;
+    }
+
+    if (!gladLoadGLLoader(zcsr_wgl_load)) {
+        wglMakeCurrent(NULL, NULL);
+        wglDeleteContext(ctx);
+        ReleaseDC(hwnd, hdc);
+        return false;
+    }
+
+    r->hwnd = hwnd;
+    r->hdc = hdc;
+    r->ctx = ctx;
+    zcsr_gl_update_size(r);
+    return true;
+}
+
+void zcsr_gl_platform_destroy(zcsr_gl_renderer* r) {
+    if (r->ctx) {
+        wglMakeCurrent(NULL, NULL);
+        wglDeleteContext(r->ctx);
+        r->ctx = NULL;
+    }
+    if (r->hdc && r->hwnd) {
+        ReleaseDC(r->hwnd, r->hdc);
+        r->hdc = NULL;
+    }
+}
+
+void zcsr_gl_swap(zcsr_gl_renderer* r) {
+    if (r && r->hdc) SwapBuffers(r->hdc);
+}
+
+void zcsr_gl_platform_set_vsync(zcsr_gl_renderer* r, bool on) {
+    zcsr_wgl_swap_interval_fn set_interval;
+    if (!r) return;
+    set_interval = (zcsr_wgl_swap_interval_fn)wglGetProcAddress("wglSwapIntervalEXT");
+    if (set_interval) set_interval(on ? 1 : 0);
+}
+
+/* macOS: every zcsr_gl_* platform hook is implemented in glrender_cocoa.m. Nothing else here. */
 #endif
+
+/* ===========================================================================================
+ * Public API (shared across every platform)
+ * =========================================================================================== */
+
+zcsr_gl_renderer* zcsr_gl_create(zcsr_surface* surface, void* buffer, size_t bytes) {
+    zcsr_gl_renderer* r;
+    if (!surface || !buffer || bytes < sizeof(zcsr_gl_renderer)) return 0;
+    r = (zcsr_gl_renderer*)buffer;
+    memset(r, 0, sizeof(*r));
+    r->surface = surface;
+    if (!zcsr_gl_platform_init(r, surface)) {
+        memset(r, 0, sizeof(*r));
+        return 0;
+    }
+    if (!zcsr_gl_init_gl(r)) {
+        zcsr_gl_destroy(r);
+        return 0;
+    }
+    return r;
+}
+
+void zcsr_gl_destroy(zcsr_gl_renderer* r) {
+    if (!r) return;
+    zcsr_gl_make_current(r);
+    zcsr_gl_destroy_gl(r);
+    zcsr_gl_platform_destroy(r);
+    memset(r, 0, sizeof(*r));
+}
+
+void zcsr_gl_set_vsync(zcsr_gl_renderer* r, bool on) {
+    if (!r) return;
+    zcsr_gl_platform_set_vsync(r, on);
 }
 
 zcsr_gl_texture zcsr_gl_texture_create(zcsr_gl_renderer* r, const uint8_t* rgba, int w, int h) {
-#if defined(__linux__)
     zcsr_gl_tex_entry* e;
     unsigned int tex = 0;
     if (!r || !rgba || w <= 0 || h <= 0 || !zcsr_gl_make_current(r)) return 0;
@@ -401,24 +513,16 @@ zcsr_gl_texture zcsr_gl_texture_create(zcsr_gl_renderer* r, const uint8_t* rgba,
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     *e = (zcsr_gl_tex_entry){ tex, w, h, true };
     return tex;
-#else
-    (void)r; (void)rgba; (void)w; (void)h; return 0;
-#endif
 }
 
 void zcsr_gl_texture_filter(zcsr_gl_renderer* r, zcsr_gl_texture t, bool linear) {
-#if defined(__linux__)
     if (!r || !zcsr_gl_find_tex(r, t) || !zcsr_gl_make_current(r)) return;
     glBindTexture(GL_TEXTURE_2D, t);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, linear ? GL_LINEAR : GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, linear ? GL_LINEAR : GL_NEAREST);
-#else
-    (void)r; (void)t; (void)linear;
-#endif
 }
 
 bool zcsr_gl_texture_upload(zcsr_gl_renderer* r, zcsr_gl_texture t, const uint8_t* rgba, int w, int h) {
-#if defined(__linux__)
     zcsr_gl_tex_entry* e = zcsr_gl_find_tex(r, t);
     if (!e || !rgba || w <= 0 || h <= 0 || !zcsr_gl_make_current(r)) return false;
     glBindTexture(GL_TEXTURE_2D, t);
@@ -426,20 +530,13 @@ bool zcsr_gl_texture_upload(zcsr_gl_renderer* r, zcsr_gl_texture t, const uint8_
     e->w = w;
     e->h = h;
     return true;
-#else
-    (void)r; (void)t; (void)rgba; (void)w; (void)h; return false;
-#endif
 }
 
 void zcsr_gl_texture_destroy(zcsr_gl_renderer* r, zcsr_gl_texture t) {
-#if defined(__linux__)
     zcsr_gl_tex_entry* e = zcsr_gl_find_tex(r, t);
     if (!e || !zcsr_gl_make_current(r)) return;
     glDeleteTextures(1, &e->id);
     *e = (zcsr_gl_tex_entry){ 0 };
-#else
-    (void)r; (void)t;
-#endif
 }
 
 void zcsr_gl_begin(zcsr_gl_renderer* r) {
@@ -450,24 +547,23 @@ void zcsr_gl_begin(zcsr_gl_renderer* r) {
 }
 
 void zcsr_gl_submit(zcsr_gl_renderer* r, const zcsr_gl_sprite* s) {
-#if defined(__linux__)
     size_t first;
     if (!r || !s || s->tex == 0 || !zcsr_gl_find_tex(r, s->tex)) return;
     if (r->vertex_count + 6u > ZCSR_GL_MAX_VERTICES) return;
     first = r->vertex_count;
     zcsr_gl_push_quad(r, s->dst, s->rotation, s->r, s->g, s->b, s->a, s->mode, s->amount);
     zcsr_gl_record_draw(r, s->tex, first, r->vertex_count - first);
-#else
-    (void)r; (void)s;
-#endif
 }
 
 void zcsr_gl_flush(zcsr_gl_renderer* r) {
-#if defined(__linux__)
+    size_t i;
     if (!r || r->vertex_count == 0 || !zcsr_gl_make_current(r)) return;
     if (r->target == 0) {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         zcsr_gl_update_size(r);
+    } else {
+        glBindFramebuffer(GL_FRAMEBUFFER, r->fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, r->target, 0);
     }
     glViewport(0, 0, r->width, r->height);
     glUseProgram(r->program);
@@ -477,27 +573,36 @@ void zcsr_gl_flush(zcsr_gl_renderer* r) {
     glBindVertexArray(r->vao);
     glBindBuffer(GL_ARRAY_BUFFER, r->vbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(r->vertex_count * sizeof(zcsr_gl_vertex)), r->vertices);
-    for (size_t i = 0; i < r->draw_count; ++i) {
+    /* Coalesce contiguous runs that share a texture into one draw call. The bench submits
+     * thousands of same-texture sprites; issuing one draw per sprite is driver-call bound. */
+    i = 0;
+    while (i < r->draw_count) {
+        size_t j = i;
+        size_t count = r->draws[i].count;
+        while (j + 1 < r->draw_count
+               && r->draws[j + 1].texture == r->draws[i].texture
+               && r->draws[j + 1].first == r->draws[j].first + r->draws[j].count) {
+            count += r->draws[j + 1].count;
+            ++j;
+        }
         glBindTexture(GL_TEXTURE_2D, r->draws[i].texture);
-        glDrawArrays(GL_TRIANGLES, (int)r->draws[i].first, (int)r->draws[i].count);
+        glDrawArrays(GL_TRIANGLES, (GLint)r->draws[i].first, (GLsizei)count);
+        i = j + 1;
     }
-    if (r->target == 0) glXSwapBuffers(r->display, r->window);
+    if (r->target == 0) zcsr_gl_swap(r);
     r->vertex_count = 0;
     r->draw_count = 0;
-#else
-    (void)r;
-#endif
 }
 
 void zcsr_gl_submit_batch(zcsr_gl_renderer* r, const zcsr_gl_sprite* sprites, size_t count) {
+    size_t i;
     if (!r || !sprites) return;
     zcsr_gl_begin(r);
-    for (size_t i = 0; i < count; ++i) zcsr_gl_submit(r, &sprites[i]);
+    for (i = 0; i < count; ++i) zcsr_gl_submit(r, &sprites[i]);
     zcsr_gl_flush(r);
 }
 
 void zcsr_gl_set_target(zcsr_gl_renderer* r, zcsr_gl_texture target_or_zero) {
-#if defined(__linux__)
     zcsr_gl_tex_entry* e;
     if (!r || !zcsr_gl_make_current(r)) return;
     if (target_or_zero == 0) {
@@ -519,17 +624,14 @@ void zcsr_gl_set_target(zcsr_gl_renderer* r, zcsr_gl_texture target_or_zero) {
     r->target = target_or_zero;
     r->width = e->w;
     r->height = e->h;
-#else
-    (void)r; (void)target_or_zero;
-#endif
 }
 
 void zcsr_gl_draw_text(zcsr_gl_renderer* r, const char* utf8, float x, float y, float scale,
                        float cr, float cg, float cb, float ca) {
-#if defined(__linux__)
     float pen = x;
+    const unsigned char* p;
     if (!r || !utf8 || scale <= 0.0f) return;
-    for (const unsigned char* p = (const unsigned char*)utf8; *p; ++p) {
+    for (p = (const unsigned char*)utf8; *p; ++p) {
         unsigned char ch = *p;
         if (ch == '\n') {
             pen = x;
@@ -540,13 +642,10 @@ void zcsr_gl_draw_text(zcsr_gl_renderer* r, const char* utf8, float x, float y, 
         /* Minimal block glyph: enough for scores/debug labels without external font data. */
         if (r->vertex_count + 6u <= ZCSR_GL_MAX_VERTICES) {
             size_t first = r->vertex_count;
-            zcsr_gl_push_quad(r, (zcsr_rectf){ pen, y, 5.0f * scale, 7.0f * scale }, 0.0f, cr, cg, cb, ca,
-                              ZCSR_MOD_MULTIPLY, 0.0f);
+            zcsr_gl_push_quad(r, (zcsr_rectf){ pen, y, 5.0f * scale, 7.0f * scale }, 0.0f,
+                              cr, cg, cb, ca, ZCSR_MOD_MULTIPLY, 0.0f);
             zcsr_gl_record_draw(r, r->white_tex, first, r->vertex_count - first);
         }
         pen += 6.0f * scale;
     }
-#else
-    (void)r; (void)utf8; (void)x; (void)y; (void)scale; (void)cr; (void)cg; (void)cb; (void)ca;
-#endif
 }
