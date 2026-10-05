@@ -30,7 +30,8 @@
 enum {
     ZCSR_GL_MAX_SPRITES = 10000,
     ZCSR_GL_MAX_VERTICES = ZCSR_GL_MAX_SPRITES * 6,
-    ZCSR_GL_MAX_TEXTURES = 128
+    ZCSR_GL_MAX_TEXTURES = 128,
+    ZCSR_GL_MAX_INSTANCES = 10000
 };
 
 /* Interleaved vertex: pos(2) + uv(2) + color(4) + color-mode(1) + mix-amount(1) = 9 floats. */
@@ -76,6 +77,15 @@ struct zcsr_gl_renderer {
     zcsr_gl_texture target;
     int uniform_view;
     int uniform_tex;
+
+    /* ---- instanced rendering resources (unit quad + per-instance VBO) ---- */
+    unsigned int inst_program;
+    unsigned int inst_vao;
+    unsigned int inst_corner_vbo;
+    unsigned int inst_ebo;
+    unsigned int inst_vbo;
+    int inst_uniform_view;
+    int inst_uniform_tex;
 
     /* ---- native platform context (exactly one branch compiles) ---- */
 #if defined(__linux__)

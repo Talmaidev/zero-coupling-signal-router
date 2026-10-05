@@ -194,6 +194,10 @@ target_link_libraries(zcsr_glrender_worst_bench PRIVATE zcsr_glrender zcsr_platf
 add_executable(zcsr_atlas_bench integration/bench_atlas.c)
 target_link_libraries(zcsr_atlas_bench PRIVATE zcsr_glrender zcsr_atlas zcsr_platform)
 
+# Instanced rendering bench (legacy vs instanced). Not a ctest.
+add_executable(zcsr_inst_bench integration/bench_inst.c)
+target_link_libraries(zcsr_inst_bench PRIVATE zcsr_glrender zcsr_platform)
+
 # Offline image-bake throughput (chroma-key / variant / palette). Informational, not a ctest gate
 # (load-time bakes, not a per-frame budget); pure CPU, runs headless.
 add_executable(zcsr_image_bench integration/bench_image.c)
