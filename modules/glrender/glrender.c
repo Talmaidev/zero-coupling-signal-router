@@ -819,14 +819,16 @@ void zcsr_gl_draw_instances(zcsr_gl_renderer* r, zcsr_gl_texture texture,
 
 /* LSD radix sort of instances by tex (uint32), 4 passes of 8 bits. Scratch must hold
  * count instances. Stable, no heap. */
-static void zcsr_gl_radix_by_tex(zcsr_gl_instance* items, size_t count,
-                                 zcsr_gl_instance* scratch) {
+typedef uint32_t (*zcsr_instance_key_fn)(const zcsr_gl_instance*);
+
+static void zcsr_gl_radix(zcsr_gl_instance* items, size_t count,
+                          zcsr_gl_instance* scratch, zcsr_instance_key_fn key_of) {
     int shift, b;
     for (shift = 0; shift < 32; shift += 8) {
         uint32_t hist[256];
         size_t i;
         for (b = 0; b < 256; ++b) hist[b] = 0;
-        for (i = 0; i < count; ++i) ++hist[(items[i].tex >> shift) & 0xFFu];
+        for (i = 0; i < count; ++i) ++hist[(key_of(&items[i]) >> shift) & 0xFFu];
         uint32_t total = 0;
         for (b = 0; b < 256; ++b) {
             uint32_t c = hist[b];
@@ -834,11 +836,26 @@ static void zcsr_gl_radix_by_tex(zcsr_gl_instance* items, size_t count,
             total += c;
         }
         for (i = 0; i < count; ++i) {
-            uint32_t key = items[i].tex;
+            uint32_t key = key_of(&items[i]);
             scratch[hist[(key >> shift) & 0xFFu]++] = items[i];
         }
         memcpy(items, scratch, count * sizeof(zcsr_gl_instance));
     }
+}
+
+static uint32_t zcsr_key_tex(const zcsr_gl_instance* in) { return in->tex; }
+
+/* Map a float to a monotonic uint32 key, then invert for descending (far z first). */
+static uint32_t zcsr_key_z_desc(const zcsr_gl_instance* in) {
+    uint32_t u;
+    memcpy(&u, &in->z, 4);
+    uint32_t k = (u & 0x80000000u) ? ~u : (u | 0x80000000u);
+    return ~k;
+}
+
+static void zcsr_gl_radix_by_tex(zcsr_gl_instance* items, size_t count,
+                                 zcsr_gl_instance* scratch) {
+    zcsr_gl_radix(items, count, scratch, zcsr_key_tex);
 }
 
 size_t zcsr_sort_instances(zcsr_gl_instance* instances, size_t count, void* temp) {
@@ -883,6 +900,67 @@ void zcsr_gl_submit_instance_batch(zcsr_gl_renderer* r, zcsr_gl_instance* instan
         size_t start, len;
         zcsr_instance_run(instances, count, i, &tex, &start, &len);
         if (tex) zcsr_gl_draw_instances(r, tex, instances + start, len);
+    }
+    if (r->target == 0) zcsr_gl_swap(r);
+}
+
+/* ---- full state sort (opaque vs translucent) ---- */
+static int zcsr_is_translucent(const zcsr_gl_instance* in) {
+    return in->a < 0.9999f ||
+           in->mode == (float)ZCSR_MOD_MIX || in->mode == (float)ZCSR_MOD_ADD;
+}
+
+size_t zcsr_sort_state(zcsr_gl_instance* instances, size_t count, void* temp,
+                       size_t* out_opaque) {
+    zcsr_gl_instance* scratch = temp;
+    size_t i = 0, j = count;
+    if (!instances || !temp || count == 0) {
+        if (out_opaque) *out_opaque = 0;
+        return 0;
+    }
+    /* partition: opaque to the front, translucent to the back */
+    while (i < j) {
+        if (zcsr_is_translucent(&instances[i])) {
+            zcsr_gl_instance t;
+            --j;
+            t = instances[i]; instances[i] = instances[j]; instances[j] = t;
+        } else {
+            ++i;
+        }
+    }
+    {
+        size_t opaque = i;
+        if (opaque > 0) zcsr_gl_radix(instances, opaque, scratch, zcsr_key_tex);
+        if (count - opaque > 0)
+            zcsr_gl_radix(instances + opaque, count - opaque, scratch, zcsr_key_z_desc);
+        if (out_opaque) *out_opaque = opaque;
+        return opaque;
+    }
+}
+
+void zcsr_gl_submit_state(zcsr_gl_renderer* r, zcsr_gl_instance* instances, size_t count,
+                          void* temp, size_t temp_bytes) {
+    size_t opaque;
+    size_t i;
+    if (!r || !instances || !temp || count == 0) return;
+    if (temp_bytes < count * sizeof(zcsr_gl_instance)) return;
+    zcsr_sort_state(instances, count, temp, &opaque);
+
+    /* opaque: draw in texture runs (order irrelevant) */
+    i = 0;
+    while (i < opaque) {
+        size_t start = i;
+        uint32_t tex = instances[i].tex;
+        while (i < opaque && instances[i].tex == tex) ++i;
+        if (tex) zcsr_gl_draw_instances(r, tex, instances + start, i - start);
+    }
+    /* translucent: back-to-front, gather only adjacent same-texture (z order preserved) */
+    i = opaque;
+    while (i < count) {
+        size_t start = i;
+        uint32_t tex = instances[i].tex;
+        while (i < count && instances[i].tex == tex) ++i;
+        if (tex) zcsr_gl_draw_instances(r, tex, instances + start, i - start);
     }
     if (r->target == 0) zcsr_gl_swap(r);
 }
