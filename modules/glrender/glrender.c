@@ -160,6 +160,34 @@ static void zcsr_gl_push_quad(zcsr_gl_renderer* r, zcsr_rectf dst, float rot,
     zcsr_gl_push_vertex(r, vx[3], vy[3], 0.0f, 1.0f, cr, cg, cb, ca, mode, amount);
 }
 
+/* Quad with an explicit UV sub-rectangle (atlas sprites). Same geometry as push_quad but the
+ * four corners sample [u0,u1] x [v0,v1] instead of the full texture. */
+static void zcsr_gl_push_quad_uv(zcsr_gl_renderer* r, zcsr_rectf dst, float rot,
+                                 float u0, float v0, float u1, float v1,
+                                 float cr, float cg, float cb, float ca,
+                                 zcsr_color_mode mode, float amount) {
+    float hw = dst.w * 0.5f;
+    float hh = dst.h * 0.5f;
+    float cx = dst.x + hw;
+    float cy = dst.y + hh;
+    float c = cosf(rot);
+    float s = sinf(rot);
+    float px[4] = { -hw, hw, hw, -hw };
+    float py[4] = { -hh, -hh, hh, hh };
+    float vx[4], vy[4];
+    int i;
+    for (i = 0; i < 4; ++i) {
+        vx[i] = cx + px[i] * c - py[i] * s;
+        vy[i] = cy + px[i] * s + py[i] * c;
+    }
+    zcsr_gl_push_vertex(r, vx[0], vy[0], u0, v0, cr, cg, cb, ca, mode, amount);
+    zcsr_gl_push_vertex(r, vx[1], vy[1], u1, v0, cr, cg, cb, ca, mode, amount);
+    zcsr_gl_push_vertex(r, vx[2], vy[2], u1, v1, cr, cg, cb, ca, mode, amount);
+    zcsr_gl_push_vertex(r, vx[0], vy[0], u0, v0, cr, cg, cb, ca, mode, amount);
+    zcsr_gl_push_vertex(r, vx[2], vy[2], u1, v1, cr, cg, cb, ca, mode, amount);
+    zcsr_gl_push_vertex(r, vx[3], vy[3], u0, v1, cr, cg, cb, ca, mode, amount);
+}
+
 static void zcsr_gl_record_draw(zcsr_gl_renderer* r, unsigned int texture, size_t first, size_t count) {
     if (!r || r->draw_count >= ZCSR_GL_MAX_SPRITES || count == 0) return;
     r->draws[r->draw_count++] = (zcsr_gl_draw){ texture, first, count };
@@ -599,6 +627,26 @@ void zcsr_gl_submit_batch(zcsr_gl_renderer* r, const zcsr_gl_sprite* sprites, si
     if (!r || !sprites) return;
     zcsr_gl_begin(r);
     for (i = 0; i < count; ++i) zcsr_gl_submit(r, &sprites[i]);
+    zcsr_gl_flush(r);
+}
+
+static void zcsr_gl_submit_atlas(zcsr_gl_renderer* r, const zcsr_gl_atlas_sprite* s) {
+    size_t first;
+    if (!r || !s || s->atlas == 0 || !zcsr_gl_find_tex(r, s->atlas)) return;
+    if (r->vertex_count + 6u > ZCSR_GL_MAX_VERTICES) return;
+    first = r->vertex_count;
+    zcsr_gl_push_quad_uv(r, s->dst, s->rotation,
+                         s->region.u0, s->region.v0, s->region.u1, s->region.v1,
+                         s->r, s->g, s->b, s->a, s->mode, s->amount);
+    zcsr_gl_record_draw(r, s->atlas, first, r->vertex_count - first);
+}
+
+void zcsr_gl_submit_atlas_batch(zcsr_gl_renderer* r, const zcsr_gl_atlas_sprite* sprites,
+                                size_t count) {
+    size_t i;
+    if (!r || !sprites) return;
+    zcsr_gl_begin(r);
+    for (i = 0; i < count; ++i) zcsr_gl_submit_atlas(r, &sprites[i]);
     zcsr_gl_flush(r);
 }
 

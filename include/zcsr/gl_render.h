@@ -4,9 +4,10 @@
  * software/overlay path (which stays unchanged). Implementer: modules/glrender (vendors glad;
  * glad used ONLY inside that module). Includes only shared contracts. No runtime heap: renderer
  * state lives in a caller buffer; GPU memory is the driver's. */
-#include "platform.h"  /* zcsr_surface */
-#include "sprite.h"    /* zcsr_rectf */
-#include "color.h"     /* zcsr_color_mode */
+#include "platform.h"       /* zcsr_surface */
+#include "sprite.h"         /* zcsr_rectf */
+#include "color.h"          /* zcsr_color_mode */
+#include "texture_atlas.h"  /* zcsr_atlas_region */
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -61,5 +62,23 @@ void zcsr_gl_set_target(zcsr_gl_renderer*, zcsr_gl_texture target_or_zero);
 /* Built-in bitmap-font text (scores / UI). Top-left origin, color 0..1. No external font loading. */
 void zcsr_gl_draw_text(zcsr_gl_renderer*, const char* utf8, float x, float y, float scale,
                        float r, float g, float b, float a);
+
+/* ---- Atlas sprites ---------------------------------------------------------------------------
+ * A sprite that samples a sub-rectangle of a shared atlas texture. Many atlas sprites with the
+ * same `atlas` texture differ only in `region` UV, so they merge into one draw call even though
+ * they are logically distinct images. This is the post-atlas counterpart of zcsr_gl_sprite. */
+typedef struct {
+    zcsr_gl_texture   atlas;  /* the packed atlas texture (shared by many sprites) */
+    zcsr_atlas_region region; /* UV sub-rectangle of this sprite's image */
+    zcsr_rectf        dst;
+    float             rotation;
+    float r, g, b, a;
+    zcsr_color_mode   mode;
+    float             amount;
+} zcsr_gl_atlas_sprite;
+
+/* Batched draw for atlas sprites. Same begin/flush semantics as submit_batch; all sprites that
+ * share one atlas texture are coalesced into a single glDrawArrays. */
+void zcsr_gl_submit_atlas_batch(zcsr_gl_renderer*, const zcsr_gl_atlas_sprite* sprites, size_t count);
 
 #endif /* ZCSR_GL_RENDER_H */
