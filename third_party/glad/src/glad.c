@@ -32,6 +32,8 @@ PFNGLBINDFRAMEBUFFERPROC glad_glBindFramebuffer;
 PFNGLFRAMEBUFFERTEXTURE2DPROC glad_glFramebufferTexture2D;
 PFNGLCHECKFRAMEBUFFERSTATUSPROC glad_glCheckFramebufferStatus;
 PFNGLDELETEFRAMEBUFFERSPROC glad_glDeleteFramebuffers;
+PFNGLVERTEXATTRIBDIVISORPROC glad_glVertexAttribDivisor;
+PFNGLDRAWELEMENTSINSTANCEDPROC glad_glDrawElementsInstanced;
 
 typedef union {
     GLADgenericproc generic;
@@ -67,6 +69,8 @@ typedef union {
     PFNGLFRAMEBUFFERTEXTURE2DPROC glFramebufferTexture2D;
     PFNGLCHECKFRAMEBUFFERSTATUSPROC glCheckFramebufferStatus;
     PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers;
+    PFNGLVERTEXATTRIBDIVISORPROC glVertexAttribDivisor;
+    PFNGLDRAWELEMENTSINSTANCEDPROC glDrawElementsInstanced;
 } zcsr_glad_proc;
 
 #define ZCSR_LOAD(name) do { zcsr_glad_proc p; p.generic = load(#name); glad_##name = p.name; if (!glad_##name) return 0; } while (0)
@@ -105,6 +109,8 @@ int gladLoadGLLoader(GLADloadproc load) {
     ZCSR_LOAD(glFramebufferTexture2D);
     ZCSR_LOAD(glCheckFramebufferStatus);
     ZCSR_LOAD(glDeleteFramebuffers);
+    ZCSR_LOAD(glVertexAttribDivisor);
+    ZCSR_LOAD(glDrawElementsInstanced);
     return 1;
 }
 
