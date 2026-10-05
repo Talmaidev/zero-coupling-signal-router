@@ -58,6 +58,12 @@ typedef ptrdiff_t GLintptr;
 #ifndef GL_DYNAMIC_DRAW
 #define GL_DYNAMIC_DRAW 0x88E8
 #endif
+#ifndef GL_ELEMENT_ARRAY_BUFFER
+#define GL_ELEMENT_ARRAY_BUFFER 0x8893
+#endif
+#ifndef GL_STATIC_DRAW
+#define GL_STATIC_DRAW 0x88E4
+#endif
 #ifndef GL_VERTEX_SHADER
 #define GL_VERTEX_SHADER 0x8B31
 #endif
@@ -115,6 +121,9 @@ typedef void (GLAPIENTRY *PFNGLFRAMEBUFFERTEXTURE2DPROC)(GLenum target, GLenum a
                                                         GLenum textarget, GLuint texture, GLint level);
 typedef GLenum (GLAPIENTRY *PFNGLCHECKFRAMEBUFFERSTATUSPROC)(GLenum target);
 typedef void (GLAPIENTRY *PFNGLDELETEFRAMEBUFFERSPROC)(GLsizei n, const GLuint* framebuffers);
+typedef void (GLAPIENTRY *PFNGLVERTEXATTRIBDIVISORPROC)(GLuint index, GLuint divisor);
+typedef void (GLAPIENTRY *PFNGLDRAWELEMENTSINSTANCEDPROC)(GLenum mode, GLsizei count, GLenum type,
+                                                          const void* indices, GLsizei instancecount);
 #endif /* !__APPLE__ */
 
 #ifdef __cplusplus
@@ -157,6 +166,8 @@ extern PFNGLBINDFRAMEBUFFERPROC glad_glBindFramebuffer;
 extern PFNGLFRAMEBUFFERTEXTURE2DPROC glad_glFramebufferTexture2D;
 extern PFNGLCHECKFRAMEBUFFERSTATUSPROC glad_glCheckFramebufferStatus;
 extern PFNGLDELETEFRAMEBUFFERSPROC glad_glDeleteFramebuffers;
+extern PFNGLVERTEXATTRIBDIVISORPROC glad_glVertexAttribDivisor;
+extern PFNGLDRAWELEMENTSINSTANCEDPROC glad_glDrawElementsInstanced;
 
 #ifdef __cplusplus
 }
@@ -196,5 +207,7 @@ extern PFNGLDELETEFRAMEBUFFERSPROC glad_glDeleteFramebuffers;
 #define glFramebufferTexture2D glad_glFramebufferTexture2D
 #define glCheckFramebufferStatus glad_glCheckFramebufferStatus
 #define glDeleteFramebuffers glad_glDeleteFramebuffers
+#define glVertexAttribDivisor glad_glVertexAttribDivisor
+#define glDrawElementsInstanced glad_glDrawElementsInstanced
 
 #endif /* ZCSR_THIRD_PARTY_GLAD_H */

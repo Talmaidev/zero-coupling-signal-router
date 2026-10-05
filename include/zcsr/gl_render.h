@@ -24,6 +24,8 @@ typedef uint32_t zcsr_gl_texture;                 /* GPU texture handle; 0 = inv
 zcsr_gl_renderer* zcsr_gl_create(zcsr_surface* surface, void* buffer, size_t bytes);
 void              zcsr_gl_destroy(zcsr_gl_renderer*);
 void              zcsr_gl_set_vsync(zcsr_gl_renderer*, bool on);
+/* Swap front/back buffers (present). Call after draw_instances when targeting the window. */
+void              zcsr_gl_present(zcsr_gl_renderer*);
 
 /* Upload 8-bit RGBA pixels to a GPU texture. `linear` = linear filter (else nearest). */
 zcsr_gl_texture   zcsr_gl_texture_create(zcsr_gl_renderer*, const uint8_t* rgba, int w, int h);
@@ -80,5 +82,43 @@ typedef struct {
 /* Batched draw for atlas sprites. Same begin/flush semantics as submit_batch; all sprites that
  * share one atlas texture are coalesced into a single glDrawArrays. */
 void zcsr_gl_submit_atlas_batch(zcsr_gl_renderer*, const zcsr_gl_atlas_sprite* sprites, size_t count);
+
+/* ---- Instanced rendering ----------------------------------------------------------------------
+ * One draw call (glDrawElementsInstanced) expands a single unit quad into N instances. Only the
+ * per-instance data is uploaded (60 bytes each), instead of 6 full vertices per sprite (216 bytes),
+ * so both CPU vertex setup and GPU transfer shrink. The rotation/quad expansion moves into the
+ * vertex shader. Best for large counts of same-texture sprites. */
+typedef struct {
+    float cx, cy;          /* center position (pixels) */
+    float w, h;            /* size (pixels) */
+    float u0, v0, u1, v1;  /* atlas UV sub-rectangle (use 0,0,1,1 for a full texture) */
+    float r, g, b, a;      /* modulation color 0..1 */
+    float rotation;        /* radians, about the center */
+    float amount;          /* blend strength for MIX/ADD */
+    float mode;            /* zcsr_color_mode as float */
+    uint32_t tex;          /* CPU-only: texture handle, used for sorting into runs */
+} zcsr_gl_instance;        /* 15 float attrs + 1 uint32 = 64 bytes; tex is not a shader attribute */
+
+/* Draw `count` instances sharing one bound texture, in one instanced draw call. Instances are
+ * drawn as-is (no sorting). For a batch spanning multiple textures, sort it first (see
+ * zcsr_sort_instances) then call this once per texture run, or use submit_instance_batch. */
+void zcsr_gl_draw_instances(zcsr_gl_renderer*, zcsr_gl_texture texture,
+                            const zcsr_gl_instance* instances, size_t count);
+
+/* Sort a writable instance array into texture runs (and blend mode within a texture) so that
+ * drawing needs one state setup per run. Pure CPU, no heap: `temp` is caller scratch of at least
+ * `count * sizeof(zcsr_gl_instance)` bytes. Returns the number of distinct texture runs. After
+ * sorting, iterate runs with zcsr_instance_run to get each run's texture/start/count. */
+size_t zcsr_sort_instances(zcsr_gl_instance* instances, size_t count, void* temp);
+
+/* Describe one texture run produced by zcsr_sort_instances. `run_index` in 0..return-1.
+ * Writes the texture and the [start,start+len) slice of the sorted array. */
+void zcsr_instance_run(const zcsr_gl_instance* sorted, size_t count, size_t run_index,
+                       zcsr_gl_texture* out_texture, size_t* out_start, size_t* out_len);
+
+/* Convenience: sort and draw all instances (one instanced call per texture run). `temp` is
+ * caller scratch (>= count * sizeof instance). */
+void zcsr_gl_submit_instance_batch(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count,
+                                   void* temp, size_t temp_bytes);
 
 #endif /* ZCSR_GL_RENDER_H */
