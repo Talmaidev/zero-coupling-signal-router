@@ -97,7 +97,8 @@ typedef struct {
     float amount;          /* blend strength for MIX/ADD */
     float mode;            /* zcsr_color_mode as float */
     uint32_t tex;          /* CPU-only: texture handle, used for sorting into runs */
-} zcsr_gl_instance;        /* 15 float attrs + 1 uint32 = 64 bytes; tex is not a shader attribute */
+    float z;               /* CPU-only: depth/layer; larger = farther, drawn first (painter's) */
+} zcsr_gl_instance;        /* 15 float attrs + uint32 + float = 68 bytes; tex/z are CPU-only */
 
 /* Draw `count` instances sharing one bound texture, in one instanced draw call. Instances are
  * drawn as-is (no sorting). For a batch spanning multiple textures, sort it first (see
@@ -120,5 +121,22 @@ void zcsr_instance_run(const zcsr_gl_instance* sorted, size_t count, size_t run_
  * caller scratch (>= count * sizeof instance). */
 void zcsr_gl_submit_instance_batch(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count,
                                    void* temp, size_t temp_bytes);
+
+/* ---- full state sort (opaque vs translucent) ----
+ * An instance is treated as translucent when its alpha < 1.0 or its color mode is MIX/ADD.
+ * Partitions the array into opaque instances first (sorted by texture, for batching) then
+ * translucent instances sorted back-to-front by z (larger z = farther, painter's algorithm).
+ * Returns the number of opaque instances. After sorting:
+ *   - draw [0, opaque) via texture runs (zcsr_instance_run / zcsr_gl_draw_instances),
+ *   - draw [opaque, count) in array order, grouping only adjacent same-texture instances.
+ * `temp` is caller scratch (>= count * sizeof instance). */
+size_t zcsr_sort_state(zcsr_gl_instance* instances, size_t count, void* temp,
+                       size_t* out_opaque);
+
+/* Convenience: full state sort + draw. Opaque instances are drawn in texture runs;
+ * translucent instances are drawn back-to-front, flushing on texture changes. Presents at the
+ * end when targeting the window. `temp` is caller scratch (>= count * sizeof instance). */
+void zcsr_gl_submit_state(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count,
+                          void* temp, size_t temp_bytes);
 
 #endif /* ZCSR_GL_RENDER_H */
