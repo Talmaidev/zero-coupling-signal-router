@@ -182,6 +182,10 @@ add_executable(test_culling tests/test_culling.c)
 target_link_libraries(test_culling PRIVATE zcsr_culling)
 add_test(NAME culling COMMAND test_culling)
 
+add_executable(test_state tests/test_state.c)
+target_link_libraries(test_state PRIVATE zcsr_glrender zcsr_platform)
+add_test(NAME state_sort COMMAND test_state)
+
 # Sprite-batch throughput gate (200 sprites < 1ms). Not a ctest: the flush blits onto a real
 # surface, so it must run on a GUI host (skips with exit 0 when headless).
 add_executable(zcsr_render_bench integration/bench_render.c)
