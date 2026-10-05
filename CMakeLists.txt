@@ -51,6 +51,7 @@ zcsr_module(glrender)  # Engine-ext Agent 1 — OpenGL 3.3 renderer (vendors gla
 zcsr_module(audiomix)  # Engine-ext Agent 2 — multi-channel WAV mixer (coexists w/ single-stream audio)
 zcsr_module(inputext)  # Engine-ext Agent 3 — mouse + gamepad (additive to keyboard input)
 zcsr_module(image)     # Engine-ext Agent — decode→RGBA32 + offline CPU processing (separated from rendering; vendors stb_image)
+zcsr_module(atlas)     # Texture atlas shelf-packing + region table (pure logic, no GL)
 # Per-backend system libs are added by the implementer when each backend lands, e.g.:
 #   glrender: opengl32+gdi32 (Win) / GL+X11 (Linux, find_package(OpenGL)) / -framework OpenGL (mac)
 #   audiomix: (Win WASAPI: ole32) / ALSA (Linux: find_package(ALSA), asound) / -framework AudioToolbox,AudioUnit (mac)
@@ -172,6 +173,10 @@ add_executable(test_image tests/test_image.c)
 target_link_libraries(test_image PRIVATE zcsr_image)
 add_test(NAME image COMMAND test_image)
 
+add_executable(test_atlas tests/test_atlas.c)
+target_link_libraries(test_atlas PRIVATE zcsr_atlas)
+add_test(NAME atlas COMMAND test_atlas)
+
 # Sprite-batch throughput gate (200 sprites < 1ms). Not a ctest: the flush blits onto a real
 # surface, so it must run on a GUI host (skips with exit 0 when headless).
 add_executable(zcsr_render_bench integration/bench_render.c)
@@ -180,6 +185,14 @@ target_link_libraries(zcsr_render_bench PRIVATE zcsr_render zcsr_platform)
 # GPU sprite throughput gate (200..10000 sprites). Not a ctest: requires a GL-capable display.
 add_executable(zcsr_glrender_bench integration/bench_glrender.c)
 target_link_libraries(zcsr_glrender_bench PRIVATE zcsr_glrender zcsr_platform)
+
+# Worst-case GPU throughput bench (adversarial textures / blend modes). Not a ctest.
+add_executable(zcsr_glrender_worst_bench integration/bench_worst.c)
+target_link_libraries(zcsr_glrender_worst_bench PRIVATE zcsr_glrender zcsr_platform)
+
+# Atlas end-to-end bench (unpacked vs packed). Not a ctest.
+add_executable(zcsr_atlas_bench integration/bench_atlas.c)
+target_link_libraries(zcsr_atlas_bench PRIVATE zcsr_glrender zcsr_atlas zcsr_platform)
 
 # Offline image-bake throughput (chroma-key / variant / palette). Informational, not a ctest gate
 # (load-time bakes, not a per-frame budget); pure CPU, runs headless.
