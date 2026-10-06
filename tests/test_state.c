@@ -32,7 +32,7 @@ int main(void) {
         items[i] = make(tex, translucent ? 0.5f : 1.0f, z, 0.0f);
     }
 
-    zcsr_sort_state(items, N, scratch, &opaque);
+    zcsr_sort_state(items, N, scratch, sizeof(scratch), &opaque);
     CHECK(opaque == 10);
 
     /* first 10 are opaque, sorted by tex ascending */
@@ -53,7 +53,7 @@ int main(void) {
         mix[0] = make(1, 1.0f, 0.0f, 1.0f); /* MIX -> translucent */
         mix[1] = make(2, 1.0f, 0.0f, 0.0f); /* opaque */
         size_t op;
-        zcsr_sort_state(mix, 2, scratch, &op);
+        zcsr_sort_state(mix, 2, scratch, sizeof(scratch), &op);
         CHECK(op == 1);
         CHECK(mix[0].tex == 2); /* opaque one first */
     }
