@@ -1,0 +1,77 @@
+================================================================
+ zcsr 引擎性能四件套 — 修改文件清单（供外部审查）
+ 生成时间：2026-10-06
+ 基线 commit：d463c69（纹理图集）
+ 当前 HEAD：118a24f（状态排序）
+ 3 个 commit：8b9cef7(实例化) 1e65085(剔除) 118a24f(状态排序)
+ 全部代码已提交 git，无未提交代码改动。
+================================================================
+
+【修改的已有文件】
+
+1. include/zcsr/gl_render.h  (+58 行)
+   - zcsr_gl_instance 结构：末尾加 float z 字段（CPU-only，68字节）
+   - 新增公共函数声明（行 28, 106-140）：
+     · zcsr_gl_present()
+     · zcsr_gl_draw_instances()
+     · zcsr_sort_instances()
+     · zcsr_instance_run()
+     · zcsr_gl_submit_instance_batch()
+     · zcsr_sort_state()
+     · zcsr_gl_submit_state()
+
+2. modules/glrender/glrender_internal.h  (+12/-1)
+   - 加 #define ZCSR_GL_MAX_INSTANCES 10000
+   - renderer 结构加 6 个 inst_* 字段：
+     inst_program / inst_vao / inst_corner_vbo / inst_ebo /
+     inst_vbo / inst_uniform_view / inst_uniform_tex
+
+3. modules/glrender/glrender.c  (+315 行)
+   - 行 ~300: make_inst_program() 实例化着色器（GPU展开四边形+旋转）
+   - 行 ~301: init_inst() 建 corner VBO + EBO + 动态 instance VBO
+   - 行 ~356: destroy_inst() 清理实例化资源
+   - 行 ~285: init_gl() 末尾调用 init_inst()
+   - 行 ~299: destroy_gl() 末尾调用 destroy_inst()
+   - 行 ~790: draw_instances() 单次实例化绘制
+   - 行 ~822: 泛化 radix 排序（key回调，支持tex和z降序）
+   - 行 ~847: sort_instances / instance_run / submit_instance_batch
+   - 行 ~890: sort_state() 不透明/半透明分区 + 排序
+   - 行 ~941: submit_state() 按状态绘制
+   - 行 ~660: present() 公共 swap 封装
+   注意：set_target 函数签名曾被误删，已恢复。
+
+4. third_party/glad/include/glad/glad.h  (+13 行)
+   - 加常量 GL_ELEMENT_ARRAY_BUFFER(0x8893) / GL_STATIC_DRAW(0x88E4)
+   - 加函数声明 glVertexAttribDivisor / glDrawElementsInstanced
+
+5. third_party/glad/src/glad.c  (+6 行)
+   - 加载上述 2 个新 GL 函数
+
+6. CMakeLists.txt  (+17 行)
+   - 行 ~55: zcsr_module(culling)
+   - 行 ~186: test_culling / test_state target
+   - 行 ~200: bench_inst / bench_culling target
+
+【新建文件】
+
+7. include/zcsr/culling.h  (+75) — 视口剔除契约头
+   - zcsr_aabb_t / zcsr_view_t
+   - zcsr_aabb_in_view / zcsr_cull_linear
+   - zcsr_grid_build / zcsr_grid_query / zcsr_view_coverage
+
+8. modules/culling/culling.c  (+106) — 剔除实现（纯CPU无GL无堆）
+
+9. tests/test_culling.c  (+77) — 剔除单元测试（17个ctest之一）
+
+10. tests/test_state.c  (+63) — 状态排序单元测试（17个ctest之一）
+
+11. integration/bench_inst.c  (+111) — 实例化 vs legacy 性能对比
+
+12. integration/bench_culling.c  (+94) — 线性 vs 网格剔除性能对比
+
+================================================================
+ 未跟踪文件（用户自留，未提交）：
+   PROJECT_OVERVIEW.txt / PROJECT_DILEMMA.txt
+
+ 回滚方式：git revert 8b9cef7..118a24f
+================================================================

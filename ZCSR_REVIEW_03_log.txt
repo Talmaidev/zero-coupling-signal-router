@@ -1,0 +1,22 @@
+﻿* 118a24f (HEAD -> claude/image-agent4-tests) Add full state sort: opaque batching + translucent painter's order
+* 1e65085 Add viewport culling: linear + uniform grid
+* 8b9cef7 Add instanced sprite rendering with LSD radix sort
+* d463c69 Texture atlas packing + worst-case benches
+* 1ee97e4 Cross-platform glrender backend + Windows port
+* d6b4d54 (origin/claude/image-agent4-tests) Agent-4: expand image tests (variant modes, bounds, chroma monotonicity) + bake bench
+* e99dfc7 Implement image pipeline backend
+| * a930823 (origin/main, origin/HEAD, main) README: document the landed engine extension + full feature set (#22)
+| * 035d567 Agent-4: expand image tests (variant modes, bounds, chroma monotonicity) + bake bench (#21)
+| * 62b647e Implement image pipeline backend (#19)
+|/  
+* 1f135fb Image pipeline Phase 0: contracts + stub + GL sprite modulation (#18)
+* 9759a9b Implement Linux input extension backend (#17)
+* 3c1b6d0 Implement multi-channel audio mixer logic (#16)
+* ef0dd5a Implement Linux OpenGL renderer backend (#15)
+* 9e13e16 Engine ext Phase 0: contracts + skeletons for GL render / audio mixer / mouse+gamepad input (#14)
+* 56a8e24 [claude] Add official macOS (Cocoa) support (#13)
+* d81c1eb Add signal-driven WAV audio module
+| * e9361ab (origin/codex/gamecore-audio) Agent 5: add audio pool-slot reuse case (start->stop->start) + validated under TSan/ASan
+| * 435e9d3 Add signal-driven WAV audio module
+|/  
+* 3bff964 [codex] Implement texture cache and sprite batch (#11)

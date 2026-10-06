@@ -858,9 +858,10 @@ static void zcsr_gl_radix_by_tex(zcsr_gl_instance* items, size_t count,
     zcsr_gl_radix(items, count, scratch, zcsr_key_tex);
 }
 
-size_t zcsr_sort_instances(zcsr_gl_instance* instances, size_t count, void* temp) {
+size_t zcsr_sort_instances(zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes) {
     size_t runs = 0, i;
     if (!instances || !temp || count == 0) return 0;
+    if (temp_bytes < count * sizeof(zcsr_gl_instance)) return 0;
     zcsr_gl_radix_by_tex(instances, count, temp);
     for (i = 0; i < count; ++i) {
         if (i == 0 || instances[i].tex != instances[i - 1].tex) ++runs;
@@ -893,8 +894,9 @@ void zcsr_gl_submit_instance_batch(zcsr_gl_renderer* r, zcsr_gl_instance* instan
                                    size_t count, void* temp, size_t temp_bytes) {
     size_t runs, i;
     if (!r || !instances || !temp || count == 0) return;
+    if (count > ZCSR_GL_MAX_INSTANCES) return;
     if (temp_bytes < count * sizeof(zcsr_gl_instance)) return;
-    runs = zcsr_sort_instances(instances, count, temp);
+    runs = zcsr_sort_instances(instances, count, temp, temp_bytes);
     for (i = 0; i < runs; ++i) {
         zcsr_gl_texture tex;
         size_t start, len;
@@ -910,11 +912,15 @@ static int zcsr_is_translucent(const zcsr_gl_instance* in) {
            in->mode == (float)ZCSR_MOD_MIX || in->mode == (float)ZCSR_MOD_ADD;
 }
 
-size_t zcsr_sort_state(zcsr_gl_instance* instances, size_t count, void* temp,
+size_t zcsr_sort_state(zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes,
                        size_t* out_opaque) {
     zcsr_gl_instance* scratch = temp;
     size_t i = 0, j = count;
     if (!instances || !temp || count == 0) {
+        if (out_opaque) *out_opaque = 0;
+        return 0;
+    }
+    if (temp_bytes < count * sizeof(zcsr_gl_instance)) {
         if (out_opaque) *out_opaque = 0;
         return 0;
     }
@@ -943,8 +949,9 @@ void zcsr_gl_submit_state(zcsr_gl_renderer* r, zcsr_gl_instance* instances, size
     size_t opaque;
     size_t i;
     if (!r || !instances || !temp || count == 0) return;
+    if (count > ZCSR_GL_MAX_INSTANCES) return;
     if (temp_bytes < count * sizeof(zcsr_gl_instance)) return;
-    zcsr_sort_state(instances, count, temp, &opaque);
+    zcsr_sort_state(instances, count, temp, temp_bytes, &opaque);
 
     /* opaque: draw in texture runs (order irrelevant) */
     i = 0;

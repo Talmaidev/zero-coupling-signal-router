@@ -98,6 +98,7 @@ typedef struct {
     float mode;            /* zcsr_color_mode as float */
     uint32_t tex;          /* CPU-only: texture handle, used for sorting into runs */
     float z;               /* CPU-only: depth/layer; larger = farther, drawn first (painter's) */
+    /* 约束：z 值必须为非 NaN 的有限浮点数。若传入 NaN，排序行为未定义。 */
 } zcsr_gl_instance;        /* 15 float attrs + uint32 + float = 68 bytes; tex/z are CPU-only */
 
 /* Draw `count` instances sharing one bound texture, in one instanced draw call. Instances are
@@ -110,7 +111,7 @@ void zcsr_gl_draw_instances(zcsr_gl_renderer*, zcsr_gl_texture texture,
  * drawing needs one state setup per run. Pure CPU, no heap: `temp` is caller scratch of at least
  * `count * sizeof(zcsr_gl_instance)` bytes. Returns the number of distinct texture runs. After
  * sorting, iterate runs with zcsr_instance_run to get each run's texture/start/count. */
-size_t zcsr_sort_instances(zcsr_gl_instance* instances, size_t count, void* temp);
+size_t zcsr_sort_instances(zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes);
 
 /* Describe one texture run produced by zcsr_sort_instances. `run_index` in 0..return-1.
  * Writes the texture and the [start,start+len) slice of the sorted array. */
@@ -130,7 +131,7 @@ void zcsr_gl_submit_instance_batch(zcsr_gl_renderer*, zcsr_gl_instance* instance
  *   - draw [0, opaque) via texture runs (zcsr_instance_run / zcsr_gl_draw_instances),
  *   - draw [opaque, count) in array order, grouping only adjacent same-texture instances.
  * `temp` is caller scratch (>= count * sizeof instance). */
-size_t zcsr_sort_state(zcsr_gl_instance* instances, size_t count, void* temp,
+size_t zcsr_sort_state(zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes,
                        size_t* out_opaque);
 
 /* Convenience: full state sort + draw. Opaque instances are drawn in texture runs;

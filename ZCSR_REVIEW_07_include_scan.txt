@@ -1,0 +1,9 @@
+﻿C:\Users\chen\Documents\GitHub\zero-coupling-signal-router\modules\glrender\glrender.c:11: #include "glrender_internal.h"
+C:\Users\chen\Documents\GitHub\zero-coupling-signal-router\modules\glrender\glrender.c:13: #include <math.h>
+C:\Users\chen\Documents\GitHub\zero-coupling-signal-router\modules\glrender\glrender.c:14: #include <stddef.h>
+C:\Users\chen\Documents\GitHub\zero-coupling-signal-router\modules\glrender\glrender.c:15: #include <stdint.h>
+C:\Users\chen\Documents\GitHub\zero-coupling-signal-router\modules\glrender\glrender.c:16: #include <string.h> /* memset: zero the ~2.3 MB renderer in place, never via a stack compound literal */
+C:\Users\chen\Documents\GitHub\zero-coupling-signal-router\modules\glrender\glrender.c:19: #include <GL/glxext.h> /* GLX_CONTEXT_*_ARB + 3.3 core profile attributes */
+C:\Users\chen\Documents\GitHub\zero-coupling-signal-router\modules\glrender\glrender_cocoa.m:14: #include "glrender_internal.h"
+C:\Users\chen\Documents\GitHub\zero-coupling-signal-router\modules\glrender\glrender_internal.h:11: #include "zcsr/gl_render.h"
+C:\Users\chen\Documents\GitHub\zero-coupling-signal-router\modules\culling\culling.c:1: #include "zcsr/culling.h"
