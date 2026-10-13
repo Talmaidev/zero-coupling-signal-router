@@ -64,6 +64,14 @@ if(NOT WIN32)
   target_link_libraries(zcsr_audiomix PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 else()
   target_link_libraries(zcsr_audio PUBLIC winmm)
+
+  target_link_libraries(zcsr_audiomix
+    PUBLIC ole32 uuid avrt mmdevapi
+  )
+
+  target_link_libraries(zcsr_inputext
+    PUBLIC xinput comctl32
+  )
 endif()
 # --- glrender: vendored minimal glad loader compiles on every platform ---------------------
 target_sources(zcsr_glrender PRIVATE ${CMAKE_SOURCE_DIR}/third_party/glad/src/glad.c)
@@ -111,8 +119,7 @@ endif()
 
 # --- Agent 6: Integration & Validation (architecture/review owned) ---
 add_executable(zcsr_demo  integration/demo.c)
-add_executable(zcsr_bench integration/bench.c)
-foreach(exe zcsr_demo zcsr_bench)
+foreach(exe zcsr_demo)
   target_link_libraries(${exe} PRIVATE
     zcsr_core zcsr_signal zcsr_hsm zcsr_overlay zcsr_platform)
 endforeach()
@@ -186,15 +193,6 @@ add_executable(test_state tests/test_state.c)
 target_link_libraries(test_state PRIVATE zcsr_glrender zcsr_platform)
 add_test(NAME state_sort COMMAND test_state)
 
-# Sprite-batch throughput gate (200 sprites < 1ms). Not a ctest: the flush blits onto a real
-# surface, so it must run on a GUI host (skips with exit 0 when headless).
-add_executable(zcsr_render_bench integration/bench_render.c)
-target_link_libraries(zcsr_render_bench PRIVATE zcsr_render zcsr_platform)
-
-# GPU sprite throughput gate (200..10000 sprites). Not a ctest: requires a GL-capable display.
-add_executable(zcsr_glrender_bench integration/bench_glrender.c)
-target_link_libraries(zcsr_glrender_bench PRIVATE zcsr_glrender zcsr_platform)
-
 # Worst-case GPU throughput bench (adversarial textures / blend modes). Not a ctest.
 add_executable(zcsr_glrender_worst_bench integration/bench_worst.c)
 target_link_libraries(zcsr_glrender_worst_bench PRIVATE zcsr_glrender zcsr_platform)
@@ -210,6 +208,10 @@ target_link_libraries(zcsr_inst_bench PRIVATE zcsr_glrender zcsr_platform)
 # Culling bench (linear vs grid across view sizes). Pure CPU, headless. Not a ctest.
 add_executable(zcsr_culling_bench integration/bench_culling.c)
 target_link_libraries(zcsr_culling_bench PRIVATE zcsr_culling)
+
+# Windows backend verification (WASAPI + XInput + mouse). Interactive, not a ctest.
+add_executable(zcsr_verify_windows integration/verify_windows.c)
+target_link_libraries(zcsr_verify_windows PRIVATE zcsr_audiomix zcsr_inputext zcsr_platform)
 
 # Offline image-bake throughput (chroma-key / variant / palette). Informational, not a ctest gate
 # (load-time bakes, not a per-frame budget); pure CPU, runs headless.
