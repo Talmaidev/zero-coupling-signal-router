@@ -12,7 +12,16 @@
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
+#include <initguid.h>
 #include <windows.h>
+#include <objbase.h>
+#include <mmdeviceapi.h>
+#include <audioclient.h>
+
+DEFINE_GUID(CLSID_MMDeviceEnumerator, 0xBCDE0395, 0xE52F, 0x467C, 0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E);
+DEFINE_GUID(IID_IMMDeviceEnumerator, 0xA95664D2, 0x9614, 0x4F35, 0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6);
+DEFINE_GUID(IID_IAudioClient, 0x1CB9AD4C, 0xDBFA, 0x4C32, 0xB1, 0x78, 0x2A, 0x69, 0x72, 0x6B, 0x5C, 0x3F);
+DEFINE_GUID(IID_IAudioRenderClient, 0xF294ACFC, 0x3146, 0x4483, 0xA7, 0xBF, 0xAD, 0xDC, 0xA7, 0xC2, 0x60, 0xE2);
 #else
 #include <pthread.h>
 #include <time.h>
@@ -93,6 +102,15 @@ typedef struct {
     zcsr_snd_pcm_writei_fn writei;
     zcsr_snd_pcm_prepare_fn prepare;
     zcsr_snd_pcm_close_fn close;
+#elif defined(_WIN32)
+    IMMDeviceEnumerator* enumerator;
+    IAudioClient* audio_client;
+    IAudioRenderClient* render_client;
+    HANDLE event;
+    UINT32 buffer_frame_count;
+    bool com_initialized;
+    DWORD retry_after_tick;
+    unsigned timeout_count;
 #endif
     bool opened;
 } zcsr_mix_backend;
@@ -374,7 +392,296 @@ static void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsi
         frames -= (unsigned)n;
     }
 }
+#elif defined(_WIN32)
+
+static void zcsr_mix_backend_close(zcsr_mix_backend* b) {
+    if (!b) return;
+
+    if (b->opened && b->audio_client) {
+        (void)b->audio_client->lpVtbl->Stop(b->audio_client);
+    }
+
+    if (b->render_client) {
+        b->render_client->lpVtbl->Release(b->render_client);
+        b->render_client = NULL;
+    }
+
+    if (b->audio_client) {
+        b->audio_client->lpVtbl->Release(b->audio_client);
+        b->audio_client = NULL;
+    }
+
+    if (b->enumerator) {
+        b->enumerator->lpVtbl->Release(b->enumerator);
+        b->enumerator = NULL;
+    }
+
+    if (b->event) {
+        CloseHandle(b->event);
+        b->event = NULL;
+    }
+
+    if (b->com_initialized) {
+        CoUninitialize();
+        b->com_initialized = false;
+    }
+
+    *b = (zcsr_mix_backend){ 0 };
+}
+
+static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
+    HRESULT hr;
+    IMMDevice* device = NULL;
+    WAVEFORMATEX wfx = { 0 };
+
+    if (!b) return;
+
+    *b = (zcsr_mix_backend){ 0 };
+
+    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    if (FAILED(hr)) {
+        b->retry_after_tick = GetTickCount() + (DWORD)1000;
+        return;
+    }
+    b->com_initialized = true;
+
+    hr = CoCreateInstance(
+        &CLSID_MMDeviceEnumerator,
+        NULL,
+        CLSCTX_ALL,
+        &IID_IMMDeviceEnumerator,
+        (void**)&b->enumerator
+    );
+    if (FAILED(hr) || !b->enumerator) goto fail;
+
+    hr = b->enumerator->lpVtbl->GetDefaultAudioEndpoint(
+        b->enumerator,
+        eRender,
+        eConsole,
+        &device
+    );
+    if (FAILED(hr) || !device) goto fail;
+
+    hr = device->lpVtbl->Activate(
+        device,
+        &IID_IAudioClient,
+        CLSCTX_ALL,
+        NULL,
+        (void**)&b->audio_client
+    );
+
+    device->lpVtbl->Release(device);
+    device = NULL;
+
+    if (FAILED(hr) || !b->audio_client) goto fail;
+
+    wfx.wFormatTag = WAVE_FORMAT_PCM;
+    wfx.nChannels = 2;
+    wfx.nSamplesPerSec = ZCSR_MIX_RATE;
+    wfx.wBitsPerSample = 16;
+    wfx.nBlockAlign =
+        (WORD)(wfx.nChannels * wfx.wBitsPerSample / 8);
+    wfx.nAvgBytesPerSec =
+        wfx.nSamplesPerSec * wfx.nBlockAlign;
+    wfx.cbSize = 0;
+
+    hr = b->audio_client->lpVtbl->Initialize(
+        b->audio_client,
+        AUDCLNT_SHAREMODE_SHARED,
+        AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
+        AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
+        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+        1000000,
+        0,
+        &wfx,
+        NULL
+    );
+    if (FAILED(hr)) goto fail;
+
+    b->event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!b->event) goto fail;
+
+    hr = b->audio_client->lpVtbl->SetEventHandle(
+        b->audio_client,
+        b->event
+    );
+    if (FAILED(hr)) goto fail;
+
+    hr = b->audio_client->lpVtbl->GetBufferSize(
+        b->audio_client,
+        &b->buffer_frame_count
+    );
+    if (FAILED(hr) || b->buffer_frame_count == 0) goto fail;
+
+    hr = b->audio_client->lpVtbl->GetService(
+        b->audio_client,
+        &IID_IAudioRenderClient,
+        (void**)&b->render_client
+    );
+    if (FAILED(hr) || !b->render_client) goto fail;
+
+    hr = b->audio_client->lpVtbl->Start(b->audio_client);
+    if (FAILED(hr)) goto fail;
+
+    b->opened = true;
+    b->timeout_count = 0;
+    b->retry_after_tick = 0;
+    return;
+
+fail:
+    if (device) {
+        device->lpVtbl->Release(device);
+        device = NULL;
+    }
+
+    zcsr_mix_backend_close(b);
+
+    b->retry_after_tick = GetTickCount() + (DWORD)1000;
+}
+
+static bool zcsr_mix_backend_reopen(zcsr_mix_backend* b) {
+    if (!b) return false;
+
+    zcsr_mix_backend_close(b);
+    zcsr_mix_backend_open(b);
+
+    return b->opened;
+}
+
+static void zcsr_mix_backend_write(
+    zcsr_mix_backend* b,
+    const int16_t* pcm,
+    unsigned frames ) {
+    unsigned done = 0;
+    bool retried = false;
+
+    if (!b || !pcm || frames == 0) {
+        zcsr_mix_sleep_period();
+        return;
+    }
+
+    if (!b->opened) {
+        DWORD now = GetTickCount();
+
+        if ((LONG)(now - b->retry_after_tick) >= 0) {
+            zcsr_mix_backend_open(b);
+        }
+
+        if (!b->opened) {
+            zcsr_mix_sleep_period();
+            return;
+        }
+    }
+
+    while (done < frames) {
+        DWORD wait_result;
+        HRESULT hr;
+        UINT32 padding = 0;
+        UINT32 available;
+        UINT32 chunk;
+        BYTE* dst = NULL;
+
+        wait_result = WaitForSingleObject(b->event, 20);
+
+        if (wait_result == WAIT_TIMEOUT) {
+            ++b->timeout_count;
+
+            if (b->timeout_count >= 5U) {
+                b->timeout_count = 0;
+
+                if (!retried && zcsr_mix_backend_reopen(b)) {
+                    retried = true;
+                    continue;
+                }
+
+                break;
+            }
+
+            continue;
+        }
+
+        if (wait_result != WAIT_OBJECT_0) {
+            if (!retried && zcsr_mix_backend_reopen(b)) {
+                retried = true;
+                continue;
+            }
+
+            break;
+        }
+
+        b->timeout_count = 0;
+
+        hr = b->audio_client->lpVtbl->GetCurrentPadding(
+            b->audio_client,
+            &padding
+        );
+
+        if (FAILED(hr)) {
+            if (!retried && zcsr_mix_backend_reopen(b)) {
+                retried = true;
+                continue;
+            }
+
+            break;
+        }
+
+        if (padding >= b->buffer_frame_count) {
+            continue;
+        }
+
+        available = b->buffer_frame_count - padding;
+        chunk = (UINT32)(frames - done);
+
+        if (chunk > available) {
+            chunk = available;
+        }
+
+        if (chunk == 0) {
+            continue;
+        }
+
+        hr = b->render_client->lpVtbl->GetBuffer(
+            b->render_client,
+            chunk,
+            &dst
+        );
+
+        if (FAILED(hr) || !dst) {
+            if (!retried && zcsr_mix_backend_reopen(b)) {
+                retried = true;
+                continue;
+            }
+
+            break;
+        }
+
+        memcpy(
+            dst,
+            pcm + (size_t)done * 2U,
+            (size_t)chunk * 2U * sizeof(int16_t)
+        );
+
+        hr = b->render_client->lpVtbl->ReleaseBuffer(
+            b->render_client,
+            chunk,
+            0
+        );
+
+        if (FAILED(hr)) {
+            if (!retried && zcsr_mix_backend_reopen(b)) {
+                retried = true;
+                continue;
+            }
+
+            break;
+        }
+
+        done += (unsigned)chunk;
+    }
+}
+
 #else
+
 static void zcsr_mix_backend_close(zcsr_mix_backend* b) { if (b) *b = (zcsr_mix_backend){ 0 }; }
 static void zcsr_mix_backend_open(zcsr_mix_backend* b) { if (b) b->opened = false; }
 static void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned frames) {
