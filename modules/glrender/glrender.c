@@ -15,7 +15,7 @@
 #include <stdint.h>
 #include <string.h> /* memset: zero the ~2.3 MB renderer in place, never via a stack compound literal */
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 #include <GL/glxext.h> /* GLX_CONTEXT_*_ARB + 3.3 core profile attributes */
 #endif
 

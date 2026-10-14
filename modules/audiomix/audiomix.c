@@ -27,7 +27,7 @@ DEFINE_GUID(IID_IAudioRenderClient, 0xF294ACFC, 0x3146, 0x4483, 0xA7, 0xBF, 0xAD
 #include <time.h>
 #endif
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 #include <dlfcn.h>
 typedef struct _snd_pcm snd_pcm_t;
 typedef long snd_pcm_sframes_t;
@@ -96,7 +96,7 @@ typedef struct {
 } zcsr_mix_cmd;
 
 typedef struct {
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
     void* lib;
     snd_pcm_t* pcm;
     zcsr_snd_pcm_writei_fn writei;
@@ -335,7 +335,7 @@ static bool zcsr_mix_load_wav(zcsr_mixer* m, zcsr_mix_sound* s, const char* path
     return true;
 }
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 static void* zcsr_mix_sym(void* lib, const char* name) {
     return lib ? dlsym(lib, name) : 0;
 }

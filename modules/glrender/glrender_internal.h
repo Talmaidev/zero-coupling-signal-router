@@ -88,7 +88,7 @@ struct zcsr_gl_renderer {
     int inst_uniform_tex;
 
     /* ---- native platform context (exactly one branch compiles) ---- */
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
     Display*   display;
     Window     window;
     GLXContext ctx;
