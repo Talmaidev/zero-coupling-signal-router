@@ -34,6 +34,7 @@ add_library(zcsr_phase0 SHARED
     "${ZCSR_ROOT}/modules/platform/platform.c"
     "${ZCSR_ROOT}/modules/input/input.c"
     "${ZCSR_ROOT}/modules/inputext/inputext.c"
+    "${ZCSR_ROOT}/modules/glrender/glrender.c"
     "${NATIVE_APP_GLUE_DIR}/android_native_app_glue.c"
 )
 
@@ -42,7 +43,12 @@ target_include_directories(zcsr_phase0 PRIVATE
     "${NATIVE_APP_GLUE_DIR}"
 )
 
-target_link_libraries(zcsr_phase0 PRIVATE android log)
+target_link_libraries(zcsr_phase0 PRIVATE
+    android
+    log
+    EGL
+    GLESv3
+)
 
 set_target_properties(zcsr_phase0 PROPERTIES
     OUTPUT_NAME "zcsr_phase0"
