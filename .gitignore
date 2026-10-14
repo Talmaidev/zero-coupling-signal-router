@@ -8,3 +8,5 @@ build-release/
 .cache/
 compile_commands.json
 zcsr_audiomix_test.wav
+
+/android/keystore/
