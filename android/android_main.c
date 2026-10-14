@@ -31,11 +31,14 @@ static union {
 
 static uint8_t zcsr_test_pixels[ZCSR_TEST_TEXTURE_SIZE * ZCSR_TEST_TEXTURE_SIZE * 4];
 static zcsr_gl_sprite zcsr_test_sprites[ZCSR_TEST_SPRITE_COUNT];
+static zcsr_gl_atlas_sprite zcsr_test_atlas_sprites[ZCSR_TEST_SPRITE_COUNT];
 
 typedef struct {
     zcsr_surface* surface;
     zcsr_gl_renderer* renderer;
     zcsr_gl_texture test_texture;
+    int scene;            /* 0=batch, 1=atlas, 2=instanced */
+    uint64_t scene_tick;  /* ns timestamp of last scene switch */
 } zcsr_android_runtime;
 
 static void zcsr_android_stop_gl(zcsr_android_runtime* runtime) {
@@ -200,6 +203,47 @@ static bool zcsr_android_draw_batch_scene(
     return true;
 }
 
+static void zcsr_android_fill_atlas(
+    zcsr_android_runtime* runtime, int width, int height) {
+    static const zcsr_atlas_region regions[4] = {
+        { 0.0f, 0.0f, 0.5f, 0.5f },
+        { 0.5f, 0.0f, 1.0f, 0.5f },
+        { 0.0f, 0.5f, 0.5f, 1.0f },
+        { 0.5f, 0.5f, 1.0f, 1.0f }
+    };
+    size_t i;
+    zcsr_android_fill_batch(runtime, width, height);
+    for (i = 0; i < ZCSR_TEST_SPRITE_COUNT; ++i) {
+        const zcsr_gl_sprite* src = &zcsr_test_sprites[i];
+        zcsr_gl_atlas_sprite* dst = &zcsr_test_atlas_sprites[i];
+        *dst = (zcsr_gl_atlas_sprite){0};
+        dst->atlas = runtime->test_texture;
+        dst->dst = src->dst;
+        dst->rotation = src->rotation;
+        dst->r = src->r; dst->g = src->g; dst->b = src->b; dst->a = src->a;
+        dst->mode = src->mode;
+        dst->amount = src->amount;
+        dst->region = (i < ZCSR_TEST_GRID_COUNT)
+            ? regions[i % 4]
+            : (zcsr_atlas_region){ 0.0f, 0.0f, 1.0f, 1.0f };
+    }
+}
+
+static bool zcsr_android_draw_atlas_scene(
+    zcsr_android_runtime* runtime, int width, int height) {
+    if (!runtime || !runtime->renderer || !runtime->test_texture) return false;
+    zcsr_android_fill_atlas(runtime, width, height);
+    zcsr_android_drain_gl_errors();
+    zcsr_gl_clear(runtime->renderer, 0.03f, 0.03f, 0.06f, 1.0f);
+    zcsr_gl_submit_atlas_batch(
+        runtime->renderer, zcsr_test_atlas_sprites, ZCSR_TEST_SPRITE_COUNT);
+    if (!zcsr_android_check_gl("atlas batch draw")) {
+        LOGE("atlas draw generated GL error"); return false;
+    }
+    LOGI("1C.1 atlas PASS: four UV regions sampled");
+    return true;
+}
+
 static void zcsr_android_start_gl(
     zcsr_android_runtime* runtime, void* native_window) {
     const GLubyte* version;
@@ -304,6 +348,8 @@ void android_main(struct android_app* state) {
     runtime.surface = surface;
     runtime.renderer = 0;
     runtime.test_texture = 0;
+    runtime.scene = 0;
+    runtime.scene_tick = zcsr_clock_now_ns();
 
     state->userData = &runtime;
     state->onAppCmd = zcsr_android_handle_cmd;
@@ -322,7 +368,7 @@ void android_main(struct android_app* state) {
         int events = 0;
 
         int ident = ALooper_pollOnce(
-            -1, 0, &events, (void**)&source);
+            100, 0, &events, (void**)&source);
 
         if (ident == ALOOPER_POLL_ERROR) {
             LOGE("ALooper_pollOnce error; exiting loop");
@@ -331,6 +377,22 @@ void android_main(struct android_app* state) {
 
         if (source) {
             source->process(state, source);
+        }
+
+        /* Scene rotation: every 2 s, re-query size and redraw the next scene. */
+        if (runtime.renderer && runtime.test_texture) {
+            uint64_t now = zcsr_clock_now_ns();
+            if (now - runtime.scene_tick >= 2000000000ull) {
+                int width = 0, height = 0;
+                runtime.scene_tick = now;
+                runtime.scene = (runtime.scene + 1) % 2; /* 1C.1: batch<->atlas */
+                if (zcsr_android_query_egl_size(&width, &height)) {
+                    if (runtime.scene == 0)
+                        (void)zcsr_android_draw_batch_scene(&runtime, width, height);
+                    else
+                        (void)zcsr_android_draw_atlas_scene(&runtime, width, height);
+                }
+            }
         }
     }
 
