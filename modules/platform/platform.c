@@ -5,10 +5,15 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#if defined(__ANDROID__)
+#include <android/native_window.h>
+#endif
 
 struct zcsr_surface {
     bool in_use;
-#if defined(_WIN32)
+#if defined(__ANDROID__)
+    void* native_window;
+#elif defined(_WIN32)
     void* hwnd;
 #elif defined(__linux__)
     void* display;
@@ -40,22 +45,29 @@ static void zcsr_surface_release(zcsr_surface* s) {
 
 #if defined(__ANDROID__)
 zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
+    zcsr_surface* surface;
+    /* Android creates the native window; zcsr creates only a logical handle. */
     (void)title;
     (void)bounds;
-    return 0;
+    surface = zcsr_surface_acquire();
+    if (!surface) return 0;
+    surface->native_window = 0;
+    return surface;
 }
 void zcsr_surface_destroy(zcsr_surface* s) {
+    if (!s || !s->in_use) return;
+    zcsr_surface_detach_native(s);
     zcsr_surface_release(s);
 }
 void* zcsr_surface_native_handle(const zcsr_surface* s) {
-    (void)s;
-    return 0;
+    return (s && s->in_use) ? s->native_window : 0;
 }
 void* zcsr_surface_native_display(const zcsr_surface* s) {
     (void)s;
     return 0;
 }
 void zcsr_surface_pump_events(zcsr_surface* s) {
+    /* Android lifecycle and input events belong to native_app_glue. */
     (void)s;
 }
 #elif defined(__linux__)
@@ -273,3 +285,40 @@ void*         zcsr_surface_native_handle(const zcsr_surface* s)        { (void)s
 void*         zcsr_surface_native_display(const zcsr_surface* s)       { (void)s; return 0; }
 void          zcsr_surface_pump_events(zcsr_surface* s)                { (void)s; }
 #endif
+
+bool zcsr_surface_attach_native(zcsr_surface* s, void* native_window) {
+#if defined(__ANDROID__)
+    ANativeWindow* next;
+    ANativeWindow* previous;
+    if (!s || !s->in_use || !native_window) return false;
+    next = (ANativeWindow*)native_window;
+    previous = (ANativeWindow*)s->native_window;
+    /* Reattaching the same window must not acquire another reference. */
+    if (previous == next) return true;
+    /* Acquire first so replacement cannot drop the old reference too early. */
+    ANativeWindow_acquire(next);
+    s->native_window = next;
+    if (previous) {
+        ANativeWindow_release(previous);
+    }
+    return true;
+#else
+    (void)s;
+    (void)native_window;
+    return false;
+#endif
+}
+
+void zcsr_surface_detach_native(zcsr_surface* s) {
+#if defined(__ANDROID__)
+    ANativeWindow* previous;
+    if (!s || !s->in_use) return;
+    previous = (ANativeWindow*)s->native_window;
+    s->native_window = 0;
+    if (previous) {
+        ANativeWindow_release(previous);
+    }
+#else
+    (void)s;
+#endif
+}

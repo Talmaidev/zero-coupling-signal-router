@@ -1,6 +1,7 @@
 #ifndef ZCSR_PLATFORM_H
 #define ZCSR_PLATFORM_H
-/* Agent 5 — Platform abstraction. Win32 / X11 / Cocoa, auto-selected at compile time.
+#include <stdbool.h>
+/* Agent 5 — Platform abstraction. Win32 / X11 / Cocoa / Android, auto-selected at compile time.
  * NO OpenGL/DirectX/Vulkan. Exactly one backend is selected by the gates below.
  * Implementer: modules/platform. */
 
@@ -28,13 +29,20 @@ typedef struct { int x, y, w, h; } zcsr_rect;
 
 typedef struct zcsr_surface zcsr_surface; /* opaque native top-level surface */
 
-/* Borderless, transparent, always-on-top is requested at create(). NULL on failure. */
+/* Desktop: create the native surface. Android: create a logical handle and attach the
+ * system-provided ANativeWindow separately. Returns NULL on failure. */
 zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds);
 void          zcsr_surface_destroy(zcsr_surface*);
-void*         zcsr_surface_native_handle(const zcsr_surface*); /* HWND / Window / NSWindow* */
+void*         zcsr_surface_native_handle(const zcsr_surface*); /* HWND / X11 Window / NSWindow* / ANativeWindow* */
 /* Backend-owned drawing connection, so renderers (overlay) REUSE it instead of opening their
  * own per frame. X11: the `Display*`. Win32/Cocoa: NULL (the native handle is sufficient). */
 void*         zcsr_surface_native_display(const zcsr_surface*);
 void          zcsr_surface_pump_events(zcsr_surface*);
+/* Android lifecycle binding.
+ * The caller retains its own native-window reference. On success, the platform
+ * module acquires an independent reference. Non-Android backends do not support it.
+ */
+bool zcsr_surface_attach_native(zcsr_surface* surface, void* native_window);
+void zcsr_surface_detach_native(zcsr_surface* surface);
 
 #endif /* ZCSR_PLATFORM_H */
