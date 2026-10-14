@@ -38,7 +38,27 @@ static void zcsr_surface_release(zcsr_surface* s) {
     *s = (zcsr_surface){ 0 };
 }
 
-#if defined(__linux__)
+#if defined(__ANDROID__)
+zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
+    (void)title;
+    (void)bounds;
+    return 0;
+}
+void zcsr_surface_destroy(zcsr_surface* s) {
+    zcsr_surface_release(s);
+}
+void* zcsr_surface_native_handle(const zcsr_surface* s) {
+    (void)s;
+    return 0;
+}
+void* zcsr_surface_native_display(const zcsr_surface* s) {
+    (void)s;
+    return 0;
+}
+void zcsr_surface_pump_events(zcsr_surface* s) {
+    (void)s;
+}
+#elif defined(__linux__)
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>

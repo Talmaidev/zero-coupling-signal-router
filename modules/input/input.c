@@ -121,6 +121,21 @@ static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
     }
 }
 
+#elif defined(__ANDROID__)
+#include <time.h>
+uint64_t zcsr_clock_now_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return ((uint64_t)ts.tv_sec * 1000000000ull) + (uint64_t)ts.tv_nsec;
+}
+static void zcsr_input_platform_init(zcsr_input* input, zcsr_surface* window) {
+    (void)input;
+    (void)window;
+}
+static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
+    (void)input;
+    (void)window;
+}
 #elif defined(__linux__)
 #include <time.h>
 #include <X11/Xlib.h>

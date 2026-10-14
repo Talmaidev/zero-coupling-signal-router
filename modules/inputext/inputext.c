@@ -20,7 +20,7 @@ struct zcsr_input_ext {
     zcsr_pad_state pads[ZCSR_PAD_MAX];
     zcsr_surface* surface;
     bool initialized;
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
     int gamepad_fd[ZCSR_PAD_MAX];
 #elif defined(_WIN32)
     bool mouse_have_pos;
@@ -31,7 +31,7 @@ struct zcsr_input_ext {
 #endif
 };
 
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>

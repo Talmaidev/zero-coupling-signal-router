@@ -8,13 +8,16 @@ typedef enum {
     ZCSR_PLATFORM_UNKNOWN = 0,
     ZCSR_PLATFORM_WINDOWS,
     ZCSR_PLATFORM_LINUX,
-    ZCSR_PLATFORM_MACOS
+    ZCSR_PLATFORM_MACOS,
+    ZCSR_PLATFORM_ANDROID
 } zcsr_platform;
 
 #if defined(_WIN32)
 #  define ZCSR_PLATFORM ZCSR_PLATFORM_WINDOWS
 #elif defined(__APPLE__)
 #  define ZCSR_PLATFORM ZCSR_PLATFORM_MACOS
+#elif defined(__ANDROID__)
+#  define ZCSR_PLATFORM ZCSR_PLATFORM_ANDROID
 #elif defined(__linux__)
 #  define ZCSR_PLATFORM ZCSR_PLATFORM_LINUX
 #else
