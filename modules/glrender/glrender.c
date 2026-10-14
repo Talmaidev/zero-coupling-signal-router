@@ -13,6 +13,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>   /* fprintf: shader/program info-log diagnostics on non-Android */
 #include <string.h> /* memset: zero the ~2.3 MB renderer in place, never via a stack compound literal */
 
 #if defined(__ANDROID__)
@@ -32,6 +33,27 @@
  * Platform-independent GL helpers (glad must already be loaded by zcsr_gl_platform_init)
  * =========================================================================================== */
 
+static void zcsr_gl_log_object_info(
+    const char* label, unsigned int object, bool is_program) {
+    char log[2048];
+    GLsizei length = 0;
+    if (is_program) {
+        glGetProgramInfoLog(object, (GLsizei)sizeof(log), &length, log);
+    } else {
+        glGetShaderInfoLog(object, (GLsizei)sizeof(log), &length, log);
+    }
+    if (length < 0) length = 0;
+    if (length >= (GLsizei)sizeof(log)) length = (GLsizei)sizeof(log) - 1;
+    log[length] = '\0';
+#if defined(__ANDROID__)
+    __android_log_print(ANDROID_LOG_ERROR, "zcsr-gl", "%s: %s",
+        label, log[0] ? log : "(empty info log)");
+#else
+    fprintf(stderr, "zcsr-gl: %s: %s\n",
+        label, log[0] ? log : "(empty info log)");
+#endif
+}
+
 static unsigned int zcsr_gl_compile(unsigned int type, const char* src) {
     unsigned int shader = glCreateShader(type);
     int ok = 0;
@@ -40,6 +62,13 @@ static unsigned int zcsr_gl_compile(unsigned int type, const char* src) {
     glCompileShader(shader);
     glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
     if (!ok) {
+        zcsr_gl_log_object_info(
+            type == GL_VERTEX_SHADER
+                ? "vertex shader compile failed"
+                : type == GL_FRAGMENT_SHADER
+                    ? "fragment shader compile failed"
+                    : "shader compile failed",
+            shader, false);
         glDeleteShader(shader);
         return 0;
     }
@@ -99,6 +128,7 @@ static unsigned int zcsr_gl_make_program(void) {
     glDeleteShader(v);
     glDeleteShader(f);
     if (!ok) {
+        zcsr_gl_log_object_info("sprite program link failed", p, true);
         glDeleteProgram(p);
         return 0;
     }
@@ -165,7 +195,10 @@ static unsigned int zcsr_gl_make_inst_program(void) {
     glGetProgramiv(p, GL_LINK_STATUS, &ok);
     glDeleteShader(v);
     glDeleteShader(f);
-    if (!ok) { glDeleteProgram(p); return 0; }
+    if (!ok) {
+        zcsr_gl_log_object_info("instanced program link failed", p, true);
+        glDeleteProgram(p); return 0;
+    }
     return p;
 }
 
