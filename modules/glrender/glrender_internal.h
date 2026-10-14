@@ -12,7 +12,12 @@
 
 /* Platform system headers must precede the vendored GL loader where the platform's GL headers
  * depend on them (Windows: windows.h before GL/gl.h). */
-#if defined(__linux__)
+#if defined(__ANDROID__)
+#  include <android/native_window.h>
+#  include <EGL/egl.h>
+#  include <EGL/eglext.h>
+#  include <GLES3/gl3.h>
+#elif defined(__linux__) && !defined(__ANDROID__)
 #  include "glad/glad.h"   /* pulls in GL/gl.h first ... */
 #  include <GL/glx.h>      /* ... which glx.h builds on */
 #  include <X11/Xlib.h>
@@ -88,7 +93,12 @@ struct zcsr_gl_renderer {
     int inst_uniform_tex;
 
     /* ---- native platform context (exactly one branch compiles) ---- */
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(__ANDROID__)
+    EGLDisplay display;
+    EGLSurface egl_surface;
+    EGLContext ctx;
+    bool egl_initialized;
+#elif defined(__linux__) && !defined(__ANDROID__)
     Display*   display;
     Window     window;
     GLXContext ctx;

@@ -1,6 +1,8 @@
 #ifndef ZCSR_GL_RENDER_H
 #define ZCSR_GL_RENDER_H
-/* Engine-ext Agent 1 — GPU rendering (OpenGL 3.3 Core). OPTIONAL renderer, beside the existing
+/* Engine-ext Agent 1 — GPU rendering.
+ * Desktop: OpenGL 3.3 Core. Android: OpenGL ES 3.x.
+ * OPTIONAL renderer, beside the existing
  * software/overlay path (which stays unchanged). Implementer: modules/glrender (vendors glad;
  * glad used ONLY inside that module). Includes only shared contracts. No runtime heap: renderer
  * state lives in a caller buffer; GPU memory is the driver's. */
@@ -26,6 +28,9 @@ void              zcsr_gl_destroy(zcsr_gl_renderer*);
 void              zcsr_gl_set_vsync(zcsr_gl_renderer*, bool on);
 /* Swap front/back buffers (present). Call after draw_instances when targeting the window. */
 void              zcsr_gl_present(zcsr_gl_renderer*);
+/* Clear the window back buffer with a solid RGBA color.
+ * Selects the window target; call present() afterwards to display it. */
+void              zcsr_gl_clear(zcsr_gl_renderer*, float r, float g, float b, float a);
 
 /* Upload 8-bit RGBA pixels to a GPU texture. `linear` = linear filter (else nearest). */
 zcsr_gl_texture   zcsr_gl_texture_create(zcsr_gl_renderer*, const uint8_t* rgba, int w, int h);
