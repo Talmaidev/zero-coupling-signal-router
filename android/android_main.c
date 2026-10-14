@@ -32,6 +32,8 @@ static union {
 static uint8_t zcsr_test_pixels[ZCSR_TEST_TEXTURE_SIZE * ZCSR_TEST_TEXTURE_SIZE * 4];
 static zcsr_gl_sprite zcsr_test_sprites[ZCSR_TEST_SPRITE_COUNT];
 static zcsr_gl_atlas_sprite zcsr_test_atlas_sprites[ZCSR_TEST_SPRITE_COUNT];
+static zcsr_gl_instance zcsr_test_instances[ZCSR_TEST_SPRITE_COUNT];
+static zcsr_gl_instance zcsr_test_instance_scratch[ZCSR_TEST_SPRITE_COUNT];
 
 typedef struct {
     zcsr_surface* surface;
@@ -244,6 +246,45 @@ static bool zcsr_android_draw_atlas_scene(
     return true;
 }
 
+static void zcsr_android_fill_instances(
+    zcsr_android_runtime* runtime, int width, int height) {
+    size_t i;
+    zcsr_android_fill_batch(runtime, width, height);
+    for (i = 0; i < ZCSR_TEST_SPRITE_COUNT; ++i) {
+        const zcsr_gl_sprite* src = &zcsr_test_sprites[i];
+        zcsr_gl_instance* dst = &zcsr_test_instances[i];
+        *dst = (zcsr_gl_instance){0};
+        dst->cx = src->dst.x + src->dst.w * 0.5f;
+        dst->cy = src->dst.y + src->dst.h * 0.5f;
+        dst->w = src->dst.w;
+        dst->h = src->dst.h;
+        dst->u0 = 0.0f; dst->v0 = 0.0f;
+        dst->u1 = 1.0f; dst->v1 = 1.0f;
+        dst->r = src->r; dst->g = src->g; dst->b = src->b; dst->a = src->a;
+        dst->rotation = src->rotation;
+        dst->amount = src->amount;
+        dst->mode = (float)src->mode;
+        dst->tex = runtime->test_texture;
+        dst->z = (float)i;
+    }
+}
+
+static bool zcsr_android_draw_instanced_scene(
+    zcsr_android_runtime* runtime, int width, int height) {
+    if (!runtime || !runtime->renderer || !runtime->test_texture) return false;
+    zcsr_android_fill_instances(runtime, width, height);
+    zcsr_android_drain_gl_errors();
+    zcsr_gl_clear(runtime->renderer, 0.03f, 0.03f, 0.06f, 1.0f);
+    zcsr_gl_submit_instance_batch(
+        runtime->renderer, zcsr_test_instances, ZCSR_TEST_SPRITE_COUNT,
+        zcsr_test_instance_scratch, sizeof(zcsr_test_instance_scratch));
+    if (!zcsr_android_check_gl("instanced sprite draw")) {
+        LOGE("instanced draw generated GL error"); return false;
+    }
+    LOGI("1C.2 instanced PASS: 202 instances submitted");
+    return true;
+}
+
 static void zcsr_android_start_gl(
     zcsr_android_runtime* runtime, void* native_window) {
     const GLubyte* version;
@@ -385,12 +426,14 @@ void android_main(struct android_app* state) {
             if (now - runtime.scene_tick >= 2000000000ull) {
                 int width = 0, height = 0;
                 runtime.scene_tick = now;
-                runtime.scene = (runtime.scene + 1) % 2; /* 1C.1: batch<->atlas */
+                runtime.scene = (runtime.scene + 1) % 3; /* 1C.2: batch->atlas->instanced */
                 if (zcsr_android_query_egl_size(&width, &height)) {
                     if (runtime.scene == 0)
                         (void)zcsr_android_draw_batch_scene(&runtime, width, height);
-                    else
+                    else if (runtime.scene == 1)
                         (void)zcsr_android_draw_atlas_scene(&runtime, width, height);
+                    else
+                        (void)zcsr_android_draw_instanced_scene(&runtime, width, height);
                 }
             }
         }
