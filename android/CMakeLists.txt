@@ -35,6 +35,7 @@ add_library(zcsr_phase0 SHARED
     "${ZCSR_ROOT}/modules/input/input.c"
     "${ZCSR_ROOT}/modules/inputext/inputext.c"
     "${ZCSR_ROOT}/modules/glrender/glrender.c"
+    "${ZCSR_ROOT}/modules/audiomix/audiomix.c"
     "${NATIVE_APP_GLUE_DIR}/android_native_app_glue.c"
 )
 
@@ -48,6 +49,8 @@ target_link_libraries(zcsr_phase0 PRIVATE
     log
     EGL
     GLESv3
+    dl
+    m
 )
 
 set_target_properties(zcsr_phase0 PROPERTIES
