@@ -6,11 +6,15 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "zcsr/platform.h"
 #include "zcsr/clock.h"
 #include "zcsr/gl_render.h"
+#include "zcsr/audio_mix.h"
+
+#include <math.h>
 
 #define LOGI(...) ((void)__android_log_print(ANDROID_LOG_INFO, "zcsr", __VA_ARGS__))
 #define LOGE(...) ((void)__android_log_print(ANDROID_LOG_ERROR, "zcsr", __VA_ARGS__))
@@ -39,6 +43,8 @@ typedef struct {
     zcsr_surface* surface;
     zcsr_gl_renderer* renderer;
     zcsr_gl_texture test_texture;
+    zcsr_mixer* mixer;
+    int audio_channel;
     int scene;            /* 0=batch, 1=atlas, 2=instanced */
     uint64_t scene_tick;  /* ns timestamp of last scene switch */
 } zcsr_android_runtime;
@@ -347,6 +353,122 @@ static void zcsr_android_start_gl(
     }
 }
 
+#define ZCSR_AUDIO_TEST_RATE 44100U
+#define ZCSR_AUDIO_TEST_FRAMES 13230U /* 300 ms */
+
+static bool zcsr_android_write_u16le(FILE* f, uint16_t value) {
+    unsigned char b[2];
+    b[0] = (unsigned char)(value & 0xffU);
+    b[1] = (unsigned char)(value >> 8);
+    return fwrite(b, 1, sizeof b, f) == sizeof b;
+}
+
+static bool zcsr_android_write_u32le(FILE* f, uint32_t value) {
+    unsigned char b[4];
+    b[0] = (unsigned char)(value & 0xffU);
+    b[1] = (unsigned char)((value >> 8) & 0xffU);
+    b[2] = (unsigned char)((value >> 16) & 0xffU);
+    b[3] = (unsigned char)(value >> 24);
+    return fwrite(b, 1, sizeof b, f) == sizeof b;
+}
+
+static bool zcsr_android_create_beep_wav(const char* path) {
+    FILE* f;
+    const uint32_t data_bytes = ZCSR_AUDIO_TEST_FRAMES * 4U;
+    bool ok = true;
+
+    if (!path) return false;
+    f = fopen(path, "wb");
+    if (!f) return false;
+
+    ok = fwrite("RIFF", 1, 4, f) == 4 &&
+         zcsr_android_write_u32le(f, 36U + data_bytes) &&
+         fwrite("WAVEfmt ", 1, 8, f) == 8 &&
+         zcsr_android_write_u32le(f, 16U) &&
+         zcsr_android_write_u16le(f, 1U) &&       /* PCM */
+         zcsr_android_write_u16le(f, 2U) &&       /* stereo */
+         zcsr_android_write_u32le(f, ZCSR_AUDIO_TEST_RATE) &&
+         zcsr_android_write_u32le(f, ZCSR_AUDIO_TEST_RATE * 4U) &&
+         zcsr_android_write_u16le(f, 4U) &&       /* block align */
+         zcsr_android_write_u16le(f, 16U) &&
+         fwrite("data", 1, 4, f) == 4 &&
+         zcsr_android_write_u32le(f, data_bytes);
+
+    for (uint32_t i = 0; ok && i < ZCSR_AUDIO_TEST_FRAMES; ++i) {
+        float envelope = 1.0f;
+        float phase;
+        int16_t sample;
+        unsigned char b[2];
+
+        if (i < 441U) envelope = (float)i / 441.0f;
+        if (i >= ZCSR_AUDIO_TEST_FRAMES - 441U) {
+            float fade = (float)(ZCSR_AUDIO_TEST_FRAMES - i) / 441.0f;
+            if (fade < envelope) envelope = fade;
+        }
+
+        phase = 6.2831853071795864769f * 440.0f *
+                (float)i / (float)ZCSR_AUDIO_TEST_RATE;
+        sample = (int16_t)(sinf(phase) * 5000.0f * envelope);
+        b[0] = (unsigned char)((uint16_t)sample & 0xffU);
+        b[1] = (unsigned char)(((uint16_t)sample >> 8) & 0xffU);
+        if (fwrite(b, 1, 2, f) != 2 || fwrite(b, 1, 2, f) != 2) {
+            ok = false;
+            break;
+        }
+    }
+
+    if (fclose(f) != 0) ok = false;
+    if (!ok) (void)remove(path);
+    return ok;
+}
+
+static void zcsr_android_start_audio_demo(
+    zcsr_android_runtime* runtime, struct android_app* state) {
+    char path[512];
+    int written;
+    bool registered;
+
+    if (!runtime || !state || !state->activity ||
+        !state->activity->internalDataPath) {
+        LOGE("1D audio: app-private path unavailable");
+        return;
+    }
+
+    runtime->mixer = zcsr_mix_start();
+    if (!runtime->mixer) {
+        LOGE("1D audio: zcsr_mix_start failed (AAudio unavailable or stream open failed)");
+        return;
+    }
+
+    written = snprintf(path, sizeof path, "%s/zcsr_1d_beep.wav",
+                       state->activity->internalDataPath);
+    if (written <= 0 || (size_t)written >= sizeof path) {
+        LOGE("1D audio: WAV path too long");
+        return;
+    }
+
+    if (!zcsr_android_create_beep_wav(path)) {
+        LOGE("1D audio: failed to generate WAV");
+        return;
+    }
+
+    registered = zcsr_mix_register_wav(runtime->mixer, "zcsr_1d_beep", path);
+    (void)remove(path); /* WAV samples have been copied into the mixer pool. */
+    if (!registered) {
+        LOGE("1D audio: WAV registration failed");
+        return;
+    }
+
+    runtime->audio_channel = zcsr_mix_play(
+        runtime->mixer, "zcsr_1d_beep", 0.8f, false);
+    if (runtime->audio_channel < 0) {
+        LOGE("1D audio: play request failed");
+        return;
+    }
+
+    LOGI("1D audio: WAV registered; play channel=%d", runtime->audio_channel);
+}
+
 static void zcsr_android_handle_cmd(struct android_app* state, int32_t cmd) {
     zcsr_android_runtime* runtime;
 
@@ -389,6 +511,8 @@ void android_main(struct android_app* state) {
     runtime.surface = surface;
     runtime.renderer = 0;
     runtime.test_texture = 0;
+    runtime.mixer = 0;
+    runtime.audio_channel = -1;
     runtime.scene = 0;
     runtime.scene_tick = zcsr_clock_now_ns();
 
@@ -398,6 +522,8 @@ void android_main(struct android_app* state) {
     LOGI("surface_create=%p", (void*)surface);
     LOGI("clock_now_ns=%llu",
          (unsigned long long)zcsr_clock_now_ns());
+
+    zcsr_android_start_audio_demo(&runtime, state);
 
     /* Cover the case where a window is already available. */
     if (state->window) {
@@ -418,6 +544,15 @@ void android_main(struct android_app* state) {
 
         if (source) {
             source->process(state, source);
+        }
+
+        if (runtime.mixer) {
+            int finished[ZCSR_MIX_CHANNELS];
+            size_t count = zcsr_mix_poll_finished(
+                runtime.mixer, finished, ZCSR_MIX_CHANNELS);
+            for (size_t i = 0; i < count; ++i) {
+                LOGI("1D audio: audio_finished channel=%d", finished[i]);
+            }
         }
 
         /* Scene rotation: every 2 s, re-query size and redraw the next scene. */
@@ -441,6 +576,13 @@ void android_main(struct android_app* state) {
 
     /* Free GL/EGL resources while the attached native window is still valid. */
     zcsr_android_stop_gl(&runtime);
+
+    if (runtime.mixer) {
+        zcsr_mix_stop(runtime.mixer);
+        runtime.mixer = 0;
+        LOGI("1D audio: mixer stopped");
+    }
+
     zcsr_surface_detach_native(surface);
 
     state->onAppCmd = 0;

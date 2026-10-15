@@ -10,7 +10,12 @@
 #include <stdio.h>
 #include <string.h>
 
-#if defined(_WIN32)
+#if defined(__ANDROID__)
+#include <aaudio/AAudio.h>
+#include <dlfcn.h>
+#include <pthread.h>
+#include <time.h>
+#elif defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <initguid.h>
 #include <windows.h>
@@ -46,6 +51,52 @@ typedef union {
     zcsr_snd_pcm_close_fn close;
     zcsr_snd_config_update_free_global_fn config_free_global;
 } zcsr_alsa_sym;
+#endif
+
+#if defined(__ANDROID__)
+typedef aaudio_result_t (*zcsr_aaudio_create_builder_fn)(AAudioStreamBuilder**);
+typedef void (*zcsr_aaudio_builder_direction_fn)(AAudioStreamBuilder*, aaudio_direction_t);
+typedef void (*zcsr_aaudio_builder_format_fn)(AAudioStreamBuilder*, aaudio_format_t);
+typedef void (*zcsr_aaudio_builder_int_fn)(AAudioStreamBuilder*, int32_t);
+typedef void (*zcsr_aaudio_builder_performance_fn)(AAudioStreamBuilder*, aaudio_performance_mode_t);
+typedef void (*zcsr_aaudio_builder_sharing_fn)(AAudioStreamBuilder*, aaudio_sharing_mode_t);
+typedef void (*zcsr_aaudio_data_callback_set_fn)(
+    AAudioStreamBuilder*, AAudioStream_dataCallback, void*);
+typedef aaudio_result_t (*zcsr_aaudio_open_stream_fn)(AAudioStreamBuilder*, AAudioStream**);
+typedef void (*zcsr_aaudio_delete_builder_fn)(AAudioStreamBuilder*);
+typedef aaudio_result_t (*zcsr_aaudio_stream_action_fn)(AAudioStream*);
+typedef aaudio_result_t (*zcsr_aaudio_close_stream_fn)(AAudioStream*);
+typedef union {
+    void* obj;
+    zcsr_aaudio_create_builder_fn create_builder;
+    zcsr_aaudio_builder_direction_fn set_direction;
+    zcsr_aaudio_builder_format_fn set_format;
+    zcsr_aaudio_builder_int_fn set_channel_count;
+    zcsr_aaudio_builder_int_fn set_sample_rate;
+    zcsr_aaudio_builder_performance_fn set_performance_mode;
+    zcsr_aaudio_builder_sharing_fn set_sharing_mode;
+    zcsr_aaudio_data_callback_set_fn set_data_callback;
+    zcsr_aaudio_open_stream_fn open_stream;
+    zcsr_aaudio_delete_builder_fn delete_builder;
+    zcsr_aaudio_stream_action_fn request_start;
+    zcsr_aaudio_stream_action_fn request_stop;
+    zcsr_aaudio_close_stream_fn close_stream;
+} zcsr_aaudio_sym;
+typedef struct {
+    zcsr_aaudio_create_builder_fn create_builder;
+    zcsr_aaudio_builder_direction_fn set_direction;
+    zcsr_aaudio_builder_format_fn set_format;
+    zcsr_aaudio_builder_int_fn set_channel_count;
+    zcsr_aaudio_builder_int_fn set_sample_rate;
+    zcsr_aaudio_builder_performance_fn set_performance_mode;
+    zcsr_aaudio_builder_sharing_fn set_sharing_mode;
+    zcsr_aaudio_data_callback_set_fn set_data_callback;
+    zcsr_aaudio_open_stream_fn open_stream;
+    zcsr_aaudio_delete_builder_fn delete_builder;
+    zcsr_aaudio_stream_action_fn request_start;
+    zcsr_aaudio_stream_action_fn request_stop;
+    zcsr_aaudio_close_stream_fn close_stream;
+} zcsr_aaudio_api;
 #endif
 
 enum {
@@ -96,7 +147,13 @@ typedef struct {
 } zcsr_mix_cmd;
 
 typedef struct {
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(__ANDROID__)
+    void* lib;
+    AAudioStream* stream;
+    zcsr_mixer* owner;
+    zcsr_aaudio_api api;
+    bool stream_started;
+#elif defined(__linux__) && !defined(__ANDROID__)
     void* lib;
     snd_pcm_t* pcm;
     zcsr_snd_pcm_writei_fn writei;
@@ -130,6 +187,14 @@ struct zcsr_mixer {
     atomic_uint finished_head;
     atomic_uint finished_tail;
     int16_t mix_buffer[ZCSR_MIX_PERIOD_FRAMES * 2];
+#if defined(__ANDROID__)
+    /* SPSC PCM ring: mixer thread is producer, AAudio callback is consumer. */
+    atomic_uint pcm_head;
+    atomic_uint pcm_tail;
+    atomic_bool pcm_prefilled;
+    atomic_uint pcm_underruns;
+    int16_t pcm_ring[4096U * 2U];
+#endif
     zcsr_mix_backend backend;
 #if defined(_WIN32)
     HANDLE thread;
@@ -335,7 +400,150 @@ static bool zcsr_mix_load_wav(zcsr_mixer* m, zcsr_mix_sound* s, const char* path
     return true;
 }
 
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(__ANDROID__)
+enum { ZCSR_PCM_RING_FRAMES = 4096U, ZCSR_PCM_PREFILL_FRAMES = 2048U };
+
+static zcsr_aaudio_sym zcsr_mix_aaudio_sym(void* lib, const char* name) {
+    zcsr_aaudio_sym sym;
+    sym.obj = lib ? dlsym(lib, name) : 0;
+    return sym;
+}
+
+static aaudio_data_callback_result_t zcsr_mix_aaudio_callback(
+    AAudioStream* stream, void* user_data, void* audio_data, int32_t num_frames) {
+    zcsr_mixer* m = (zcsr_mixer*)user_data;
+    int16_t* out = (int16_t*)audio_data;
+    unsigned head;
+    unsigned tail;
+    int32_t frame;
+    bool underrun = false;
+    (void)stream;
+    if (!m || !out || num_frames <= 0) return AAUDIO_CALLBACK_RESULT_STOP;
+
+    head = atomic_load_explicit(&m->pcm_head, memory_order_relaxed);
+    for (frame = 0; frame < num_frames; ++frame) {
+        tail = atomic_load_explicit(&m->pcm_tail, memory_order_acquire);
+        if (head != tail) {
+            unsigned slot = head & (ZCSR_PCM_RING_FRAMES - 1U);
+            out[(size_t)frame * 2U] = m->pcm_ring[(size_t)slot * 2U];
+            out[(size_t)frame * 2U + 1U] = m->pcm_ring[(size_t)slot * 2U + 1U];
+            ++head;
+        } else {
+            out[(size_t)frame * 2U] = 0;
+            out[(size_t)frame * 2U + 1U] = 0;
+            underrun = true;
+        }
+    }
+    atomic_store_explicit(&m->pcm_head, head, memory_order_release);
+    if (underrun) atomic_fetch_add_explicit(&m->pcm_underruns, 1U, memory_order_relaxed);
+    return AAUDIO_CALLBACK_RESULT_CONTINUE;
+}
+
+static bool zcsr_mix_android_open(zcsr_mixer* m) {
+    zcsr_mix_backend* b;
+    AAudioStreamBuilder* builder = 0;
+    aaudio_result_t result;
+    if (!m) return false;
+    b = &m->backend;
+    *b = (zcsr_mix_backend){ 0 };
+    b->lib = dlopen("libaaudio.so", RTLD_NOW | RTLD_LOCAL);
+    if (!b->lib) return false;
+
+#define ZCSR_LOAD_AAUDIO(field, symbol, member) \
+    do { b->api.field = zcsr_mix_aaudio_sym(b->lib, symbol).member; \
+         if (!b->api.field) goto fail; } while (0)
+    ZCSR_LOAD_AAUDIO(create_builder, "AAudio_createStreamBuilder", create_builder);
+    ZCSR_LOAD_AAUDIO(set_direction, "AAudioStreamBuilder_setDirection", set_direction);
+    ZCSR_LOAD_AAUDIO(set_format, "AAudioStreamBuilder_setFormat", set_format);
+    ZCSR_LOAD_AAUDIO(set_channel_count, "AAudioStreamBuilder_setChannelCount", set_channel_count);
+    ZCSR_LOAD_AAUDIO(set_sample_rate, "AAudioStreamBuilder_setSampleRate", set_sample_rate);
+    ZCSR_LOAD_AAUDIO(set_performance_mode, "AAudioStreamBuilder_setPerformanceMode", set_performance_mode);
+    ZCSR_LOAD_AAUDIO(set_sharing_mode, "AAudioStreamBuilder_setSharingMode", set_sharing_mode);
+    ZCSR_LOAD_AAUDIO(set_data_callback, "AAudioStreamBuilder_setDataCallback", set_data_callback);
+    ZCSR_LOAD_AAUDIO(open_stream, "AAudioStreamBuilder_openStream", open_stream);
+    ZCSR_LOAD_AAUDIO(delete_builder, "AAudioStreamBuilder_delete", delete_builder);
+    ZCSR_LOAD_AAUDIO(request_start, "AAudioStream_requestStart", request_start);
+    ZCSR_LOAD_AAUDIO(request_stop, "AAudioStream_requestStop", request_stop);
+    ZCSR_LOAD_AAUDIO(close_stream, "AAudioStream_close", close_stream);
+#undef ZCSR_LOAD_AAUDIO
+
+    result = b->api.create_builder(&builder);
+    if (result != AAUDIO_OK || !builder) goto fail;
+    b->api.set_direction(builder, AAUDIO_DIRECTION_OUTPUT);
+    b->api.set_format(builder, AAUDIO_FORMAT_PCM_I16);
+    b->api.set_channel_count(builder, 2);
+    b->api.set_sample_rate(builder, ZCSR_MIX_RATE);
+    b->api.set_performance_mode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    b->api.set_sharing_mode(builder, AAUDIO_SHARING_MODE_SHARED);
+    b->api.set_data_callback(builder, zcsr_mix_aaudio_callback, m);
+    result = b->api.open_stream(builder, &b->stream);
+    b->api.delete_builder(builder);
+    builder = 0;
+    if (result != AAUDIO_OK || !b->stream) goto fail;
+    b->owner = m;
+    b->opened = true;
+    return true;
+
+fail:
+    if (builder && b->api.delete_builder) b->api.delete_builder(builder);
+    if (b->stream && b->api.close_stream) {
+        (void)b->api.close_stream(b->stream);
+        b->stream = 0;
+    }
+    if (b->lib) dlclose(b->lib);
+    *b = (zcsr_mix_backend){ 0 };
+    return false;
+}
+
+static void zcsr_mix_backend_close(zcsr_mix_backend* b) {
+    if (!b) return;
+    if (b->stream && b->stream_started && b->api.request_stop)
+        (void)b->api.request_stop(b->stream);
+    if (b->stream && b->api.close_stream)
+        (void)b->api.close_stream(b->stream);
+    b->stream = 0;
+    if (b->lib) dlclose(b->lib);
+    *b = (zcsr_mix_backend){ 0 };
+}
+
+static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
+    /* AAudio stream is opened by zcsr_mix_start before the mixer thread is created. */
+    (void)b;
+}
+
+static void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned frames) {
+    zcsr_mixer* m;
+    unsigned done = 0;
+    if (!b || !pcm || !(m = b->owner)) return;
+    while (done < frames && atomic_load_explicit(&m->running, memory_order_acquire)) {
+        unsigned head = atomic_load_explicit(&m->pcm_head, memory_order_acquire);
+        unsigned tail = atomic_load_explicit(&m->pcm_tail, memory_order_relaxed);
+        unsigned used = tail - head;
+        unsigned free_frames = used < ZCSR_PCM_RING_FRAMES
+            ? ZCSR_PCM_RING_FRAMES - used : 0U;
+        unsigned chunk = frames - done;
+        if (chunk > free_frames) chunk = free_frames;
+        if (chunk == 0U) {
+            struct timespec ts = { 0, 1000000L };
+            (void)nanosleep(&ts, 0);
+            continue;
+        }
+        for (unsigned i = 0; i < chunk; ++i) {
+            unsigned slot = (tail + i) & (ZCSR_PCM_RING_FRAMES - 1U);
+            m->pcm_ring[(size_t)slot * 2U] = pcm[(size_t)(done + i) * 2U];
+            m->pcm_ring[(size_t)slot * 2U + 1U] = pcm[(size_t)(done + i) * 2U + 1U];
+        }
+        tail += chunk;
+        atomic_store_explicit(&m->pcm_tail, tail, memory_order_release);
+        done += chunk;
+        if (tail - atomic_load_explicit(&m->pcm_head, memory_order_acquire)
+                >= ZCSR_PCM_PREFILL_FRAMES) {
+            atomic_store_explicit(&m->pcm_prefilled, true, memory_order_release);
+        }
+    }
+}
+
+#elif defined(__linux__) && !defined(__ANDROID__)
 static void* zcsr_mix_sym(void* lib, const char* name) {
     return lib ? dlsym(lib, name) : 0;
 }
@@ -769,7 +977,9 @@ static void* zcsr_mix_thread_main(void* arg)
         zcsr_mix_backend_write(&m->backend, m->mix_buffer, ZCSR_MIX_PERIOD_FRAMES);
     }
     zcsr_mix_drain_commands(m);
+#if !defined(__ANDROID__)
     zcsr_mix_backend_close(&m->backend);
+#endif
 #if defined(_WIN32)
     return 0;
 #else
@@ -783,11 +993,35 @@ zcsr_mixer* zcsr_mix_start(void) {
         if (m->in_use) continue;
         memset(m, 0, sizeof(*m));
         m->in_use = true;
-        atomic_store(&m->running, true);
+        atomic_init(&m->running, true);
+        atomic_init(&m->cmd_head, 0U);
+        atomic_init(&m->cmd_tail, 0U);
+        atomic_init(&m->finished_head, 0U);
+        atomic_init(&m->finished_tail, 0U);
+#if defined(__ANDROID__)
+        atomic_init(&m->pcm_head, 0U);
+        atomic_init(&m->pcm_tail, 0U);
+        atomic_init(&m->pcm_prefilled, false);
+        atomic_init(&m->pcm_underruns, 0U);
+        for (int c = 0; c < ZCSR_MIX_CHANNELS; ++c) {
+            atomic_init(&m->channels[c].state, ZCSR_MIX_CH_FREE);
+            m->channels[c].sound = -1;
+        }
+        if (!atomic_is_lock_free(&m->pcm_head) ||
+            !atomic_is_lock_free(&m->pcm_tail) ||
+            !atomic_is_lock_free(&m->pcm_prefilled) ||
+            !atomic_is_lock_free(&m->pcm_underruns) ||
+            !zcsr_mix_android_open(m)) {
+            zcsr_mix_backend_close(&m->backend);
+            memset(m, 0, sizeof(*m));
+            return 0;
+        }
+#else
         for (int c = 0; c < ZCSR_MIX_CHANNELS; ++c) {
             atomic_store(&m->channels[c].state, ZCSR_MIX_CH_FREE);
             m->channels[c].sound = -1;
         }
+#endif
 #if defined(_WIN32)
         m->thread = CreateThread(0, 0, zcsr_mix_thread_main, m, 0, 0);
         m->thread_started = m->thread != 0;
@@ -795,9 +1029,34 @@ zcsr_mixer* zcsr_mix_start(void) {
         m->thread_started = pthread_create(&m->thread, 0, zcsr_mix_thread_main, m) == 0;
 #endif
         if (!m->thread_started) {
+#if defined(__ANDROID__)
+            atomic_store_explicit(&m->running, false, memory_order_release);
+            zcsr_mix_backend_close(&m->backend);
+#endif
             memset(m, 0, sizeof(*m));
             return 0;
         }
+#if defined(__ANDROID__)
+        {
+            unsigned tries = 0;
+            while (!atomic_load_explicit(&m->pcm_prefilled, memory_order_acquire) &&
+                   atomic_load_explicit(&m->running, memory_order_acquire) &&
+                   tries++ < 200U) {
+                zcsr_mix_sleep_period();
+            }
+            if (!atomic_load_explicit(&m->pcm_prefilled, memory_order_acquire) ||
+                !m->backend.stream ||
+                m->backend.api.request_start(m->backend.stream) != AAUDIO_OK) {
+                atomic_store_explicit(&m->running, false, memory_order_release);
+                pthread_join(m->thread, 0);
+                m->thread_started = false;
+                zcsr_mix_backend_close(&m->backend);
+                memset(m, 0, sizeof(*m));
+                return 0;
+            }
+            m->backend.stream_started = true;
+        }
+#endif
         g_active_mixer = m;
         return m;
     }
@@ -815,6 +1074,10 @@ void zcsr_mix_stop(zcsr_mixer* m) {
         pthread_join(m->thread, 0);
 #endif
     }
+#if defined(__ANDROID__)
+    /* Thread is joined before stream teardown and dlclose. */
+    zcsr_mix_backend_close(&m->backend);
+#endif
     if (g_active_mixer == m) g_active_mixer = 0;
     memset(m, 0, sizeof(*m));
 }
