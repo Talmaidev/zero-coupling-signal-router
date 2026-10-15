@@ -13,6 +13,8 @@
 #include "zcsr/clock.h"
 #include "zcsr/gl_render.h"
 #include "zcsr/audio_mix.h"
+#include "zcsr/input_ext.h"
+#include "zcsr/input_ext_android.h"
 
 #include <math.h>
 
@@ -47,6 +49,13 @@ typedef struct {
     int audio_channel;
     int scene;            /* 0=batch, 1=atlas, 2=instanced */
     uint64_t scene_tick;  /* ns timestamp of last scene switch */
+    zcsr_input_ext* input_ext;
+    union {
+        max_align_t alignment;
+        unsigned char bytes[256];
+    } input_storage;
+    zcsr_pad_state last_logged_pads[ZCSR_PAD_MAX];
+    bool pad_log_initialized;
 } zcsr_android_runtime;
 
 static void zcsr_android_stop_gl(zcsr_android_runtime* runtime) {
@@ -469,6 +478,15 @@ static void zcsr_android_start_audio_demo(
     LOGI("1D audio: WAV registered; play channel=%d", runtime->audio_channel);
 }
 
+static int32_t zcsr_android_handle_input(
+    struct android_app* state, AInputEvent* event) {
+    zcsr_android_runtime* runtime;
+    if (!state || !event) return 0;
+    runtime = (zcsr_android_runtime*)state->userData;
+    if (!runtime || !runtime->input_ext) return 0;
+    return zcsr_input_ext_android_event(runtime->input_ext, event);
+}
+
 static void zcsr_android_handle_cmd(struct android_app* state, int32_t cmd) {
     zcsr_android_runtime* runtime;
 
@@ -484,10 +502,19 @@ static void zcsr_android_handle_cmd(struct android_app* state, int32_t cmd) {
         break;
 
     case APP_CMD_TERM_WINDOW:
+        if (runtime->input_ext) {
+            zcsr_input_ext_android_reset(runtime->input_ext);
+        }
         /* EGL surface/context must go away before ANativeWindow is detached. */
         zcsr_android_stop_gl(runtime);
         zcsr_surface_detach_native(runtime->surface);
         LOGI("surface detached");
+        break;
+
+    case APP_CMD_LOST_FOCUS:
+        if (runtime->input_ext) {
+            zcsr_input_ext_android_reset(runtime->input_ext);
+        }
         break;
 
     default:
@@ -498,7 +525,7 @@ static void zcsr_android_handle_cmd(struct android_app* state, int32_t cmd) {
 void android_main(struct android_app* state) {
     zcsr_rect bounds = {0, 0, 100, 100};
     zcsr_surface* surface;
-    zcsr_android_runtime runtime;
+    zcsr_android_runtime runtime = { 0 };
 
     LOGI("android boot ok");
 
@@ -509,15 +536,22 @@ void android_main(struct android_app* state) {
     }
 
     runtime.surface = surface;
-    runtime.renderer = 0;
-    runtime.test_texture = 0;
-    runtime.mixer = 0;
     runtime.audio_channel = -1;
-    runtime.scene = 0;
     runtime.scene_tick = zcsr_clock_now_ns();
 
     state->userData = &runtime;
     state->onAppCmd = zcsr_android_handle_cmd;
+
+    runtime.input_ext = zcsr_input_ext_init(
+        runtime.input_storage.bytes,
+        sizeof(runtime.input_storage.bytes));
+    if (runtime.input_ext) {
+        state->onInputEvent = zcsr_android_handle_input;
+        LOGI("1E input extension initialized (sizeof storage=%zu)",
+             sizeof(runtime.input_storage.bytes));
+    } else {
+        LOGE("1E input extension init failed; input disabled");
+    }
 
     LOGI("surface_create=%p", (void*)surface);
     LOGI("clock_now_ns=%llu",
@@ -544,6 +578,31 @@ void android_main(struct android_app* state) {
 
         if (source) {
             source->process(state, source);
+        }
+
+        if (runtime.input_ext) {
+            int i;
+            zcsr_input_ext_pump(runtime.input_ext, runtime.surface);
+            {
+                zcsr_touch_state t = zcsr_input_ext_touch(runtime.input_ext);
+                if (t.pressed || t.released || t.dx != 0.0f || t.dy != 0.0f) {
+                    LOGI("1E touch: x=%.1f y=%.1f dx=%.1f dy=%.1f active=%d pressed=%d released=%d",
+                         t.x, t.y, t.dx, t.dy,
+                         (int)t.active, (int)t.pressed, (int)t.released);
+                }
+            }
+            for (i = 0; i < ZCSR_PAD_MAX; ++i) {
+                zcsr_pad_state p = zcsr_input_ext_pad(runtime.input_ext, i);
+                if (!runtime.pad_log_initialized ||
+                    memcmp(&p, &runtime.last_logged_pads[i], sizeof(p)) != 0) {
+                    if (p.connected) {
+                        LOGI("1E pad[%d]: buttons=0x%04x lx=%.2f ly=%.2f rx=%.2f ry=%.2f lt=%.2f rt=%.2f",
+                             i, p.buttons, p.lx, p.ly, p.rx, p.ry, p.lt, p.rt);
+                    }
+                    runtime.last_logged_pads[i] = p;
+                }
+            }
+            runtime.pad_log_initialized = true;
         }
 
         if (runtime.mixer) {
@@ -575,6 +634,11 @@ void android_main(struct android_app* state) {
     }
 
     /* Free GL/EGL resources while the attached native window is still valid. */
+    if (runtime.input_ext) {
+        zcsr_input_ext_shutdown(runtime.input_ext);
+        runtime.input_ext = 0;
+    }
+    state->onInputEvent = 0;
     zcsr_android_stop_gl(&runtime);
 
     if (runtime.mixer) {
