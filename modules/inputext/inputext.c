@@ -20,7 +20,12 @@ struct zcsr_input_ext {
     zcsr_pad_state pads[ZCSR_PAD_MAX];
     zcsr_surface* surface;
     bool initialized;
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(__ANDROID__)
+    zcsr_touch_state touch;
+    zcsr_touch_state touch_pending;
+    int32_t touch_pointer_id;
+    int32_t pad_device_id[ZCSR_PAD_MAX];
+#elif defined(__linux__) && !defined(__ANDROID__)
     int gamepad_fd[ZCSR_PAD_MAX];
 #elif defined(_WIN32)
     bool mouse_have_pos;
@@ -31,7 +36,204 @@ struct zcsr_input_ext {
 #endif
 };
 
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(__ANDROID__)
+#include <android/input.h>
+#include <math.h>
+
+static void zcsr_scan_gamepads(zcsr_input_ext* in) {
+    int i;
+    if (!in) return;
+    in->touch_pointer_id = -1;
+    for (i = 0; i < ZCSR_PAD_MAX; ++i) {
+        in->pad_device_id[i] = -1;
+        in->pads[i] = (zcsr_pad_state){ 0 };
+    }
+}
+
+static void zcsr_close_gamepads(zcsr_input_ext* in) {
+    int i;
+    if (!in) return;
+    for (i = 0; i < ZCSR_PAD_MAX; ++i) {
+        in->pad_device_id[i] = -1;
+        in->pads[i] = (zcsr_pad_state){ 0 };
+    }
+}
+
+static void zcsr_select_mouse_events(zcsr_surface* window) { (void)window; }
+
+static void zcsr_pump_mouse(zcsr_input_ext* in, zcsr_surface* window) {
+    (void)window;
+    if (!in) return;
+    in->mouse.dx = 0;
+    in->mouse.dy = 0;
+    in->mouse.wheel = 0;
+}
+
+static void zcsr_pump_gamepads(zcsr_input_ext* in) { (void)in; }
+
+static int zcsr_android_pad_slot(zcsr_input_ext* in, int32_t device_id) {
+    int i, free_slot = -1;
+    for (i = 0; i < ZCSR_PAD_MAX; ++i) {
+        if (in->pad_device_id[i] == device_id) return i;
+        if (free_slot < 0 && in->pad_device_id[i] < 0) free_slot = i;
+    }
+    if (free_slot < 0) return -1;
+    in->pad_device_id[free_slot] = device_id;
+    in->pads[free_slot].connected = true;
+    return free_slot;
+}
+
+static void zcsr_android_set_button(zcsr_pad_state* pad, zcsr_pad_button button, int down) {
+    uint16_t bit;
+    if (!pad || button < 0 || button >= ZCSR_PAD_BUTTON_COUNT) return;
+    bit = (uint16_t)(1u << (unsigned)button);
+    if (down) pad->buttons = (uint16_t)(pad->buttons | bit);
+    else pad->buttons = (uint16_t)(pad->buttons & (uint16_t)~bit);
+}
+
+static float zcsr_android_clamp_axis(float v, float lo, float hi) {
+    if (v < lo) v = lo;
+    if (v > hi) v = hi;
+    return v;
+}
+
+int32_t zcsr_input_ext_android_event(
+    zcsr_input_ext* in, AInputEvent* event) {
+    int32_t type;
+    int32_t source;
+    if (!in || !event) return 0;
+    type = AInputEvent_getType(event);
+    source = AInputEvent_getSource(event);
+
+    if (type == AINPUT_EVENT_TYPE_KEY) {
+        int32_t device_id, keycode, action, slot;
+        zcsr_pad_button button;
+        if ((source & (AINPUT_SOURCE_GAMEPAD | AINPUT_SOURCE_JOYSTICK |
+                       AINPUT_SOURCE_DPAD)) == 0) return 0;
+        device_id = AInputEvent_getDeviceId(event);
+        slot = zcsr_android_pad_slot(in, device_id);
+        if (slot < 0) return 0;
+        keycode = AKeyEvent_getKeyCode(event);
+        action = AKeyEvent_getAction(event);
+        switch (keycode) {
+        case AKEYCODE_BUTTON_A:      button = ZCSR_PAD_A; break;
+        case AKEYCODE_BUTTON_B:      button = ZCSR_PAD_B; break;
+        case AKEYCODE_BUTTON_X:      button = ZCSR_PAD_X; break;
+        case AKEYCODE_BUTTON_Y:      button = ZCSR_PAD_Y; break;
+        case AKEYCODE_BUTTON_L1:     button = ZCSR_PAD_LB; break;
+        case AKEYCODE_BUTTON_R1:     button = ZCSR_PAD_RB; break;
+        case AKEYCODE_BUTTON_SELECT: button = ZCSR_PAD_BACK; break;
+        case AKEYCODE_BUTTON_START:  button = ZCSR_PAD_START; break;
+        case AKEYCODE_BUTTON_THUMBL: button = ZCSR_PAD_LSTICK; break;
+        case AKEYCODE_BUTTON_THUMBR: button = ZCSR_PAD_RSTICK; break;
+        case AKEYCODE_DPAD_UP:       button = ZCSR_PAD_DUP; break;
+        case AKEYCODE_DPAD_DOWN:     button = ZCSR_PAD_DDOWN; break;
+        case AKEYCODE_DPAD_LEFT:     button = ZCSR_PAD_DLEFT; break;
+        case AKEYCODE_DPAD_RIGHT:    button = ZCSR_PAD_DRIGHT; break;
+        default: return 0;
+        }
+        zcsr_android_set_button(&in->pads[slot], button, action == AKEY_EVENT_ACTION_DOWN);
+        return 1;
+    }
+
+    if (type == AINPUT_EVENT_TYPE_MOTION) {
+        if ((source & AINPUT_SOURCE_TOUCHSCREEN) != 0) {
+            int32_t action_full = AMotionEvent_getAction(event);
+            int32_t action = action_full & AMOTION_EVENT_ACTION_MASK;
+            int32_t ptr_index = (action_full & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK)
+                                >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
+            switch (action) {
+            case AMOTION_EVENT_ACTION_DOWN:
+                in->touch_pointer_id = AMotionEvent_getPointerId(event, 0);
+                in->touch_pending.x = AMotionEvent_getX(event, 0);
+                in->touch_pending.y = AMotionEvent_getY(event, 0);
+                in->touch_pending.active = true;
+                in->touch_pending.pressed = true;
+                break;
+            case AMOTION_EVENT_ACTION_MOVE: {
+                size_t count = AMotionEvent_getPointerCount(event);
+                size_t i;
+                for (i = 0; i < count; ++i) {
+                    if (AMotionEvent_getPointerId(event, (int32_t)i) == in->touch_pointer_id) {
+                        float nx = AMotionEvent_getX(event, (int32_t)i);
+                        float ny = AMotionEvent_getY(event, (int32_t)i);
+                        in->touch_pending.dx += nx - in->touch_pending.x;
+                        in->touch_pending.dy += ny - in->touch_pending.y;
+                        in->touch_pending.x = nx;
+                        in->touch_pending.y = ny;
+                        break;
+                    }
+                }
+                break;
+            }
+            case AMOTION_EVENT_ACTION_POINTER_DOWN:
+                break;
+            case AMOTION_EVENT_ACTION_POINTER_UP:
+                if (AMotionEvent_getPointerId(event, ptr_index) == in->touch_pointer_id) {
+                    in->touch_pending.released = true;
+                    in->touch_pending.active = false;
+                    in->touch_pointer_id = -1;
+                }
+                break;
+            case AMOTION_EVENT_ACTION_UP:
+            case AMOTION_EVENT_ACTION_CANCEL:
+                in->touch_pending.released = true;
+                in->touch_pending.active = false;
+                in->touch_pointer_id = -1;
+                break;
+            default:
+                return 0;
+            }
+            return 1;
+        }
+        if ((source & (AINPUT_SOURCE_GAMEPAD | AINPUT_SOURCE_JOYSTICK)) != 0) {
+            int32_t device_id = AInputEvent_getDeviceId(event);
+            int slot = zcsr_android_pad_slot(in, device_id);
+            zcsr_pad_state* pad;
+            float lx, ly, rx, ry, lt, rt;
+            if (slot < 0) return 0;
+            pad = &in->pads[slot];
+            lx = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_X, 0);
+            ly = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_Y, 0);
+            rx = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_Z, 0);
+            ry = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_RZ, 0);
+            lt = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_LTRIGGER, 0);
+            rt = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_RTRIGGER, 0);
+            /* Trigger fallback: some devices report triggers on Z/RZ. */
+            if (lt <= 0.0f && rx > 0.0f) { lt = rx; rx = 0.0f; }
+            if (rt <= 0.0f && ry > 0.0f) { rt = ry; ry = 0.0f; }
+            if (fabsf(lx) < 0.15f) lx = 0.0f;
+            if (fabsf(ly) < 0.15f) ly = 0.0f;
+            if (fabsf(rx) < 0.15f) rx = 0.0f;
+            if (fabsf(ry) < 0.15f) ry = 0.0f;
+            pad->lx = zcsr_android_clamp_axis(lx, -1.0f, 1.0f);
+            pad->ly = zcsr_android_clamp_axis(ly, -1.0f, 1.0f);
+            pad->rx = zcsr_android_clamp_axis(rx, -1.0f, 1.0f);
+            pad->ry = zcsr_android_clamp_axis(ry, -1.0f, 1.0f);
+            pad->lt = zcsr_android_clamp_axis(lt, 0.0f, 1.0f);
+            pad->rt = zcsr_android_clamp_axis(rt, 0.0f, 1.0f);
+            return 1;
+        }
+        return 0;
+    }
+    return 0;
+}
+
+void zcsr_input_ext_android_reset(zcsr_input_ext* in) {
+    int i;
+    if (!in) return;
+    in->touch_pending.active = false;
+    in->touch_pending.pressed = false;
+    in->touch_pending.released = true;
+    in->touch_pointer_id = -1;
+    for (i = 0; i < ZCSR_PAD_MAX; ++i) {
+        in->pads[i].buttons = 0;
+        in->pads[i].lx = in->pads[i].ly = in->pads[i].rx = in->pads[i].ry = 0.0f;
+        in->pads[i].lt = in->pads[i].rt = 0.0f;
+    }
+}
+
+#elif defined(__linux__) && !defined(__ANDROID__)
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
@@ -667,6 +869,13 @@ void zcsr_input_ext_pump(
     }
 
     zcsr_pump_gamepads(in);
+#if defined(__ANDROID__)
+    in->touch = in->touch_pending;
+    in->touch_pending.pressed = false;
+    in->touch_pending.released = false;
+    in->touch_pending.dx = 0.0f;
+    in->touch_pending.dy = 0.0f;
+#endif
 }
 
 zcsr_mouse_state zcsr_input_ext_mouse(const zcsr_input_ext* in) {
@@ -676,4 +885,13 @@ zcsr_mouse_state zcsr_input_ext_mouse(const zcsr_input_ext* in) {
 zcsr_pad_state zcsr_input_ext_pad(const zcsr_input_ext* in, int index) {
     if (!in || index < 0 || index >= ZCSR_PAD_MAX) return (zcsr_pad_state){ 0 };
     return in->pads[index];
+}
+
+zcsr_touch_state zcsr_input_ext_touch(const zcsr_input_ext* in) {
+#if defined(__ANDROID__)
+    return in ? in->touch : (zcsr_touch_state){ 0 };
+#else
+    (void)in;
+    return (zcsr_touch_state){ 0 };
+#endif
 }
