@@ -8,9 +8,12 @@
 #   ZCSR_ANDROID_SO                   path to libzcsr_phase0.so [build/android/out/arm64-v8a/libzcsr_phase0.so]
 #   ZCSR_ANDROID_BUILD_DIR            staging dir [build/android/t3_1c]
 #   ZCSR_ANDROID_APK                  output APK [build/android/zcsr_phase1c.apk]
+#   ZCSR_ANDROID_VERSION_CODE         override versionCode [from AndroidManifest.xml]
+#   ZCSR_ANDROID_VERSION_NAME         override versionName [from AndroidManifest.xml]
 #   ZCSR_DEBUG_STOREPASS              keystore password (required, env only)
 #
-# Output: $ZCSR_ANDROID_APK (signed v2+v3), manifest versionCode/versionName preserved.
+# Output: $ZCSR_ANDROID_APK (signed v2+v3). versionCode/versionName default to
+# manifest values and can be overridden via ZCSR_ANDROID_VERSION_CODE / _NAME.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -49,6 +52,27 @@ KEYSTORE="$ROOT/android/keystore/zcsr-debug.keystore"
 KEY_ALIAS="zcsr-debug"
 : "${ZCSR_DEBUG_STOREPASS:?Set ZCSR_DEBUG_STOREPASS in the environment}"
 
+MANIFEST="$ROOT/android/AndroidManifest.xml"
+manifest_attr() {
+    sed -nE "s/.*android:$1=\"([^\"]+)\".*/\1/p" "$MANIFEST" | head -n 1
+}
+MANIFEST_VERSION_CODE="$(manifest_attr versionCode)"
+MANIFEST_VERSION_NAME="$(manifest_attr versionName)"
+VERSION_CODE="${ZCSR_ANDROID_VERSION_CODE:-$MANIFEST_VERSION_CODE}"
+VERSION_NAME="${ZCSR_ANDROID_VERSION_NAME:-$MANIFEST_VERSION_NAME}"
+if [[ ! "$VERSION_CODE" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: invalid Android versionCode: '$VERSION_CODE'" >&2
+    exit 1
+fi
+if [[ -z "$VERSION_NAME" || "$VERSION_NAME" == @* ]]; then
+    echo "ERROR: invalid Android versionName: '$VERSION_NAME'" >&2
+    exit 1
+fi
+if [[ -z "${ZCSR_ANDROID_VERSION_CODE:-}" ]]; then
+    echo "WARN: using manifest versionCode=$VERSION_CODE; set ZCSR_ANDROID_VERSION_CODE for device updates." >&2
+fi
+echo "Packaging Android versionCode=$VERSION_CODE versionName=$VERSION_NAME"
+
 for path in \
     "$ANDROID_JAR" "$AAPT2" "$ZIPALIGN" "$APKSIGNER" \
     "$SO_PATH" "$ROOT/android/AndroidManifest.xml" "$KEYSTORE"; do
@@ -73,7 +97,10 @@ echo "[1/6] aapt2 link"
     -o "$BASE_APK" \
     -I "$ANDROID_JAR" \
     --manifest "$ROOT/android/AndroidManifest.xml" \
-    --min-sdk-version 24
+    --min-sdk-version 24 \
+    --replace-version \
+    --version-code "$VERSION_CODE" \
+    --version-name "$VERSION_NAME"
 
 echo "[2/6] copy .so"
 cp "$SO_PATH" "$STAGE/lib/arm64-v8a/libzcsr_phase0.so"
