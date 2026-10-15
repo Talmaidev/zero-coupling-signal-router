@@ -44,3 +44,8 @@ zcsr    : 1C.0 sprite batch PASS: 200 grid + 2 center sprites
 zcsr    : 1C.1 atlas PASS: four UV regions sampled
 zcsr    : 1C.2 instanced PASS: 202 instances submitted
 ```
+
+## Phase 1 (complete)
+
+See PHASE1.md for the full handover record.
+Baseline commit: b541845.
