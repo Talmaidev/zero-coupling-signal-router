@@ -45,4 +45,59 @@ void          zcsr_surface_pump_events(zcsr_surface*);
 bool zcsr_surface_attach_native(zcsr_surface* surface, void* native_window);
 void zcsr_surface_detach_native(zcsr_surface* surface);
 
+/* ------------------------------------------------------------------ */
+/* Display enumeration and window management (additive).              */
+/* ------------------------------------------------------------------ */
+
+/* One physical output/monitor. Coordinates are desktop-layout pixels;
+ * width/height are the output pixel dimensions (not the window client size).
+ * Unknown fields use documented fallbacks: refresh_hz=0, dpi_scale=1.0f. */
+typedef struct {
+    int   id;
+    char  name[64];
+    int   x, y;
+    int   width, height;
+    int   refresh_hz;
+    float dpi_scale;
+    int   is_primary;
+} zcsr_display_info;
+
+typedef enum {
+    ZCSR_WINDOW_WINDOWED   = 0, /* normal decorated window */
+    ZCSR_WINDOW_BORDERLESS = 1, /* undecorated, no fullscreen state */
+    ZCSR_WINDOW_FULLSCREEN = 2, /* borderless window filling a display; never
+                                   changes the physical output mode */
+} zcsr_window_mode;
+
+/* Number of currently connected displays. Always returns at least 1; when the
+ * platform cannot enumerate displays it reports a single unknown fallback. */
+int  zcsr_display_count(void);
+
+/* Read display `index` (0-based in enumeration order). Returns false and does
+ * not touch `out` when out==NULL or index is out of range. All fields are
+ * initialized on success; name is NUL-terminated. */
+bool zcsr_display_get(int index, zcsr_display_info* out);
+
+/* Change the window decoration/fullscreen mode. FULLSCREEN fills the current
+ * display without changing physical output resolution. Unsupported platforms
+ * (Android) return false. Invalid mode/surface returns false. */
+bool zcsr_surface_set_mode(zcsr_surface* surface, zcsr_window_mode mode);
+
+/* Set the window CLIENT area size in pixels (excludes title bar/borders).
+ * Returns false for non-positive sizes, invalid surface, or while fullscreen. */
+bool zcsr_surface_set_client_size(zcsr_surface* surface, int w, int h);
+
+/* Move the window onto the display whose stable id is `display_id`. Returns
+ * false before touching the window for an invalid/disconnected id. While
+ * fullscreen, the window stays fullscreen on the target display and the
+ * original restore snapshot is preserved. */
+bool zcsr_surface_move_to_display(zcsr_surface* surface, int display_id);
+
+/* Read the current CLIENT area size in pixels. Either output pointer may be
+ * NULL. Invalid surface leaves outputs untouched. */
+void zcsr_surface_get_client_size(const zcsr_surface* surface, int* w, int* h);
+
+/* Current DPI scale for the window's display; 1.0f when unknown. */
+float zcsr_surface_get_dpi_scale(const zcsr_surface* surface);
+
 #endif /* ZCSR_PLATFORM_H */
