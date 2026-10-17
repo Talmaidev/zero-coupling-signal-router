@@ -60,6 +60,7 @@ zcsr_module(culling)   # Viewport culling: linear + uniform grid (pure logic, no
 # Phase-0 stubs make no backend calls, so they link with no extra libs.
 if(NOT WIN32)
   find_package(Threads REQUIRED)
+  target_link_libraries(zcsr_core PUBLIC Threads::Threads)  # log.c uses C11 threads
   target_link_libraries(zcsr_audio PUBLIC Threads::Threads)
   target_link_libraries(zcsr_audiomix PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 else()
@@ -133,6 +134,10 @@ add_test(NAME signal_router COMMAND zcsr_test_signal)
 add_executable(test_core tests/test_core.c)
 target_link_libraries(test_core PRIVATE zcsr_core)
 add_test(NAME core COMMAND test_core)
+
+add_executable(test_log tests/test_log.c)
+target_link_libraries(test_log PRIVATE zcsr_core)
+add_test(NAME log COMMAND test_log)
 add_executable(test_overlay tests/test_overlay.c)
 target_link_libraries(test_overlay PRIVATE zcsr_overlay zcsr_platform)
 add_test(NAME overlay COMMAND test_overlay)
