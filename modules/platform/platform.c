@@ -15,9 +15,19 @@ struct zcsr_surface {
     void* native_window;
 #elif defined(_WIN32)
     void* hwnd;
+    zcsr_window_mode mode;
+    bool  fs_valid;            /* fullscreen restore snapshot present */
+    long  fs_style;
+    long  fs_exstyle;
+    int   fs_x, fs_y, fs_w, fs_h;
+    int   fs_display;
 #elif defined(__linux__)
     void* display;
     unsigned long window;
+    zcsr_window_mode mode;
+    bool  fs_valid;
+    int   fs_x, fs_y, fs_w, fs_h;
+    int   fs_display;
 #elif defined(__APPLE__)
     void* ns_window;
 #else
@@ -322,3 +332,774 @@ void zcsr_surface_detach_native(zcsr_surface* s) {
     (void)s;
 #endif
 }
+
+/* ===================================================================== */
+/* A1 — display enumeration and window management                         */
+/* ===================================================================== */
+
+#include <string.h>
+
+/* Copy at most cap-1 bytes, always NUL-terminated. */
+static void zcsr_copy_name(char* dst, size_t cap, const char* src) {
+    size_t i = 0;
+    if (src) {
+        for (; i + 1 < cap && src[i] != '\0'; ++i) {
+            dst[i] = src[i];
+        }
+    }
+    dst[i] = '\0';
+}
+
+/* Copy at most sizeof(out->name)-1 bytes, always NUL-terminated. */
+static void zcsr_display_set_name(zcsr_display_info* out, const char* name) {
+    zcsr_copy_name(out->name, sizeof(out->name), name);
+}
+
+/* A conservative "unknown single display" fallback. Width/height/refresh are
+ * 0 (unknown), dpi is 1.0; never fabricate a resolution or refresh rate. */
+static zcsr_display_info zcsr_unknown_display(int id) {
+    zcsr_display_info info;
+    memset(&info, 0, sizeof(info));
+    info.id = id;
+    info.dpi_scale = 1.0f;
+    info.is_primary = 1;
+    zcsr_display_set_name(&info, "Unknown");
+    return info;
+}
+
+#if defined(__ANDROID__)
+/* Android compatibility path. There is no desktop/multi-monitor concept, and
+ * the API cannot modify window mode/size/position.
+ * display_get has no surface parameter, so it cannot query the ANativeWindow
+ * size: it returns a conservative fallback. Real window client size is
+ * available through zcsr_surface_get_client_size(surface,...). */
+int zcsr_display_count(void) {
+    return 1;
+}
+bool zcsr_display_get(int index, zcsr_display_info* out) {
+    if (!out || index != 0) return false;
+    zcsr_display_info info = zcsr_unknown_display(0);
+    zcsr_display_set_name(&info, "Android");
+    *out = info;
+    return true;
+}
+bool zcsr_surface_set_mode(zcsr_surface* s, zcsr_window_mode mode) {
+    (void)s; (void)mode;
+    return false;
+}
+bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
+    (void)s; (void)w; (void)h;
+    return false;
+}
+bool zcsr_surface_move_to_display(zcsr_surface* s, int display_id) {
+    (void)s; (void)display_id;
+    return false;
+}
+void zcsr_surface_get_client_size(const zcsr_surface* s, int* w, int* h) {
+    if (!s || !s->in_use || !s->native_window) return;
+    ANativeWindow* nw = (ANativeWindow*)s->native_window;
+    if (w) *w = ANativeWindow_getWidth(nw);
+    if (h) *h = ANativeWindow_getHeight(nw);
+}
+float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
+    (void)s;
+    return 1.0f; /* cannot reliably query without JNI; A2 territory */
+}
+
+#elif defined(__APPLE__)
+/* macOS placeholder — real AppKit implementation is deferred to the B group.
+ * It compiles, never fabricates data, and refuses all window mutations. */
+int zcsr_display_count(void) {
+    return 1;
+}
+bool zcsr_display_get(int index, zcsr_display_info* out) {
+    if (!out || index != 0) return false;
+    *out = zcsr_unknown_display(0);
+    return true;
+}
+bool zcsr_surface_set_mode(zcsr_surface* s, zcsr_window_mode mode) {
+    (void)s; (void)mode; return false;
+}
+bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
+    (void)s; (void)w; (void)h; return false;
+}
+bool zcsr_surface_move_to_display(zcsr_surface* s, int display_id) {
+    (void)s; (void)display_id; return false;
+}
+void zcsr_surface_get_client_size(const zcsr_surface* s, int* w, int* h) {
+    (void)s; (void)w; (void)h;
+}
+float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
+    (void)s; return 1.0f;
+}
+
+#elif defined(_WIN32)
+/* ============================ Windows ============================== */
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#ifndef ZCSR_DISPLAY_MAX
+#define ZCSR_DISPLAY_MAX 8
+#endif
+
+/* Stable display-id table. The public id is the slot index; slots are matched
+ * by HMONITOR first so a still-connected display keeps its id. Disconnected
+ * slots become tombstones (valid=false) and are never silently reassigned to a
+ * different monitor. HMONITOR is never truncated into an int. */
+static struct {
+    HMONITOR mon;
+    bool     ever_used;
+    bool     valid;
+} zcsr_win_mon_table[ZCSR_DISPLAY_MAX];
+
+typedef struct {
+    HMONITOR       mon[ZCSR_DISPLAY_MAX];
+    MONITORINFOEXA info[ZCSR_DISPLAY_MAX];
+    int            count;
+} zcsr_enum_ctx;
+
+static BOOL CALLBACK zcsr_monitor_enum_proc(HMONITOR mon, HDC hdc, LPRECT rc, LPARAM lp) {
+    zcsr_enum_ctx* ctx = (zcsr_enum_ctx*)lp;
+    (void)hdc; (void)rc;
+    if (ctx->count >= ZCSR_DISPLAY_MAX) return TRUE;
+    MONITORINFOEXA mi;
+    memset(&mi, 0, sizeof(mi));
+    mi.cbSize = sizeof(mi);
+    if (GetMonitorInfoA(mon, (LPMONITORINFO)&mi)) {
+        ctx->mon[ctx->count] = mon;
+        ctx->info[ctx->count] = mi;
+        ctx->count++;
+    }
+    return TRUE;
+}
+
+/* Dynamically loaded per-monitor DPI (avoids a hard shcore dependency; when
+ * unavailable or the process is not DPI-aware, falls back to 1.0). */
+typedef HRESULT (WINAPI *zcsr_get_dpi_for_monitor_fn)(HMONITOR, int, UINT*, UINT*);
+#define ZCSR_MDT_EFFECTIVE_DPI 0
+static float zcsr_win_monitor_dpi(HMONITOR mon) {
+    HMODULE shcore = LoadLibraryA("shcore.dll");
+    float scale = 1.0f;
+    if (shcore) {
+        zcsr_get_dpi_for_monitor_fn p =
+            (zcsr_get_dpi_for_monitor_fn)(void*)GetProcAddress(shcore, "GetDpiForMonitor");
+        if (p) {
+            UINT dx = 96, dy = 96;
+            if (p(mon, ZCSR_MDT_EFFECTIVE_DPI, &dx, &dy) == 0 && dx > 0) {
+                scale = (float)dx / 96.0f;
+            }
+        }
+        FreeLibrary(shcore);
+    }
+    return scale;
+}
+
+static void zcsr_win_refresh_displays(void) {
+    zcsr_enum_ctx ctx;
+    bool seen[ZCSR_DISPLAY_MAX];
+    int i, s;
+    memset(&ctx, 0, sizeof(ctx));
+    memset(seen, 0, sizeof(seen));
+    EnumDisplayMonitors(NULL, NULL, zcsr_monitor_enum_proc, (LPARAM)&ctx);
+
+    for (i = 0; i < ctx.count; ++i) {
+        int slot = -1;
+        for (s = 0; s < ZCSR_DISPLAY_MAX; ++s) {
+            if (zcsr_win_mon_table[s].ever_used &&
+                zcsr_win_mon_table[s].valid &&
+                zcsr_win_mon_table[s].mon == ctx.mon[i]) {
+                slot = s;
+                break;
+            }
+        }
+        if (slot < 0) {
+            /* Allocate a never-used slot; never reuse a tombstone. */
+            for (s = 0; s < ZCSR_DISPLAY_MAX; ++s) {
+                if (!zcsr_win_mon_table[s].ever_used) { slot = s; break; }
+            }
+        }
+        if (slot < 0) break; /* table exhausted */
+        zcsr_win_mon_table[slot].mon = ctx.mon[i];
+        zcsr_win_mon_table[slot].ever_used = true;
+        zcsr_win_mon_table[slot].valid = true;
+        seen[slot] = true;
+    }
+    for (s = 0; s < ZCSR_DISPLAY_MAX; ++s) {
+        if (zcsr_win_mon_table[s].ever_used && !seen[s]) {
+            zcsr_win_mon_table[s].valid = false; /* tombstone */
+        }
+    }
+}
+
+static int zcsr_win_index_to_slot(int index) {
+    int s, n = 0;
+    if (index < 0) return -1;
+    for (s = 0; s < ZCSR_DISPLAY_MAX; ++s) {
+        if (zcsr_win_mon_table[s].valid) {
+            if (n == index) return s;
+            n++;
+        }
+    }
+    return -1;
+}
+
+static bool zcsr_win_fill_info(int slot, zcsr_display_info* out) {
+    HMONITOR mon = zcsr_win_mon_table[slot].mon;
+    MONITORINFOEXA mi;
+    DEVMODEA dm;
+    memset(&mi, 0, sizeof(mi));
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoA(mon, (LPMONITORINFO)&mi)) return false;
+    memset(out, 0, sizeof(*out));
+    out->id = slot;
+    out->x = mi.rcMonitor.left;
+    out->y = mi.rcMonitor.top;
+    out->width = mi.rcMonitor.right - mi.rcMonitor.left;
+    out->height = mi.rcMonitor.bottom - mi.rcMonitor.top;
+    out->is_primary = (mi.dwFlags & MONITORINFOF_PRIMARY) ? 1 : 0;
+    out->dpi_scale = zcsr_win_monitor_dpi(mon);
+    zcsr_display_set_name(out, mi.szDevice);
+    memset(&dm, 0, sizeof(dm));
+    dm.dmSize = sizeof(dm);
+    if (EnumDisplaySettingsA(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm) &&
+        (dm.dmFields & DM_DISPLAYFREQUENCY)) {
+        out->refresh_hz = (int)dm.dmDisplayFrequency;
+    }
+    return true;
+}
+
+int zcsr_display_count(void) {
+    int s, n = 0;
+    zcsr_win_refresh_displays();
+    for (s = 0; s < ZCSR_DISPLAY_MAX; ++s) {
+        if (zcsr_win_mon_table[s].valid) n++;
+    }
+    return n > 0 ? n : 1;
+}
+
+bool zcsr_display_get(int index, zcsr_display_info* out) {
+    int slot;
+    if (!out) return false;
+    zcsr_win_refresh_displays();
+    slot = zcsr_win_index_to_slot(index);
+    if (slot < 0) return false;
+    return zcsr_win_fill_info(slot, out);
+}
+
+/* Resolve a stable display id to a current HMONITOR and its monitor rect. */
+static HMONITOR zcsr_win_id_to_monitor(int display_id, RECT* rc) {
+    MONITORINFO mi;
+    if (display_id < 0 || display_id >= ZCSR_DISPLAY_MAX) return NULL;
+    if (!zcsr_win_mon_table[display_id].valid) return NULL;
+    memset(&mi, 0, sizeof(mi));
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoA(zcsr_win_mon_table[display_id].mon, &mi)) return NULL;
+    if (rc) *rc = mi.rcMonitor;
+    return zcsr_win_mon_table[display_id].mon;
+}
+
+static int zcsr_win_monitor_id_for_window(HWND hwnd) {
+    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    int s;
+    zcsr_win_refresh_displays();
+    for (s = 0; s < ZCSR_DISPLAY_MAX; ++s) {
+        if (zcsr_win_mon_table[s].valid && zcsr_win_mon_table[s].mon == mon) {
+            return s;
+        }
+    }
+    return 0;
+}
+
+static const LONG ZCSR_WIN_STYLE_WINDOWED =
+    WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+static const LONG ZCSR_WIN_STYLE_BORDERLESS =
+    WS_POPUP | WS_VISIBLE;
+static const LONG ZCSR_WIN_EX_NORMAL = 0;
+static const LONG ZCSR_WIN_EX_OVERLAY =
+    WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
+
+static void zcsr_win_apply_geometry(HWND hwnd, int x, int y, int w, int h) {
+    SetWindowPos(hwnd, NULL, x, y, w, h,
+                 SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_NOZORDER);
+}
+
+bool zcsr_surface_set_mode(zcsr_surface* s, zcsr_window_mode mode) {
+    HWND hwnd;
+    LONG style, exstyle;
+    RECT rc;
+    if (!s || !s->in_use || !s->hwnd) return false;
+    if (mode < ZCSR_WINDOW_WINDOWED || mode > ZCSR_WINDOW_FULLSCREEN) return false;
+    hwnd = (HWND)s->hwnd;
+
+    if (mode == s->mode) {
+        /* Re-requesting fullscreen must not overwrite the restore snapshot. */
+        if (mode == ZCSR_WINDOW_FULLSCREEN && s->fs_valid) return true;
+        return true;
+    }
+
+    if (mode == ZCSR_WINDOW_FULLSCREEN) {
+        MONITORINFO mi;
+        HMONITOR mon;
+        if (s->fs_valid) return false; /* defensive */
+        GetWindowRect(hwnd, &rc);
+        s->fs_x = rc.left; s->fs_y = rc.top;
+        s->fs_w = rc.right - rc.left; s->fs_h = rc.bottom - rc.top;
+        s->fs_style = GetWindowLongA(hwnd, GWL_STYLE);
+        s->fs_exstyle = GetWindowLongA(hwnd, GWL_EXSTYLE);
+        s->fs_display = zcsr_win_monitor_id_for_window(hwnd);
+
+        mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        memset(&mi, 0, sizeof(mi));
+        mi.cbSize = sizeof(mi);
+        if (!GetMonitorInfoA(mon, &mi)) {
+            return false;
+        }
+        SetWindowLongA(hwnd, GWL_STYLE, ZCSR_WIN_STYLE_BORDERLESS);
+        SetWindowLongA(hwnd, GWL_EXSTYLE, ZCSR_WIN_EX_NORMAL);
+        SetWindowPos(hwnd, HWND_TOP,
+                     mi.rcMonitor.left, mi.rcMonitor.top,
+                     mi.rcMonitor.right - mi.rcMonitor.left,
+                     mi.rcMonitor.bottom - mi.rcMonitor.top,
+                     SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+        s->mode = ZCSR_WINDOW_FULLSCREEN;
+        s->fs_valid = true;
+        return true;
+    }
+
+    /* Leaving fullscreen (or switching between the two windowed modes). */
+    if (s->mode == ZCSR_WINDOW_FULLSCREEN && s->fs_valid) {
+        int target_display = s->fs_display;
+        RECT mon_rc;
+        s->fs_valid = false;
+        s->mode = mode; /* target mode decided by caller */
+        style = (mode == ZCSR_WINDOW_WINDOWED)
+                    ? ZCSR_WIN_STYLE_WINDOWED
+                    : ZCSR_WIN_STYLE_BORDERLESS;
+        exstyle = (mode == ZCSR_WINDOW_WINDOWED)
+                      ? ZCSR_WIN_EX_NORMAL
+                      : ZCSR_WIN_EX_OVERLAY;
+        SetWindowLongA(hwnd, GWL_STYLE, style);
+        SetWindowLongA(hwnd, GWL_EXSTYLE, exstyle);
+        /* If the original display is gone, restore onto the primary monitor. */
+        if (!zcsr_win_id_to_monitor(target_display, &mon_rc)) {
+            MONITORINFO primary;
+            memset(&primary, 0, sizeof(primary));
+            primary.cbSize = sizeof(primary);
+            if (GetMonitorInfoA(NULL, &primary)) {
+                s->fs_x = primary.rcMonitor.left;
+                s->fs_y = primary.rcMonitor.top;
+            }
+        }
+        zcsr_win_apply_geometry(hwnd, s->fs_x, s->fs_y, s->fs_w, s->fs_h);
+        return true;
+    }
+
+    /* Plain windowed <-> borderless switch (no fullscreen involved). */
+    s->mode = mode;
+    if (mode == ZCSR_WINDOW_WINDOWED) {
+        SetWindowLongA(hwnd, GWL_STYLE, ZCSR_WIN_STYLE_WINDOWED);
+        SetWindowLongA(hwnd, GWL_EXSTYLE, ZCSR_WIN_EX_NORMAL);
+    } else {
+        SetWindowLongA(hwnd, GWL_STYLE, ZCSR_WIN_STYLE_BORDERLESS);
+        SetWindowLongA(hwnd, GWL_EXSTYLE, ZCSR_WIN_EX_OVERLAY);
+    }
+    SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE |
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    return true;
+}
+
+bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
+    HWND hwnd;
+    RECT rc, client;
+    LONG style, exstyle;
+    int frame_x, frame_y, win_w, win_h;
+    if (!s || !s->in_use || !s->hwnd) return false;
+    if (w <= 0 || h <= 0) return false;
+    if (s->mode == ZCSR_WINDOW_FULLSCREEN) return false;
+    hwnd = (HWND)s->hwnd;
+    style = GetWindowLongA(hwnd, GWL_STYLE);
+    exstyle = GetWindowLongA(hwnd, GWL_EXSTYLE);
+    rc.left = 0; rc.top = 0; rc.right = w; rc.bottom = h;
+    if (!AdjustWindowRectEx(&rc, (DWORD)style, FALSE, (DWORD)exstyle)) {
+        return false;
+    }
+    frame_x = (rc.right - rc.left) - w;
+    frame_y = (rc.bottom - rc.top) - h;
+    win_w = w + frame_x;
+    win_h = h + frame_y;
+    if (!GetWindowRect(hwnd, &client)) return false;
+    if (!SetWindowPos(hwnd, NULL, client.left, client.top, win_w, win_h,
+                      SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOZORDER)) {
+        return false;
+    }
+    return true;
+}
+
+bool zcsr_surface_move_to_display(zcsr_surface* s, int display_id) {
+    HWND hwnd;
+    RECT target;
+    HMONITOR mon;
+    if (!s || !s->in_use || !s->hwnd) return false;
+    hwnd = (HWND)s->hwnd;
+    zcsr_win_refresh_displays();
+    mon = zcsr_win_id_to_monitor(display_id, &target);
+    if (!mon) return false; /* invalid/disconnected id: do not move */
+
+    if (s->mode == ZCSR_WINDOW_FULLSCREEN) {
+        /* Keep fullscreen on the target display; preserve the restore snapshot. */
+        SetWindowPos(hwnd, HWND_TOP,
+                     target.left, target.top,
+                     target.right - target.left,
+                     target.bottom - target.top,
+                     SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+        return true;
+    }
+
+    {
+        WINDOWINFO wi;
+        int win_w, win_h;
+        memset(&wi, 0, sizeof(wi));
+        wi.cbSize = sizeof(wi);
+        if (!GetWindowInfo(hwnd, &wi)) return false;
+        win_w = wi.rcWindow.right - wi.rcWindow.left;
+        win_h = wi.rcWindow.bottom - wi.rcWindow.top;
+        SetWindowPos(hwnd, NULL,
+                     target.left, target.top, win_w, win_h,
+                     SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_NOZORDER);
+    }
+    return true;
+}
+
+void zcsr_surface_get_client_size(const zcsr_surface* s, int* w, int* h) {
+    RECT rc;
+    HWND hwnd;
+    if (!s || !s->in_use || !s->hwnd) return;
+    hwnd = (HWND)s->hwnd;
+    if (!GetClientRect(hwnd, &rc)) return;
+    if (w) *w = rc.right - rc.left;
+    if (h) *h = rc.bottom - rc.top;
+}
+
+float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
+    HWND hwnd;
+    HMONITOR mon;
+    UINT dpi = 0;
+    HMODULE user32;
+    typedef UINT (WINAPI *get_dpi_for_window_fn)(HWND);
+    get_dpi_for_window_fn p;
+    if (!s || !s->in_use || !s->hwnd) return 1.0f;
+    hwnd = (HWND)s->hwnd;
+    (void)mon;
+    user32 = GetModuleHandleA("user32.dll");
+    if (user32) {
+        p = (get_dpi_for_window_fn)(void*)GetProcAddress(user32, "GetDpiForWindow");
+        if (p) {
+            dpi = p(hwnd);
+            if (dpi > 0) return (float)dpi / 96.0f;
+        }
+    }
+    return 1.0f;
+}
+
+#elif defined(__linux__)
+/* ============================ Linux / X11 ============================== */
+#include <X11/Xlib.h>
+#include <X11/Xatom.h>
+#include <X11/Xutil.h>
+#if defined(ZCSR_HAVE_XRANDR)
+#include <X11/extensions/Xrandr.h>
+#endif
+#if defined(ZCSR_HAVE_XINERAMA)
+#include <X11/extensions/Xinerama.h>
+#endif
+
+#ifndef ZCSR_DISPLAY_MAX
+#define ZCSR_DISPLAY_MAX 8
+#endif
+
+typedef struct {
+    int  x, y, w, h;
+    int  is_primary;
+    char name[64];
+} zcsr_x_monitor;
+
+static int zcsr_x_query_monitors(Display* dpy, int screen, zcsr_x_monitor* out, int max) {
+    int count = 0;
+    Window root = RootWindow(dpy, screen);
+#if defined(ZCSR_HAVE_XRANDR)
+    {
+        XRRScreenResources* res = XRRGetScreenResources(dpy, root);
+        RROutput primary = 0;
+        int i;
+        if (res) {
+            primary = XRRGetOutputPrimary(dpy, root);
+            for (i = 0; i < res->noutput && count < max; ++i) {
+                XRROutputInfo* oi = XRRGetOutputInfo(dpy, res, res->outputs[i]);
+                if (oi && oi->connection == RR_Connected && oi->crtc) {
+                    XRRCrtcInfo* ci = XRRGetCrtcInfo(dpy, res, oi->crtc);
+                    if (ci && ci->width > 0 && ci->height > 0) {
+                        memset(&out[count], 0, sizeof(out[count]));
+                        out[count].x = ci->x;
+                        out[count].y = ci->y;
+                        out[count].w = ci->width;
+                        out[count].h = ci->height;
+                        out[count].is_primary = (res->outputs[i] == primary) ? 1 : 0;
+                        if (oi->name) {
+                            zcsr_copy_name(out[count].name,
+                                           sizeof(out[count].name), oi->name);
+                        }
+                        count++;
+                        XRRFreeCrtcInfo(ci);
+                    }
+                    if (oi) XRRFreeOutputInfo(oi);
+                } else if (oi) {
+                    XRRFreeOutputInfo(oi);
+                }
+            }
+            XRRFreeScreenResources(res);
+        }
+        if (count > 0) {
+            int k, has_primary = 0;
+            for (k = 0; k < count; ++k) {
+                if (out[k].is_primary) has_primary = 1;
+            }
+            /* Some X servers (e.g. WSLg) report no primary output; designate
+             * the first connected output so callers always have a primary. */
+            if (!has_primary) out[0].is_primary = 1;
+            return count;
+        }
+    }
+#endif
+#if defined(ZCSR_HAVE_XINERAMA)
+    {
+        int event_base, error_base;
+        if (XineramaQueryExtension(dpy, &event_base, &error_base) &&
+            XineramaIsActive(dpy)) {
+            int n;
+            XineramaScreenInfo* xs = XineramaQueryScreens(dpy, &n);
+            if (xs) {
+                int i;
+                for (i = 0; i < n && count < max; ++i) {
+                    memset(&out[count], 0, sizeof(out[count]));
+                    out[count].x = xs[i].x_org;
+                    out[count].y = xs[i].y_org;
+                    out[count].w = xs[i].width;
+                    out[count].h = xs[i].height;
+                    out[count].is_primary = (i == 0) ? 1 : 0;
+                    zcsr_copy_name(out[count].name,
+                                   sizeof(out[count].name), "Xinerama");
+                    count++;
+                }
+                XFree(xs);
+            }
+        }
+        if (count > 0) return count;
+    }
+#endif
+    /* Single-screen fallback. */
+    memset(&out[0], 0, sizeof(out[0]));
+    out[0].x = 0;
+    out[0].y = 0;
+    out[0].w = DisplayWidth(dpy, screen);
+    out[0].h = DisplayHeight(dpy, screen);
+    out[0].is_primary = 1;
+    zcsr_copy_name(out[0].name, sizeof(out[0].name), "X11");
+    return 1;
+}
+
+int zcsr_display_count(void) {
+    Display* dpy;
+    zcsr_x_monitor mons[ZCSR_DISPLAY_MAX];
+    int n;
+    dpy = XOpenDisplay(0);
+    if (!dpy) return 1;
+    n = zcsr_x_query_monitors(dpy, DefaultScreen(dpy), mons, ZCSR_DISPLAY_MAX);
+    XCloseDisplay(dpy);
+    return n > 0 ? n : 1;
+}
+
+bool zcsr_display_get(int index, zcsr_display_info* out) {
+    Display* dpy;
+    zcsr_x_monitor mons[ZCSR_DISPLAY_MAX];
+    int n;
+    if (!out || index < 0) return false;
+    dpy = XOpenDisplay(0);
+    if (!dpy) {
+        if (index != 0) return false;
+        *out = zcsr_unknown_display(0);
+        return true;
+    }
+    n = zcsr_x_query_monitors(dpy, DefaultScreen(dpy), mons, ZCSR_DISPLAY_MAX);
+    XCloseDisplay(dpy);
+    if (index >= n) return false;
+    memset(out, 0, sizeof(*out));
+    out->id = index;
+    out->x = mons[index].x;
+    out->y = mons[index].y;
+    out->width = mons[index].w;
+    out->height = mons[index].h;
+    out->refresh_hz = 0;            /* not reliably portable across XRandR paths */
+    out->dpi_scale = 1.0f;
+    out->is_primary = mons[index].is_primary;
+    zcsr_display_set_name(out, mons[index].name[0] ? mons[index].name : "X11");
+    return true;
+}
+
+/* EWMH fullscreen request for window-manager-managed windows. */
+static void zcsr_x_set_ewmh_fullscreen(Display* dpy, Window win, int full) {
+    XEvent xev;
+    Atom wm_state = XInternAtom(dpy, "_NET_WM_STATE", False);
+    Atom fs = XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", False);
+    memset(&xev, 0, sizeof(xev));
+    xev.type = ClientMessage;
+    xev.xclient.window = win;
+    xev.xclient.message_type = wm_state;
+    xev.xclient.format = 32;
+    xev.xclient.data.l[0] = full ? 1 : 0; /* _NET_WM_STATE_ADD / REMOVE */
+    xev.xclient.data.l[1] = fs;
+    xev.xclient.data.l[2] = 0;
+    xev.xclient.data.l[3] = 0;
+    XSendEvent(dpy, DefaultRootWindow(dpy), False,
+               SubstructureNotifyMask | SubstructureRedirectMask, &xev);
+}
+
+bool zcsr_surface_set_mode(zcsr_surface* s, zcsr_window_mode mode) {
+    Display* dpy;
+    Window win;
+    if (!s || !s->in_use || !s->display) return false;
+    if (mode < ZCSR_WINDOW_WINDOWED || mode > ZCSR_WINDOW_FULLSCREEN) return false;
+    dpy = (Display*)s->display;
+    win = (Window)s->window;
+
+    if (mode == s->mode) {
+        if (mode == ZCSR_WINDOW_FULLSCREEN && s->fs_valid) return true;
+        return true;
+    }
+
+    if (mode == ZCSR_WINDOW_FULLSCREEN) {
+        zcsr_x_monitor mons[ZCSR_DISPLAY_MAX];
+        int n;
+        XWindowAttributes wa;
+        if (s->fs_valid) return false;
+        XGetWindowAttributes(dpy, win, &wa);
+        s->fs_x = wa.x; s->fs_y = wa.y;
+        s->fs_w = wa.width; s->fs_h = wa.height;
+        s->fs_display = 0;
+        /* For override_redirect windows (the existing overlay style), the WM
+         * does not manage decoration, so EWMH is ineffective and we resize the
+         * window directly to the screen. For WM-managed windows, request EWMH. */
+        XGetWindowAttributes(dpy, win, &wa);
+        if (wa.override_redirect) {
+            n = zcsr_x_query_monitors(dpy, DefaultScreen(dpy), mons,
+                                      ZCSR_DISPLAY_MAX);
+            if (n > 0) {
+                XMoveResizeWindow(dpy, win, mons[0].x, mons[0].y,
+                                  mons[0].w, mons[0].h);
+            }
+        } else {
+            zcsr_x_set_ewmh_fullscreen(dpy, win, 1);
+        }
+        s->fs_valid = true;
+        s->mode = ZCSR_WINDOW_FULLSCREEN;
+        XFlush(dpy);
+        return true;
+    }
+
+    if (s->mode == ZCSR_WINDOW_FULLSCREEN && s->fs_valid) {
+        XWindowAttributes wa;
+        XGetWindowAttributes(dpy, win, &wa);
+        if (wa.override_redirect) {
+            XMoveResizeWindow(dpy, win, s->fs_x, s->fs_y, s->fs_w, s->fs_h);
+        } else {
+            zcsr_x_set_ewmh_fullscreen(dpy, win, 0);
+        }
+        s->fs_valid = false;
+        s->mode = mode;
+        XFlush(dpy);
+        return true;
+    }
+
+    /* windowed <-> borderless for non-override windows: EWMH decoration hints
+     * are a WM responsibility; the override_redirect overlay is inherently
+     * borderless. We record the requested mode and leave existing geometry. */
+    s->mode = mode;
+    XFlush(dpy);
+    return true;
+}
+
+bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
+    Display* dpy;
+    XWindowAttributes wa;
+    if (!s || !s->in_use || !s->display) return false;
+    if (w <= 0 || h <= 0) return false;
+    if (s->mode == ZCSR_WINDOW_FULLSCREEN) return false;
+    dpy = (Display*)s->display;
+    XGetWindowAttributes(dpy, (Window)s->window, &wa);
+    XResizeWindow(dpy, (Window)s->window, (unsigned)w, (unsigned)h);
+    XFlush(dpy);
+    return true;
+}
+
+bool zcsr_surface_move_to_display(zcsr_surface* s, int display_id) {
+    Display* dpy;
+    zcsr_x_monitor mons[ZCSR_DISPLAY_MAX];
+    int n;
+    XWindowAttributes wa;
+    if (!s || !s->in_use || !s->display) return false;
+    dpy = (Display*)s->display;
+    n = zcsr_x_query_monitors(dpy, DefaultScreen(dpy), mons, ZCSR_DISPLAY_MAX);
+    if (display_id < 0 || display_id >= n) return false;
+    XGetWindowAttributes(dpy, (Window)s->window, &wa);
+    if (s->mode == ZCSR_WINDOW_FULLSCREEN) {
+        XMoveResizeWindow(dpy, (Window)s->window,
+                          mons[display_id].x, mons[display_id].y,
+                          mons[display_id].w, mons[display_id].h);
+        /* keep restore snapshot (fs_x/fs_y/fs_w/fs_h) unchanged */
+    } else {
+        XMoveWindow(dpy, (Window)s->window,
+                    mons[display_id].x, mons[display_id].y);
+    }
+    XFlush(dpy);
+    return true;
+}
+
+void zcsr_surface_get_client_size(const zcsr_surface* s, int* w, int* h) {
+    Display* dpy;
+    XWindowAttributes wa;
+    if (!s || !s->in_use || !s->display) return;
+    dpy = (Display*)s->display;
+    if (XGetWindowAttributes(dpy, (Window)s->window, &wa) == 0) return;
+    if (w) *w = wa.width;
+    if (h) *h = wa.height;
+}
+
+float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
+    (void)s;
+    return 1.0f; /* reliable X11 DPI scaling is deferred to A2 */
+}
+
+#else
+/* ====================== Unknown platform stubs ===================== */
+int zcsr_display_count(void) { return 1; }
+bool zcsr_display_get(int index, zcsr_display_info* out) {
+    if (!out || index != 0) return false;
+    *out = zcsr_unknown_display(0);
+    return true;
+}
+bool zcsr_surface_set_mode(zcsr_surface* s, zcsr_window_mode mode) {
+    (void)s; (void)mode; return false;
+}
+bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
+    (void)s; (void)w; (void)h; return false;
+}
+bool zcsr_surface_move_to_display(zcsr_surface* s, int display_id) {
+    (void)s; (void)display_id; return false;
+}
+void zcsr_surface_get_client_size(const zcsr_surface* s, int* w, int* h) {
+    (void)s; (void)w; (void)h;
+}
+float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
+    (void)s; return 1.0f;
+}
+#endif
