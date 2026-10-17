@@ -68,6 +68,9 @@ typedef void (*zcsr_aaudio_builder_performance_fn)(AAudioStreamBuilder*, aaudio_
 typedef void (*zcsr_aaudio_builder_sharing_fn)(AAudioStreamBuilder*, aaudio_sharing_mode_t);
 typedef void (*zcsr_aaudio_data_callback_set_fn)(
     AAudioStreamBuilder*, AAudioStream_dataCallback, void*);
+/* Optional symbol: missing this setter must not prevent stream creation. */
+typedef void (*zcsr_aaudio_error_callback_set_fn)(
+    AAudioStreamBuilder*, AAudioStream_errorCallback, void*);
 typedef aaudio_result_t (*zcsr_aaudio_open_stream_fn)(AAudioStreamBuilder*, AAudioStream**);
 typedef void (*zcsr_aaudio_delete_builder_fn)(AAudioStreamBuilder*);
 typedef aaudio_result_t (*zcsr_aaudio_stream_action_fn)(AAudioStream*);
@@ -82,6 +85,7 @@ typedef union {
     zcsr_aaudio_builder_performance_fn set_performance_mode;
     zcsr_aaudio_builder_sharing_fn set_sharing_mode;
     zcsr_aaudio_data_callback_set_fn set_data_callback;
+    zcsr_aaudio_error_callback_set_fn set_error_callback;
     zcsr_aaudio_open_stream_fn open_stream;
     zcsr_aaudio_delete_builder_fn delete_builder;
     zcsr_aaudio_stream_action_fn request_start;
@@ -97,6 +101,8 @@ typedef struct {
     zcsr_aaudio_builder_performance_fn set_performance_mode;
     zcsr_aaudio_builder_sharing_fn set_sharing_mode;
     zcsr_aaudio_data_callback_set_fn set_data_callback;
+    /* Optional; NULL means this platform/runtime lacks error notifications. */
+    zcsr_aaudio_error_callback_set_fn set_error_callback;
     zcsr_aaudio_open_stream_fn open_stream;
     zcsr_aaudio_delete_builder_fn delete_builder;
     zcsr_aaudio_stream_action_fn request_start;
@@ -485,10 +491,6 @@ void zcsr_mix_set_device_callback(
     zcsr_mix_device_callback_unlock(m);
 }
 
-#if defined(__ANDROID__)
-/* Wired by Windows IMMNotificationClient (block 4) and Linux /proc/asound/cards poll (block 5); Android AAudio callback lands in block 6. */
-__attribute__((unused))
-#endif
 static void zcsr_mix_device_set_pending(
     zcsr_mixer *m,
     unsigned int flags
@@ -705,58 +707,206 @@ static aaudio_data_callback_result_t zcsr_mix_aaudio_callback(
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
+/*
+ * AAudio error callback.
+ *
+ * IMPORTANT:
+ * - This callback must not block.
+ * - Do not allocate memory, lock, sleep, stop/close the stream, reopen the
+ *   backend, or call application callbacks here.
+ * - Publish only an atomic pending flag. The mixer worker owns recovery.
+ */
+static void zcsr_mix_aaudio_error_callback(
+    AAudioStream* stream,
+    void* user_data,
+    aaudio_result_t error) {
+    zcsr_mixer* m = (zcsr_mixer*)user_data;
+
+    (void)stream;
+
+    if (!m) return;
+
+    if (error == AAUDIO_ERROR_DISCONNECTED) {
+        zcsr_mix_device_set_pending(
+            m, ZCSR_MIX_DEVICE_PENDING_LOST);
+    }
+
+    /*
+     * Other errors are intentionally ignored in this block.
+     * AAudio can report timeout/internal errors too; they do not, by
+     * themselves, prove that the output endpoint was disconnected.
+     */
+}
+
 static bool zcsr_mix_android_open(zcsr_mixer* m) {
     zcsr_mix_backend* b;
     AAudioStreamBuilder* builder = 0;
     aaudio_result_t result;
+
+    /*
+     * Emit the optional-symbol warning at most once per process, even if
+     * the backend is opened/reopened multiple times.
+     */
+    static atomic_bool warned_missing_error_callback =
+        ATOMIC_VAR_INIT(false);
+
     if (!m) return false;
+
     b = &m->backend;
     *b = (zcsr_mix_backend){ 0 };
+
     b->lib = dlopen("libaaudio.so", RTLD_NOW | RTLD_LOCAL);
     if (!b->lib) return false;
 
 #define ZCSR_LOAD_AAUDIO(field, symbol, member) \
-    do { b->api.field = zcsr_mix_aaudio_sym(b->lib, symbol).member; \
-         if (!b->api.field) goto fail; } while (0)
-    ZCSR_LOAD_AAUDIO(create_builder, "AAudio_createStreamBuilder", create_builder);
-    ZCSR_LOAD_AAUDIO(set_direction, "AAudioStreamBuilder_setDirection", set_direction);
-    ZCSR_LOAD_AAUDIO(set_format, "AAudioStreamBuilder_setFormat", set_format);
-    ZCSR_LOAD_AAUDIO(set_channel_count, "AAudioStreamBuilder_setChannelCount", set_channel_count);
-    ZCSR_LOAD_AAUDIO(set_sample_rate, "AAudioStreamBuilder_setSampleRate", set_sample_rate);
-    ZCSR_LOAD_AAUDIO(set_performance_mode, "AAudioStreamBuilder_setPerformanceMode", set_performance_mode);
-    ZCSR_LOAD_AAUDIO(set_sharing_mode, "AAudioStreamBuilder_setSharingMode", set_sharing_mode);
-    ZCSR_LOAD_AAUDIO(set_data_callback, "AAudioStreamBuilder_setDataCallback", set_data_callback);
-    ZCSR_LOAD_AAUDIO(open_stream, "AAudioStreamBuilder_openStream", open_stream);
-    ZCSR_LOAD_AAUDIO(delete_builder, "AAudioStreamBuilder_delete", delete_builder);
-    ZCSR_LOAD_AAUDIO(request_start, "AAudioStream_requestStart", request_start);
-    ZCSR_LOAD_AAUDIO(request_stop, "AAudioStream_requestStop", request_stop);
-    ZCSR_LOAD_AAUDIO(close_stream, "AAudioStream_close", close_stream);
+    do { \
+        b->api.field = zcsr_mix_aaudio_sym(b->lib, symbol).member; \
+        if (!b->api.field) goto fail; \
+    } while (0)
+
+    /* All original required symbols remain mandatory. */
+    ZCSR_LOAD_AAUDIO(
+        create_builder,
+        "AAudio_createStreamBuilder",
+        create_builder);
+
+    ZCSR_LOAD_AAUDIO(
+        set_direction,
+        "AAudioStreamBuilder_setDirection",
+        set_direction);
+
+    ZCSR_LOAD_AAUDIO(
+        set_format,
+        "AAudioStreamBuilder_setFormat",
+        set_format);
+
+    ZCSR_LOAD_AAUDIO(
+        set_channel_count,
+        "AAudioStreamBuilder_setChannelCount",
+        set_channel_count);
+
+    ZCSR_LOAD_AAUDIO(
+        set_sample_rate,
+        "AAudioStreamBuilder_setSampleRate",
+        set_sample_rate);
+
+    ZCSR_LOAD_AAUDIO(
+        set_performance_mode,
+        "AAudioStreamBuilder_setPerformanceMode",
+        set_performance_mode);
+
+    ZCSR_LOAD_AAUDIO(
+        set_sharing_mode,
+        "AAudioStreamBuilder_setSharingMode",
+        set_sharing_mode);
+
+    ZCSR_LOAD_AAUDIO(
+        set_data_callback,
+        "AAudioStreamBuilder_setDataCallback",
+        set_data_callback);
+
+    ZCSR_LOAD_AAUDIO(
+        open_stream,
+        "AAudioStreamBuilder_openStream",
+        open_stream);
+
+    ZCSR_LOAD_AAUDIO(
+        delete_builder,
+        "AAudioStreamBuilder_delete",
+        delete_builder);
+
+    ZCSR_LOAD_AAUDIO(
+        request_start,
+        "AAudioStream_requestStart",
+        request_start);
+
+    ZCSR_LOAD_AAUDIO(
+        request_stop,
+        "AAudioStream_requestStop",
+        request_stop);
+
+    ZCSR_LOAD_AAUDIO(
+        close_stream,
+        "AAudioStream_close",
+        close_stream);
+
 #undef ZCSR_LOAD_AAUDIO
+
+    /*
+     * Optional symbol:
+     * it is intentionally NOT loaded through ZCSR_LOAD_AAUDIO because
+     * absence must not jump to fail or prevent playback.
+     */
+    b->api.set_error_callback =
+        zcsr_mix_aaudio_sym(
+            b->lib,
+            "AAudioStreamBuilder_setErrorCallback").set_error_callback;
+
+    if (!b->api.set_error_callback) {
+        bool already_warned = atomic_exchange_explicit(
+            &warned_missing_error_callback,
+            true,
+            memory_order_relaxed);
+
+        if (!already_warned) {
+            (void)fprintf(
+                stderr,
+                "zcsr audio: AAudioStreamBuilder_setErrorCallback "
+                "is unavailable; device-loss notifications are disabled\n");
+        }
+    }
 
     result = b->api.create_builder(&builder);
     if (result != AAUDIO_OK || !builder) goto fail;
+
     b->api.set_direction(builder, AAUDIO_DIRECTION_OUTPUT);
     b->api.set_format(builder, AAUDIO_FORMAT_PCM_I16);
     b->api.set_channel_count(builder, 2);
     b->api.set_sample_rate(builder, ZCSR_MIX_RATE);
-    b->api.set_performance_mode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    b->api.set_performance_mode(
+        builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
     b->api.set_sharing_mode(builder, AAUDIO_SHARING_MODE_SHARED);
-    b->api.set_data_callback(builder, zcsr_mix_aaudio_callback, m);
+
+    /* Existing PCM data callback remains unchanged. */
+    b->api.set_data_callback(
+        builder, zcsr_mix_aaudio_callback, m);
+
+    /*
+     * Register the error callback after set_data_callback and before
+     * open_stream, as required by the block-6 contract.
+     */
+    if (b->api.set_error_callback) {
+        b->api.set_error_callback(
+            builder,
+            zcsr_mix_aaudio_error_callback,
+            m);
+    }
+
     result = b->api.open_stream(builder, &b->stream);
+
     b->api.delete_builder(builder);
     builder = 0;
+
     if (result != AAUDIO_OK || !b->stream) goto fail;
+
     b->owner = m;
     b->opened = true;
     return true;
 
 fail:
-    if (builder && b->api.delete_builder) b->api.delete_builder(builder);
+    if (builder && b->api.delete_builder) {
+        b->api.delete_builder(builder);
+    }
+
     if (b->stream && b->api.close_stream) {
         (void)b->api.close_stream(b->stream);
         b->stream = 0;
     }
-    if (b->lib) dlclose(b->lib);
+
+    if (b->lib) {
+        dlclose(b->lib);
+    }
+
     *b = (zcsr_mix_backend){ 0 };
     return false;
 }
