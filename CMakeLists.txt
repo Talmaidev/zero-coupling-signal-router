@@ -92,6 +92,7 @@ if(UNIX AND NOT APPLE)
     target_compile_definitions(zcsr_platform PRIVATE ZCSR_HAVE_XINERAMA)
     target_link_libraries(zcsr_platform PUBLIC ${X11_Xinerama_LIB})
   endif()
+  target_link_libraries(zcsr_platform PUBLIC m)  # isfinite/fabsf/strtod for A2 DPI parsing
   target_link_libraries(zcsr_overlay PUBLIC ${X11_LIBRARIES})
   target_include_directories(zcsr_overlay PRIVATE ${X11_INCLUDE_DIR})
   target_link_libraries(zcsr_input PUBLIC ${X11_LIBRARIES})  # input pumps X11 key/close events
@@ -242,3 +243,22 @@ add_custom_target(check_coupling
   COMMAND ${CMAKE_SOURCE_DIR}/tools/check_no_cross_includes.sh
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
   COMMENT "Verifying no cross-module includes")
+
+# --- A2: embed PerMonitorV2 DPI manifest into every Windows executable ---
+if(WIN32)
+  enable_language(RC)
+  get_property(ZCSR_ALL_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(target_name IN LISTS ZCSR_ALL_TARGETS)
+    get_target_property(target_type "${target_name}" TYPE)
+    if(target_type STREQUAL "EXECUTABLE")
+      target_sources(
+        "${target_name}"
+        PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/windows/zcsr.rc"
+      )
+      # Disable CMake's default auto-generated manifest so the RC-embedded
+      # PerMonitorV2 manifest is the only one (avoids LNK1123 duplicate resource).
+      set_target_properties("${target_name}" PROPERTIES LINK_FLAGS "/MANIFEST:NO")
+    endif()
+  endforeach()
+endif()
