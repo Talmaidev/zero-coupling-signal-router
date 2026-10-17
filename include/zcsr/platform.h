@@ -100,4 +100,25 @@ void zcsr_surface_get_client_size(const zcsr_surface* surface, int* w, int* h);
 /* Current DPI scale for the window's display; 1.0f when unknown. */
 float zcsr_surface_get_dpi_scale(const zcsr_surface* surface);
 
+typedef void (*zcsr_dpi_changed_fn)(
+    zcsr_surface* surface,
+    float new_scale,
+    void* user
+);
+
+/*
+ * Registers the per-surface DPI callback.
+ * A later registration replaces the previous callback.
+ * Passing NULL unregisters the callback.
+ * Registration does not invoke the callback immediately.
+ * The callback runs synchronously during platform event dispatch.
+ * Do NOT destroy the surface or modify the same window state inside
+ * the callback; doing so may cause reentrancy issues.
+ */
+void zcsr_surface_set_dpi_callback(
+    zcsr_surface* surface,
+    zcsr_dpi_changed_fn callback,
+    void* user
+);
+
 #endif /* ZCSR_PLATFORM_H */

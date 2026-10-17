@@ -12,6 +12,18 @@ static int fail_if(int condition) {
     printf("test_platform FAIL at line %d: code %d (%s)\n", __LINE__, (code), #cond); \
     return (code); } } while (0)
 
+static void test_dpi_callback(
+    zcsr_surface* surface,
+    float new_scale,
+    void* user
+) {
+    int* count = (int*)user;
+    (void)surface;
+    if (isfinite(new_scale) && new_scale > 0.0f && count) {
+        ++(*count);
+    }
+}
+
 int main(void) {
     int count = zcsr_display_count();
     int i;
@@ -121,6 +133,20 @@ int main(void) {
 
             /* Invalid mode rejected. */
             CHECK(zcsr_surface_set_mode(s, (zcsr_window_mode)77) != false, 31);
+
+            /* A2: DPI scale is finite/positive and callback can be registered. */
+            {
+                int dpi_callback_count = 0;
+                float scale = zcsr_surface_get_dpi_scale(s);
+                CHECK(!(isfinite(scale) && scale > 0.0f), 32);
+                zcsr_surface_set_dpi_callback(
+                    s,
+                    test_dpi_callback,
+                    &dpi_callback_count
+                );
+                CHECK(dpi_callback_count != 0, 33);
+                zcsr_surface_set_dpi_callback(s, NULL, NULL);
+            }
 
             zcsr_surface_destroy(s);
             printf("test_platform: real-window checks ran\n");
