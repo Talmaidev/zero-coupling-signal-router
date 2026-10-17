@@ -31,6 +31,7 @@ endif()
 
 add_library(zcsr_phase0 SHARED
     "${CMAKE_CURRENT_SOURCE_DIR}/android_main.c"
+    "${ZCSR_ROOT}/modules/core/log.c"
     "${ZCSR_ROOT}/modules/platform/platform.c"
     "${ZCSR_ROOT}/modules/input/input.c"
     "${ZCSR_ROOT}/modules/inputext/inputext.c"
