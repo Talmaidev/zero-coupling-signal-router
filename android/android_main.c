@@ -487,6 +487,18 @@ static int32_t zcsr_android_handle_input(
     return zcsr_input_ext_android_event(runtime->input_ext, event);
 }
 
+static void zcsr_android_focus_callback(
+    zcsr_surface* surface,
+    zcsr_focus_event event,
+    void* user
+) {
+    zcsr_input_ext* input_ext = (zcsr_input_ext*)user;
+    (void)surface;
+    if (event == ZCSR_FOCUS_LOST && input_ext) {
+        zcsr_input_ext_android_reset(input_ext);
+    }
+}
+
 static void zcsr_android_handle_cmd(struct android_app* state, int32_t cmd) {
     zcsr_android_runtime* runtime;
 
@@ -511,10 +523,12 @@ static void zcsr_android_handle_cmd(struct android_app* state, int32_t cmd) {
         LOGI("surface detached");
         break;
 
+    case APP_CMD_GAINED_FOCUS:
+        zcsr_platform_android_dispatch_focus(ZCSR_FOCUS_GAINED);
+        break;
+
     case APP_CMD_LOST_FOCUS:
-        if (runtime->input_ext) {
-            zcsr_input_ext_android_reset(runtime->input_ext);
-        }
+        zcsr_platform_android_dispatch_focus(ZCSR_FOCUS_LOST);
         break;
 
     default:
@@ -547,6 +561,11 @@ void android_main(struct android_app* state) {
         sizeof(runtime.input_storage.bytes));
     if (runtime.input_ext) {
         state->onInputEvent = zcsr_android_handle_input;
+        zcsr_surface_set_focus_callback(
+            runtime.surface,
+            zcsr_android_focus_callback,
+            runtime.input_ext
+        );
         LOGI("1E input extension initialized (sizeof storage=%zu)",
              sizeof(runtime.input_storage.bytes));
     } else {
@@ -634,6 +653,7 @@ void android_main(struct android_app* state) {
     }
 
     /* Free GL/EGL resources while the attached native window is still valid. */
+    zcsr_surface_set_focus_callback(runtime.surface, NULL, NULL);
     if (runtime.input_ext) {
         zcsr_input_ext_shutdown(runtime.input_ext);
         runtime.input_ext = 0;

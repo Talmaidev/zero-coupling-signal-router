@@ -136,4 +136,44 @@ bool zcsr_surface_set_size_limits(
     int max_w, int max_h
 );
 
+typedef enum {
+    ZCSR_FOCUS_GAINED = 0,
+    ZCSR_FOCUS_LOST = 1
+} zcsr_focus_event;
+
+typedef void (*zcsr_focus_fn)(
+    zcsr_surface* surface,
+    zcsr_focus_event event,
+    void* user
+);
+
+/*
+ * Registers one focus callback for a surface.
+ * A later registration replaces the previous callback.
+ * Passing NULL unregisters the callback.
+ * The callback runs synchronously during event dispatch.
+ *
+ * Focus events may be repeated by the operating system;
+ * applications should tolerate repeated GAINED or LOST events.
+ * Do not destroy the surface or change its window state
+ * reentrantly from this callback.
+ *
+ * On platforms without focus events (macOS stub), the callback
+ * may be registered but will never be invoked.
+ */
+void zcsr_surface_set_focus_callback(
+    zcsr_surface* surface,
+    zcsr_focus_fn callback,
+    void* user
+);
+
+#if defined(__ANDROID__)
+/*
+ * Internal platform bridge: converts NativeActivity focus commands into
+ * engine focus events. Called only from android_main's onAppCmd handler.
+ * Dispatches to all active surfaces' focus callbacks.
+ */
+void zcsr_platform_android_dispatch_focus(zcsr_focus_event event);
+#endif
+
 #endif /* ZCSR_PLATFORM_H */

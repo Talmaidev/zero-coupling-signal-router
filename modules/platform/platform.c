@@ -19,6 +19,8 @@ struct zcsr_surface {
     zcsr_dpi_changed_fn dpi_cb;
     void* dpi_user;
     int min_w, min_h, max_w, max_h; /* 0 = no limit; client-area pixels */
+    zcsr_focus_fn focus_cb;
+    void* focus_user;
 #if defined(__ANDROID__)
     void* native_window;
 #elif defined(_WIN32)
@@ -124,6 +126,31 @@ bool zcsr_surface_set_size_limits(
     return true;
 }
 
+static void zcsr_surface_dispatch_focus(
+    zcsr_surface* s,
+    zcsr_focus_event event
+) {
+    zcsr_focus_fn callback;
+    void* user;
+    if (!s || !s->in_use) return;
+    if (event != ZCSR_FOCUS_GAINED && event != ZCSR_FOCUS_LOST) return;
+    callback = s->focus_cb;
+    user = s->focus_user;
+    if (callback) {
+        callback(s, event, user);
+    }
+}
+
+void zcsr_surface_set_focus_callback(
+    zcsr_surface* s,
+    zcsr_focus_fn callback,
+    void* user
+) {
+    if (!s || !s->in_use) return;
+    s->focus_cb = callback;
+    s->focus_user = callback ? user : NULL;
+}
+
 #if defined(__ANDROID__)
 zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
     zcsr_surface* surface;
@@ -154,6 +181,17 @@ void* zcsr_surface_native_display(const zcsr_surface* s) {
 void zcsr_surface_pump_events(zcsr_surface* s) {
     /* Android lifecycle and input events belong to native_app_glue. */
     (void)s;
+}
+
+void zcsr_platform_android_dispatch_focus(zcsr_focus_event event) {
+    size_t i;
+    if (event != ZCSR_FOCUS_GAINED && event != ZCSR_FOCUS_LOST) return;
+    for (i = 0; i < ZCSR_SURFACE_POOL; ++i) {
+        zcsr_surface* s = &zcsr_surfaces[i];
+        if (s->in_use) {
+            zcsr_surface_dispatch_focus(s, event);
+        }
+    }
 }
 #elif defined(__linux__)
 #include <X11/Xatom.h>
@@ -221,6 +259,14 @@ zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
     zcsr_set_atom(display, window, "_NET_WM_STATE", "_NET_WM_STATE_ABOVE");
     XMapRaised(display, window);
     XFlush(display);
+
+    /* Select focus events (merge with any existing event mask). */
+    {
+        XWindowAttributes wa;
+        if (XGetWindowAttributes(display, window, &wa)) {
+            XSelectInput(display, window, wa.your_event_mask | FocusChangeMask);
+        }
+    }
 
     surface = zcsr_surface_acquire();
     if (!surface) {
@@ -295,6 +341,14 @@ void zcsr_surface_pump_events(zcsr_surface* s) {
                 property_event->atom == s->xsettings_settings_atom) {
                 dpi_may_have_changed = true;
             }
+        }
+        if (event.type == FocusIn &&
+            event.xfocus.window == (Window)s->window) {
+            zcsr_surface_dispatch_focus(s, ZCSR_FOCUS_GAINED);
+        }
+        if (event.type == FocusOut &&
+            event.xfocus.window == (Window)s->window) {
+            zcsr_surface_dispatch_focus(s, ZCSR_FOCUS_LOST);
         }
 #if defined(ZCSR_HAVE_XRANDR)
         {
@@ -443,6 +497,18 @@ static LRESULT CALLBACK zcsr_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
             }
         }
         return 0;
+    }
+    if (msg == WM_SETFOCUS) {
+        LRESULT result = DefWindowProcA(hwnd, msg, wp, lp);
+        zcsr_surface* s = zcsr_surface_find_by_hwnd(hwnd);
+        if (s) zcsr_surface_dispatch_focus(s, ZCSR_FOCUS_GAINED);
+        return result;
+    }
+    if (msg == WM_KILLFOCUS) {
+        LRESULT result = DefWindowProcA(hwnd, msg, wp, lp);
+        zcsr_surface* s = zcsr_surface_find_by_hwnd(hwnd);
+        if (s) zcsr_surface_dispatch_focus(s, ZCSR_FOCUS_LOST);
+        return result;
     }
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
