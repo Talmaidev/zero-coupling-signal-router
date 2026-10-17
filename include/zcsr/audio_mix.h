@@ -17,6 +17,55 @@ typedef struct zcsr_mixer zcsr_mixer; /* opaque; owns the audio thread + device 
 zcsr_mixer* zcsr_mix_start(void);       /* spawn audio thread + open output device. NULL on fail. */
 void        zcsr_mix_stop(zcsr_mixer*); /* stop playback + join thread + close device. */
 
+/*
+ * Audio output-device lifecycle events.
+ *
+ * Notifications are dispatched by the mixer worker, not by a platform
+ * notification callback or a real-time audio callback.
+ */
+typedef enum {
+    ZCSR_AUDIO_DEVICE_LOST = 0,
+    ZCSR_AUDIO_DEVICE_CHANGED = 1,
+    ZCSR_AUDIO_DEVICE_RECOVERED = 2
+} zcsr_audio_device_event;
+
+/*
+ * Called on the mixer worker thread.
+ *
+ * LOST:
+ *   The current output device/stream has been determined to be unavailable.
+ *
+ * CHANGED:
+ *   The output-device configuration changed and the backend was reopened
+ *   successfully, without an outstanding LOST recovery cycle.
+ *
+ * RECOVERED:
+ *   The backend reopened successfully after a LOST event.
+ *
+ * The callback must not synchronously stop or destroy the same mixer,
+ * because doing so may attempt to join the current worker thread.
+ */
+typedef void (*zcsr_audio_device_fn)(
+    zcsr_mixer *mixer,
+    zcsr_audio_device_event event,
+    void *user
+);
+
+/*
+ * Register, replace, or unregister the output-device callback.
+ *
+ * A later registration replaces the previous callback and user pointer.
+ * Passing callback == NULL unregisters the callback and clears its user
+ * pointer. Registration does not invoke the callback immediately.
+ *
+ * Events are dispatched synchronously on the mixer worker thread.
+ */
+void zcsr_mix_set_device_callback(
+    zcsr_mixer *mixer,
+    zcsr_audio_device_fn callback,
+    void *user
+);
+
 /* Register a WAV (PCM 16-bit 44100 Hz mono/stereo) under an id (no path in play calls/signals). */
 bool        zcsr_mix_register_wav(zcsr_mixer*, const char* id, const char* wav_path);
 

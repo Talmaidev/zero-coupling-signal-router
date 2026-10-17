@@ -116,6 +116,22 @@ enum {
     ZCSR_MIX_CH_ACTIVE = 2
 };
 
+enum {
+    ZCSR_MIX_DEVICE_RUNNING = 0,
+    ZCSR_MIX_DEVICE_CHANGE_PENDING = 1,
+    ZCSR_MIX_DEVICE_REBUILDING = 2,
+    ZCSR_MIX_DEVICE_RECOVERY_PENDING = 3
+};
+
+enum {
+    ZCSR_MIX_DEVICE_PENDING_LOST = 1U << 0,
+    ZCSR_MIX_DEVICE_PENDING_CHANGED = 1U << 1
+};
+
+#define ZCSR_MIX_DEVICE_PENDING_MASK \
+    (ZCSR_MIX_DEVICE_PENDING_LOST | \
+     ZCSR_MIX_DEVICE_PENDING_CHANGED)
+
 typedef enum {
     ZCSR_MIX_CMD_PLAY = 1,
     ZCSR_MIX_CMD_STOP_CHANNEL = 2,
@@ -196,6 +212,29 @@ struct zcsr_mixer {
     int16_t pcm_ring[4096U * 2U];
 #endif
     zcsr_mix_backend backend;
+
+    /* Device recovery state; platform callbacks only set pending flags. */
+    atomic_int device_state;
+    atomic_uint device_pending_flags;
+    bool device_recovery_after_loss;
+
+    /* Protects the callback/user pair only; never call user code while locked. */
+    atomic_flag device_callback_lock;
+    zcsr_audio_device_fn device_cb;
+    void *device_user;
+
+#if defined(_WIN32)
+    /* Registered IMMNotificationClient implementation; managed in later blocks. */
+    IMMNotificationClient *device_notification_client;
+#endif
+
+#if defined(__linux__) && !defined(__ANDROID__)
+    /* Fixed-capacity snapshot of /proc/asound/cards; polling is in a later block. */
+    char device_cards_snapshot[8192];
+    size_t device_cards_snapshot_len;
+    bool device_cards_snapshot_valid;
+#endif
+
 #if defined(_WIN32)
     HANDLE thread;
 #else
@@ -398,6 +437,222 @@ static bool zcsr_mix_load_wav(zcsr_mixer* m, zcsr_mix_sound* s, const char* path
     m->sample_frames_used += frames;
     (void)rate;
     return true;
+}
+
+/* === Device-recovery state machine helpers (block 3) === */
+
+static void zcsr_mix_device_callback_lock(zcsr_mixer *m)
+{
+    while (atomic_flag_test_and_set_explicit(
+        &m->device_callback_lock,
+        memory_order_acquire)) {
+    }
+}
+
+static void zcsr_mix_device_callback_unlock(zcsr_mixer *m)
+{
+    atomic_flag_clear_explicit(
+        &m->device_callback_lock,
+        memory_order_release
+    );
+}
+
+void zcsr_mix_set_device_callback(
+    zcsr_mixer *m,
+    zcsr_audio_device_fn callback,
+    void *user
+)
+{
+    if (m == NULL || !m->in_use) {
+        return;
+    }
+
+    zcsr_mix_device_callback_lock(m);
+
+    m->device_cb = callback;
+    m->device_user = callback != NULL ? user : NULL;
+
+    zcsr_mix_device_callback_unlock(m);
+}
+
+#if defined(__GNUC__)
+__attribute__((unused)) /* wired up by platform device callbacks in a later block */
+#endif
+static void zcsr_mix_device_set_pending(
+    zcsr_mixer *m,
+    unsigned int flags
+)
+{
+    int expected;
+
+    if (m == NULL ||
+        !atomic_load_explicit(&m->running, memory_order_acquire)) {
+        return;
+    }
+
+    flags &= ZCSR_MIX_DEVICE_PENDING_MASK;
+
+    if (flags == 0U) {
+        return;
+    }
+
+    (void)atomic_fetch_or_explicit(
+        &m->device_pending_flags,
+        flags,
+        memory_order_release
+    );
+
+    expected = ZCSR_MIX_DEVICE_RUNNING;
+
+    (void)atomic_compare_exchange_strong_explicit(
+        &m->device_state,
+        &expected,
+        ZCSR_MIX_DEVICE_CHANGE_PENDING,
+        memory_order_acq_rel,
+        memory_order_acquire
+    );
+}
+
+static unsigned int zcsr_mix_device_take_pending(zcsr_mixer *m)
+{
+    unsigned int flags;
+
+    if (m == NULL) {
+        return 0U;
+    }
+
+    flags = atomic_exchange_explicit(
+        &m->device_pending_flags,
+        0U,
+        memory_order_acq_rel
+    );
+
+    return flags & ZCSR_MIX_DEVICE_PENDING_MASK;
+}
+
+static void zcsr_mix_device_notify_worker(
+    zcsr_mixer *m,
+    zcsr_audio_device_event event
+)
+{
+    zcsr_audio_device_fn callback;
+    void *user;
+
+    if (m == NULL) {
+        return;
+    }
+
+    if (event != ZCSR_AUDIO_DEVICE_LOST &&
+        event != ZCSR_AUDIO_DEVICE_CHANGED &&
+        event != ZCSR_AUDIO_DEVICE_RECOVERED) {
+        return;
+    }
+
+    zcsr_mix_device_callback_lock(m);
+    callback = m->device_cb;
+    user = m->device_user;
+    zcsr_mix_device_callback_unlock(m);
+
+    if (callback != NULL) {
+        callback(m, event, user);
+    }
+}
+
+static bool zcsr_mix_device_begin_rebuild(
+    zcsr_mixer *m,
+    unsigned int pending_flags,
+    bool retry
+)
+{
+    int state;
+
+    if (m == NULL) {
+        return false;
+    }
+
+    state = atomic_load_explicit(
+        &m->device_state,
+        memory_order_acquire
+    );
+
+    if (state == ZCSR_MIX_DEVICE_REBUILDING) {
+        return false;
+    }
+
+    if (retry) {
+        if (state != ZCSR_MIX_DEVICE_RECOVERY_PENDING) {
+            return false;
+        }
+    } else {
+        if (state != ZCSR_MIX_DEVICE_CHANGE_PENDING ||
+            (pending_flags & ZCSR_MIX_DEVICE_PENDING_MASK) == 0U) {
+            return false;
+        }
+    }
+
+    atomic_store_explicit(
+        &m->device_state,
+        ZCSR_MIX_DEVICE_REBUILDING,
+        memory_order_release
+    );
+
+    if (!retry &&
+        (pending_flags & ZCSR_MIX_DEVICE_PENDING_LOST) != 0U) {
+        if (!m->device_recovery_after_loss) {
+            m->device_recovery_after_loss = true;
+
+            zcsr_mix_device_notify_worker(
+                m,
+                ZCSR_AUDIO_DEVICE_LOST
+            );
+        }
+    }
+
+    return true;
+}
+
+static void zcsr_mix_device_rebuild_succeeded(zcsr_mixer *m)
+{
+    bool recovered_after_loss;
+
+    if (m == NULL) {
+        return;
+    }
+
+    recovered_after_loss = m->device_recovery_after_loss;
+
+    atomic_store_explicit(
+        &m->device_state,
+        ZCSR_MIX_DEVICE_RUNNING,
+        memory_order_release
+    );
+
+    if (recovered_after_loss) {
+        m->device_recovery_after_loss = false;
+
+        zcsr_mix_device_notify_worker(
+            m,
+            ZCSR_AUDIO_DEVICE_RECOVERED
+        );
+    } else {
+        zcsr_mix_device_notify_worker(
+            m,
+            ZCSR_AUDIO_DEVICE_CHANGED
+        );
+    }
+}
+
+static void zcsr_mix_device_rebuild_failed(zcsr_mixer *m)
+{
+    if (m == NULL) {
+        return;
+    }
+
+    atomic_store_explicit(
+        &m->device_state,
+        ZCSR_MIX_DEVICE_RECOVERY_PENDING,
+        memory_order_release
+    );
 }
 
 #if defined(__ANDROID__)
@@ -897,6 +1152,89 @@ static void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsi
 }
 #endif
 
+/* === Device-recovery backend wrappers (block 7) === */
+
+enum {
+    ZCSR_MIX_DEVICE_RETRY_BACKOFF_MS = 1000,
+    ZCSR_MIX_DEVICE_RETRY_STEP_MS = 10
+};
+
+static bool zcsr_mix_backend_open_ex(zcsr_mixer* m) {
+    if (!m) return false;
+
+#if defined(__ANDROID__)
+    /*
+     * Current AAudio startup opens the stream in zcsr_mix_start().
+     * The actual Android close/recreate/start path is completed in later blocks.
+     */
+    return m->backend.opened && m->backend.stream != NULL;
+#else
+    /*
+     * The current platform open functions return void.
+     * Their authoritative success indicator is backend.opened.
+     */
+    zcsr_mix_backend_open(&m->backend);
+    return m->backend.opened;
+#endif
+}
+
+static bool zcsr_mix_backend_close_ex(zcsr_mixer* m) {
+    if (!m) return false;
+
+    zcsr_mix_backend_close(&m->backend);
+
+#if defined(__ANDROID__)
+    return !m->backend.opened &&
+           m->backend.stream == NULL &&
+           m->backend.lib == NULL;
+#elif defined(__linux__) && !defined(__ANDROID__)
+    return !m->backend.opened &&
+           m->backend.pcm == NULL &&
+           m->backend.lib == NULL;
+#elif defined(_WIN32)
+    return !m->backend.opened &&
+           m->backend.enumerator == NULL &&
+           m->backend.audio_client == NULL &&
+           m->backend.render_client == NULL &&
+           m->backend.event == NULL &&
+           !m->backend.com_initialized;
+#else
+    return !m->backend.opened;
+#endif
+}
+
+/*
+ * Bounded, interruptible retry delay.
+ * Stop is observed at least once per retry step rather than waiting out
+ * the entire one-second delay.
+ */
+static bool zcsr_mix_device_retry_backoff(zcsr_mixer* m) {
+    unsigned elapsed_ms = 0U;
+
+    if (!m) return false;
+
+    while (elapsed_ms < ZCSR_MIX_DEVICE_RETRY_BACKOFF_MS) {
+        if (!atomic_load_explicit(&m->running, memory_order_acquire)) {
+            return false;
+        }
+
+#if defined(_WIN32)
+        Sleep(ZCSR_MIX_DEVICE_RETRY_STEP_MS);
+#else
+        {
+            struct timespec ts;
+            ts.tv_sec = 0;
+            ts.tv_nsec =
+                (long)ZCSR_MIX_DEVICE_RETRY_STEP_MS * 1000000L;
+            (void)nanosleep(&ts, 0);
+        }
+#endif
+        elapsed_ms += ZCSR_MIX_DEVICE_RETRY_STEP_MS;
+    }
+
+    return atomic_load_explicit(&m->running, memory_order_acquire);
+}
+
 static int16_t zcsr_mix_clamp(int v) {
     if (v > 32767) return 32767;
     if (v < -32768) return -32768;
@@ -970,16 +1308,137 @@ static void* zcsr_mix_thread_main(void* arg)
 #endif
 {
     zcsr_mixer* m = (zcsr_mixer*)arg;
-    zcsr_mix_backend_open(&m->backend);
+
+    if (!m) {
+#if defined(_WIN32)
+        return 0;
+#else
+        return 0;
+#endif
+    }
+
+    /*
+     * Windows/Linux open on the mixer thread.
+     * Android stream creation remains in zcsr_mix_start(), before this thread
+     * begins filling the PCM ring.
+     *
+     * Preserve current startup/headless behavior: a failed initial open does
+     * not prevent the mixer logic path from running.
+     */
+    (void)zcsr_mix_backend_open_ex(m);
+
     while (atomic_load_explicit(&m->running, memory_order_acquire)) {
+        unsigned pending_flags;
+        int state;
+        bool retry;
+        bool need_rebuild;
+
+        pending_flags = zcsr_mix_device_take_pending(m);
+        state = atomic_load_explicit(
+            &m->device_state, memory_order_acquire);
+
+        /*
+         * A notification may arrive while the previous rebuild is in
+         * progress. Its pending flags are published even if the producer's
+         * RUNNING -> CHANGE_PENDING CAS cannot succeed at that moment.
+         *
+         * Promote the state here once the worker is back in RUNNING so that
+         * such flags cannot be stranded indefinitely.
+         */
+        if (pending_flags != 0U && state == ZCSR_MIX_DEVICE_RUNNING) {
+            int expected = ZCSR_MIX_DEVICE_RUNNING;
+
+            (void)atomic_compare_exchange_strong_explicit(
+                &m->device_state,
+                &expected,
+                ZCSR_MIX_DEVICE_CHANGE_PENDING,
+                memory_order_acq_rel,
+                memory_order_acquire);
+
+            state = atomic_load_explicit(
+                &m->device_state, memory_order_acquire);
+        }
+
+        retry = (state == ZCSR_MIX_DEVICE_RECOVERY_PENDING);
+        need_rebuild =
+            retry ||
+            (pending_flags != 0U &&
+             state == ZCSR_MIX_DEVICE_CHANGE_PENDING);
+
+        if (need_rebuild) {
+            bool close_ok;
+            bool open_ok = false;
+
+            /*
+             * Failed rebuilds enter RECOVERY_PENDING.
+             * Retry at a bounded interval rather than spinning.
+             */
+            if (retry && !zcsr_mix_device_retry_backoff(m)) {
+                break;
+            }
+
+            if (!atomic_load_explicit(
+                    &m->running, memory_order_acquire)) {
+                break;
+            }
+
+            if (!zcsr_mix_device_begin_rebuild(
+                    m, pending_flags, retry)) {
+                /*
+                 * State may have changed while flags were being consumed.
+                 * Do not perform backend operations unless begin_rebuild
+                 * accepts the transition.
+                 */
+                continue;
+            }
+
+            close_ok = zcsr_mix_backend_close_ex(m);
+
+            if (close_ok &&
+                atomic_load_explicit(
+                    &m->running, memory_order_acquire)) {
+                open_ok = zcsr_mix_backend_open_ex(m);
+            }
+
+            /*
+             * Don't emit a recovery outcome once stop has been requested.
+             * The normal exit path / stop function owns final teardown.
+             */
+            if (!atomic_load_explicit(
+                    &m->running, memory_order_acquire)) {
+                break;
+            }
+
+            if (open_ok) {
+                zcsr_mix_device_rebuild_succeeded(m);
+            } else {
+                zcsr_mix_device_rebuild_failed(m);
+            }
+
+            /*
+             * Do not render/write against a backend that was just rebuilt.
+             * Continue at the top to consume any flags published during
+             * close/open, then resume normal work when stable.
+             */
+            continue;
+        }
+
+        /* Existing mixer logic remains unchanged. */
         zcsr_mix_drain_commands(m);
         zcsr_mix_render_period(m);
-        zcsr_mix_backend_write(&m->backend, m->mix_buffer, ZCSR_MIX_PERIOD_FRAMES);
+        zcsr_mix_backend_write(
+            &m->backend,
+            m->mix_buffer,
+            ZCSR_MIX_PERIOD_FRAMES);
     }
+
+    /* Preserve the original final command drain. */
     zcsr_mix_drain_commands(m);
+
 #if !defined(__ANDROID__)
-    zcsr_mix_backend_close(&m->backend);
+    (void)zcsr_mix_backend_close_ex(m);
 #endif
+
 #if defined(_WIN32)
     return 0;
 #else
@@ -990,23 +1449,48 @@ static void* zcsr_mix_thread_main(void* arg)
 zcsr_mixer* zcsr_mix_start(void) {
     for (int i = 0; i < ZCSR_MIX_POOL; ++i) {
         zcsr_mixer* m = &g_mix_pool[i];
+
         if (m->in_use) continue;
+
         memset(m, 0, sizeof(*m));
         m->in_use = true;
+
         atomic_init(&m->running, true);
         atomic_init(&m->cmd_head, 0U);
         atomic_init(&m->cmd_tail, 0U);
         atomic_init(&m->finished_head, 0U);
         atomic_init(&m->finished_tail, 0U);
+
+        /* New device-state atomics must be explicitly initialized. */
+        atomic_init(&m->device_state, ZCSR_MIX_DEVICE_RUNNING);
+        atomic_init(&m->device_pending_flags, 0U);
+        atomic_flag_clear(&m->device_callback_lock);
+
+        m->device_recovery_after_loss = false;
+        m->device_cb = NULL;
+        m->device_user = NULL;
+
+#if defined(_WIN32)
+        m->device_notification_client = NULL;
+#endif
+
+#if defined(__linux__) && !defined(__ANDROID__)
+        m->device_cards_snapshot[0] = '\0';
+        m->device_cards_snapshot_len = 0U;
+        m->device_cards_snapshot_valid = false;
+#endif
+
 #if defined(__ANDROID__)
         atomic_init(&m->pcm_head, 0U);
         atomic_init(&m->pcm_tail, 0U);
         atomic_init(&m->pcm_prefilled, false);
         atomic_init(&m->pcm_underruns, 0U);
+
         for (int c = 0; c < ZCSR_MIX_CHANNELS; ++c) {
             atomic_init(&m->channels[c].state, ZCSR_MIX_CH_FREE);
             m->channels[c].sound = -1;
         }
+
         if (!atomic_is_lock_free(&m->pcm_head) ||
             !atomic_is_lock_free(&m->pcm_tail) ||
             !atomic_is_lock_free(&m->pcm_prefilled) ||
@@ -1022,50 +1506,71 @@ zcsr_mixer* zcsr_mix_start(void) {
             m->channels[c].sound = -1;
         }
 #endif
+
 #if defined(_WIN32)
         m->thread = CreateThread(0, 0, zcsr_mix_thread_main, m, 0, 0);
         m->thread_started = m->thread != 0;
 #else
-        m->thread_started = pthread_create(&m->thread, 0, zcsr_mix_thread_main, m) == 0;
+        m->thread_started =
+            pthread_create(&m->thread, 0, zcsr_mix_thread_main, m) == 0;
 #endif
+
         if (!m->thread_started) {
 #if defined(__ANDROID__)
-            atomic_store_explicit(&m->running, false, memory_order_release);
+            atomic_store_explicit(
+                &m->running, false, memory_order_release);
             zcsr_mix_backend_close(&m->backend);
 #endif
             memset(m, 0, sizeof(*m));
             return 0;
         }
+
 #if defined(__ANDROID__)
+        /*
+         * Preserve the original startup ordering:
+         * thread prefill -> request_start -> mark stream_started.
+         */
         {
             unsigned tries = 0;
-            while (!atomic_load_explicit(&m->pcm_prefilled, memory_order_acquire) &&
-                   atomic_load_explicit(&m->running, memory_order_acquire) &&
+
+            while (!atomic_load_explicit(
+                        &m->pcm_prefilled, memory_order_acquire) &&
+                   atomic_load_explicit(
+                       &m->running, memory_order_acquire) &&
                    tries++ < 200U) {
                 zcsr_mix_sleep_period();
             }
-            if (!atomic_load_explicit(&m->pcm_prefilled, memory_order_acquire) ||
+
+            if (!atomic_load_explicit(
+                    &m->pcm_prefilled, memory_order_acquire) ||
                 !m->backend.stream ||
                 m->backend.api.request_start(m->backend.stream) != AAUDIO_OK) {
-                atomic_store_explicit(&m->running, false, memory_order_release);
+                atomic_store_explicit(
+                    &m->running, false, memory_order_release);
                 pthread_join(m->thread, 0);
                 m->thread_started = false;
                 zcsr_mix_backend_close(&m->backend);
                 memset(m, 0, sizeof(*m));
                 return 0;
             }
+
             m->backend.stream_started = true;
         }
 #endif
+
         g_active_mixer = m;
         return m;
     }
+
     return 0;
 }
 
 void zcsr_mix_stop(zcsr_mixer* m) {
     if (!m || !m->in_use) return;
-    atomic_store_explicit(&m->running, false, memory_order_release);
+
+    atomic_store_explicit(
+        &m->running, false, memory_order_release);
+
     if (m->thread_started) {
 #if defined(_WIN32)
         WaitForSingleObject(m->thread, INFINITE);
@@ -1074,11 +1579,24 @@ void zcsr_mix_stop(zcsr_mixer* m) {
         pthread_join(m->thread, 0);
 #endif
     }
+
 #if defined(__ANDROID__)
-    /* Thread is joined before stream teardown and dlclose. */
+    /*
+     * Preserve existing lifecycle: the mixer thread is joined before
+     * the AAudio stream is closed and the library is unloaded.
+     */
     zcsr_mix_backend_close(&m->backend);
 #endif
-    if (g_active_mixer == m) g_active_mixer = 0;
+
+    if (g_active_mixer == m) {
+        g_active_mixer = 0;
+    }
+
+    /*
+     * The worker has exited, so callback state, pending flags, platform
+     * snapshot, and platform notification bookkeeping can now be cleared
+     * along with the original mixer state.
+     */
     memset(m, 0, sizeof(*m));
 }
 
