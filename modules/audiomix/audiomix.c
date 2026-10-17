@@ -37,6 +37,9 @@ DEFINE_GUID(IID_IMMNotificationClient, 0x7991EEC9, 0x7E89, 0x4D85, 0x83, 0x90, 0
 
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 typedef struct _snd_pcm snd_pcm_t;
 typedef long snd_pcm_sframes_t;
 typedef int (*zcsr_snd_pcm_open_fn)(snd_pcm_t**, const char*, int, int);
@@ -239,6 +242,7 @@ struct zcsr_mixer {
     char device_cards_snapshot[8192];
     size_t device_cards_snapshot_len;
     bool device_cards_snapshot_valid;
+    bool device_cards_snapshot_ever_succeeded;
 #endif
 
 #if defined(_WIN32)
@@ -481,8 +485,8 @@ void zcsr_mix_set_device_callback(
     zcsr_mix_device_callback_unlock(m);
 }
 
-#if defined(__GNUC__)
-/* Wired by Windows IMMNotificationClient in block 4; Linux/Android callbacks land in later blocks. */
+#if defined(__ANDROID__)
+/* Wired by Windows IMMNotificationClient (block 4) and Linux /proc/asound/cards poll (block 5); Android AAudio callback lands in block 6. */
 __attribute__((unused))
 #endif
 static void zcsr_mix_device_set_pending(
@@ -2006,6 +2010,123 @@ static void zcsr_mix_render_period(zcsr_mixer* m) {
     }
 }
 
+#if defined(__linux__) && !defined(__ANDROID__)
+
+enum {
+    ZCSR_LINUX_CARDS_POLL_INTERVAL_MS = 2000
+};
+
+static bool zcsr_linux_monotonic_ms(uint64_t* out_ms) {
+    struct timespec now;
+
+    if (!out_ms) return false;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return false;
+
+    *out_ms =
+        (uint64_t)now.tv_sec * 1000ULL +
+        (uint64_t)now.tv_nsec / 1000000ULL;
+
+    return true;
+}
+
+static void zcsr_linux_poll_cards(zcsr_mixer* m) {
+    char current[sizeof m->device_cards_snapshot];
+    size_t total = 0U;
+    bool read_failed = false;
+    bool read_complete = false;
+    bool too_large = false;
+    int fd;
+
+    if (!m) return;
+
+    fd = open("/proc/asound/cards", O_RDONLY);
+    if (fd < 0) {
+        return;
+    }
+
+    for (;;) {
+        ssize_t n;
+
+        if (total >= sizeof current) {
+            too_large = true;
+            break;
+        }
+
+        do {
+            n = read(fd, current + total, sizeof current - total);
+        } while (n < 0 && errno == EINTR);
+
+        if (n < 0) {
+            read_failed = true;
+            break;
+        }
+
+        if (n == 0) {
+            read_complete = true;
+            break;
+        }
+
+        total += (size_t)n;
+
+        if (total >= sizeof current) {
+            too_large = true;
+            break;
+        }
+    }
+
+    (void)close(fd);
+
+    if (read_failed) return;
+
+    if (!too_large && !read_complete) return;
+
+    if (too_large) {
+        size_t cap = sizeof m->device_cards_snapshot;
+        size_t clipped = cap - 1U;
+
+        memcpy(m->device_cards_snapshot, current, clipped);
+        m->device_cards_snapshot[clipped] = '\0';
+        m->device_cards_snapshot_len = clipped;
+        m->device_cards_snapshot_valid = false;
+
+        return;
+    }
+
+    current[total] = '\0';
+
+    if (!m->device_cards_snapshot_ever_succeeded) {
+        memcpy(m->device_cards_snapshot, current, total + 1U);
+        m->device_cards_snapshot_len = total;
+        m->device_cards_snapshot_valid = true;
+        m->device_cards_snapshot_ever_succeeded = true;
+        return;
+    }
+
+    if (!m->device_cards_snapshot_valid) {
+        memcpy(m->device_cards_snapshot, current, total + 1U);
+        m->device_cards_snapshot_len = total;
+        m->device_cards_snapshot_valid = true;
+        zcsr_mix_device_set_pending(
+            m, ZCSR_MIX_DEVICE_PENDING_CHANGED);
+        return;
+    }
+
+    if (m->device_cards_snapshot_len == total &&
+        memcmp(m->device_cards_snapshot, current, total) == 0) {
+        return;
+    }
+
+    memcpy(m->device_cards_snapshot, current, total + 1U);
+    m->device_cards_snapshot_len = total;
+    m->device_cards_snapshot_valid = true;
+    m->device_cards_snapshot_ever_succeeded = true;
+
+    zcsr_mix_device_set_pending(
+        m, ZCSR_MIX_DEVICE_PENDING_CHANGED);
+}
+
+#endif /* defined(__linux__) && !defined(__ANDROID__) */
+
 #if defined(_WIN32)
 static DWORD WINAPI zcsr_mix_thread_main(LPVOID arg)
 #else
@@ -2013,6 +2134,12 @@ static void* zcsr_mix_thread_main(void* arg)
 #endif
 {
     zcsr_mixer* m = (zcsr_mixer*)arg;
+
+#if defined(__linux__) && !defined(__ANDROID__)
+    uint64_t next_cards_poll_ms = 0U;
+    bool first_cards_poll_done = false;
+    bool cards_poll_deadline_valid = false;
+#endif
 
     if (!m) {
 #if defined(_WIN32)
@@ -2022,14 +2149,6 @@ static void* zcsr_mix_thread_main(void* arg)
 #endif
     }
 
-    /*
-     * Windows/Linux open on the mixer thread.
-     * Android stream creation remains in zcsr_mix_start(), before this thread
-     * begins filling the PCM ring.
-     *
-     * Preserve current startup/headless behavior: a failed initial open does
-     * not prevent the mixer logic path from running.
-     */
     (void)zcsr_mix_backend_open_ex(m);
 
     while (atomic_load_explicit(&m->running, memory_order_acquire)) {
@@ -2042,15 +2161,8 @@ static void* zcsr_mix_thread_main(void* arg)
         state = atomic_load_explicit(
             &m->device_state, memory_order_acquire);
 
-        /*
-         * A notification may arrive while the previous rebuild is in
-         * progress. Its pending flags are published even if the producer's
-         * RUNNING -> CHANGE_PENDING CAS cannot succeed at that moment.
-         *
-         * Promote the state here once the worker is back in RUNNING so that
-         * such flags cannot be stranded indefinitely.
-         */
-        if (pending_flags != 0U && state == ZCSR_MIX_DEVICE_RUNNING) {
+        if (pending_flags != 0U &&
+            state == ZCSR_MIX_DEVICE_RUNNING) {
             int expected = ZCSR_MIX_DEVICE_RUNNING;
 
             (void)atomic_compare_exchange_strong_explicit(
@@ -2074,10 +2186,6 @@ static void* zcsr_mix_thread_main(void* arg)
             bool close_ok;
             bool open_ok = false;
 
-            /*
-             * Failed rebuilds enter RECOVERY_PENDING.
-             * Retry at a bounded interval rather than spinning.
-             */
             if (retry && !zcsr_mix_device_retry_backoff(m)) {
                 break;
             }
@@ -2089,11 +2197,6 @@ static void* zcsr_mix_thread_main(void* arg)
 
             if (!zcsr_mix_device_begin_rebuild(
                     m, pending_flags, retry)) {
-                /*
-                 * State may have changed while flags were being consumed.
-                 * Do not perform backend operations unless begin_rebuild
-                 * accepts the transition.
-                 */
                 continue;
             }
 
@@ -2105,10 +2208,6 @@ static void* zcsr_mix_thread_main(void* arg)
                 open_ok = zcsr_mix_backend_open_ex(m);
             }
 
-            /*
-             * Don't emit a recovery outcome once stop has been requested.
-             * The normal exit path / stop function owns final teardown.
-             */
             if (!atomic_load_explicit(
                     &m->running, memory_order_acquire)) {
                 break;
@@ -2120,24 +2219,45 @@ static void* zcsr_mix_thread_main(void* arg)
                 zcsr_mix_device_rebuild_failed(m);
             }
 
-            /*
-             * Do not render/write against a backend that was just rebuilt.
-             * Continue at the top to consume any flags published during
-             * close/open, then resume normal work when stable.
-             */
             continue;
         }
 
-        /* Existing mixer logic remains unchanged. */
         zcsr_mix_drain_commands(m);
         zcsr_mix_render_period(m);
         zcsr_mix_backend_write(
             &m->backend,
             m->mix_buffer,
             ZCSR_MIX_PERIOD_FRAMES);
+
+#if defined(__linux__) && !defined(__ANDROID__)
+        {
+            uint64_t now_ms;
+
+            if (!first_cards_poll_done) {
+                zcsr_linux_poll_cards(m);
+                first_cards_poll_done = true;
+
+                if (zcsr_linux_monotonic_ms(&now_ms)) {
+                    next_cards_poll_ms =
+                        now_ms + ZCSR_LINUX_CARDS_POLL_INTERVAL_MS;
+                    cards_poll_deadline_valid = true;
+                }
+            } else if (zcsr_linux_monotonic_ms(&now_ms)) {
+                if (!cards_poll_deadline_valid) {
+                    next_cards_poll_ms =
+                        now_ms + ZCSR_LINUX_CARDS_POLL_INTERVAL_MS;
+                    cards_poll_deadline_valid = true;
+                } else if (now_ms >= next_cards_poll_ms) {
+                    zcsr_linux_poll_cards(m);
+
+                    next_cards_poll_ms =
+                        now_ms + ZCSR_LINUX_CARDS_POLL_INTERVAL_MS;
+                }
+            }
+        }
+#endif
     }
 
-    /* Preserve the original final command drain. */
     zcsr_mix_drain_commands(m);
 
 #if !defined(__ANDROID__)
@@ -2183,6 +2303,7 @@ zcsr_mixer* zcsr_mix_start(void) {
         m->device_cards_snapshot[0] = '\0';
         m->device_cards_snapshot_len = 0U;
         m->device_cards_snapshot_valid = false;
+        m->device_cards_snapshot_ever_succeeded = false;
 #endif
 
 #if defined(__ANDROID__)
