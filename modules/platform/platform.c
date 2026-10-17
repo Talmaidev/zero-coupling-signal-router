@@ -5,12 +5,19 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <math.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <errno.h>
 #if defined(__ANDROID__)
 #include <android/native_window.h>
 #endif
 
 struct zcsr_surface {
     bool in_use;
+    float dpi_scale;
+    zcsr_dpi_changed_fn dpi_cb;
+    void* dpi_user;
 #if defined(__ANDROID__)
     void* native_window;
 #elif defined(_WIN32)
@@ -28,6 +35,9 @@ struct zcsr_surface {
     bool  fs_valid;
     int   fs_x, fs_y, fs_w, fs_h;
     int   fs_display;
+    unsigned long xsettings_owner;
+    unsigned long xsettings_settings_atom;
+    unsigned long xsettings_selection_atom;
 #elif defined(__APPLE__)
     void* ns_window;
 #else
@@ -51,6 +61,36 @@ static zcsr_surface* zcsr_surface_acquire(void) {
 static void zcsr_surface_release(zcsr_surface* s) {
     if (!s) return;
     *s = (zcsr_surface){ 0 };
+    s->dpi_scale = 1.0f;
+}
+
+static void zcsr_surface_update_dpi_scale(
+    zcsr_surface* s,
+    float new_scale
+) {
+    float old_scale;
+    zcsr_dpi_changed_fn callback;
+    void* user;
+    if (!s || !s->in_use) return;
+    if (!isfinite(new_scale) || new_scale <= 0.0f) return;
+    old_scale = s->dpi_scale;
+    if (fabsf(new_scale - old_scale) < 0.01f) return;
+    s->dpi_scale = new_scale;
+    callback = s->dpi_cb;
+    user = s->dpi_user;
+    if (callback) {
+        callback(s, new_scale, user);
+    }
+}
+
+void zcsr_surface_set_dpi_callback(
+    zcsr_surface* s,
+    zcsr_dpi_changed_fn callback,
+    void* user
+) {
+    if (!s || !s->in_use) return;
+    s->dpi_cb = callback;
+    s->dpi_user = callback ? user : NULL;
 }
 
 #if defined(__ANDROID__)
@@ -62,6 +102,10 @@ zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
     surface = zcsr_surface_acquire();
     if (!surface) return 0;
     surface->native_window = 0;
+    surface->dpi_scale = zcsr_surface_get_dpi_scale(surface);
+    if (!isfinite(surface->dpi_scale) || surface->dpi_scale <= 0.0f) {
+        surface->dpi_scale = 1.0f;
+    }
     return surface;
 }
 void zcsr_surface_destroy(zcsr_surface* s) {
@@ -84,6 +128,12 @@ void zcsr_surface_pump_events(zcsr_surface* s) {
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#if defined(ZCSR_HAVE_XRANDR)
+#include <X11/extensions/Xrandr.h>
+#endif
+
+/* Forward declaration: defined later in the A1 display/window Linux block. */
+static bool zcsr_linux_refresh_xsettings_owner(zcsr_surface* s);
 
 static void zcsr_set_atom(Display* display, Window window, const char* property, const char* atom_name) {
     Atom prop = XInternAtom(display, property, False);
@@ -149,6 +199,26 @@ zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
 
     surface->display = display;
     surface->window = window;
+    surface->xsettings_owner = None;
+    surface->xsettings_selection_atom =
+        XInternAtom(display, "_XSETTINGS_S0", False);
+    surface->xsettings_settings_atom =
+        XInternAtom(display, "_XSETTINGS_SETTINGS", False);
+    XSelectInput(display, root, PropertyChangeMask);
+#if defined(ZCSR_HAVE_XRANDR)
+    {
+        int event_base = 0;
+        int error_base = 0;
+        if (XRRQueryExtension(display, &event_base, &error_base)) {
+            XRRSelectInput(display, root, RRScreenChangeNotifyMask);
+        }
+    }
+#endif
+    (void)zcsr_linux_refresh_xsettings_owner(surface);
+    surface->dpi_scale = zcsr_surface_get_dpi_scale(surface);
+    if (!isfinite(surface->dpi_scale) || surface->dpi_scale <= 0.0f) {
+        surface->dpi_scale = 1.0f;
+    }
     return surface;
 }
 
@@ -171,11 +241,47 @@ void* zcsr_surface_native_display(const zcsr_surface* s) {
 
 void zcsr_surface_pump_events(zcsr_surface* s) {
     Display* display;
+    Window root;
+    bool dpi_may_have_changed = false;
+    bool owner_changed;
     if (!s || !s->in_use || !s->display) return;
     display = (Display*)s->display;
+    root = RootWindow(display, DefaultScreen(display));
+    owner_changed = zcsr_linux_refresh_xsettings_owner(s);
+    if (owner_changed) dpi_may_have_changed = true;
     while (XPending(display) > 0) {
         XEvent event;
         XNextEvent(display, &event);
+        if (event.type == PropertyNotify) {
+            XPropertyEvent* property_event = &event.xproperty;
+            if (property_event->window == root &&
+                property_event->atom == XA_RESOURCE_MANAGER) {
+                dpi_may_have_changed = true;
+            }
+            if (s->xsettings_owner != None &&
+                property_event->window == s->xsettings_owner &&
+                property_event->atom == s->xsettings_settings_atom) {
+                dpi_may_have_changed = true;
+            }
+        }
+#if defined(ZCSR_HAVE_XRANDR)
+        {
+            int event_base = 0;
+            int error_base = 0;
+            if (XRRQueryExtension(display, &event_base, &error_base) &&
+                event.type == event_base + RRScreenChangeNotify) {
+                XRRUpdateConfiguration(&event);
+                dpi_may_have_changed = true;
+            }
+        }
+#endif
+    }
+    if (zcsr_linux_refresh_xsettings_owner(s)) {
+        dpi_may_have_changed = true;
+    }
+    if (dpi_may_have_changed) {
+        float new_scale = zcsr_surface_get_dpi_scale(s);
+        zcsr_surface_update_dpi_scale(s, new_scale);
     }
 }
 
@@ -184,9 +290,41 @@ void zcsr_surface_pump_events(zcsr_surface* s) {
 #include <windows.h>
 #include <stddef.h>
 
+static zcsr_surface* zcsr_surface_find_by_hwnd(HWND hwnd) {
+    size_t i;
+    if (!hwnd) return NULL;
+    for (i = 0; i < ZCSR_SURFACE_POOL; ++i) {
+        zcsr_surface* s = &zcsr_surfaces[i];
+        if (s->in_use && s->hwnd == (void*)hwnd) {
+            return s;
+        }
+    }
+    return NULL;
+}
+
 static LRESULT CALLBACK zcsr_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_CLOSE) {
         ShowWindow(hwnd, SW_HIDE);
+        return 0;
+    }
+    if (msg == WM_DPICHANGED) {
+        zcsr_surface* s = zcsr_surface_find_by_hwnd(hwnd);
+        const RECT* suggested = (const RECT*)lp;
+        UINT dpi = HIWORD(wp);
+        if (s && dpi > 0) {
+            if (s->mode != ZCSR_WINDOW_FULLSCREEN && suggested) {
+                SetWindowPos(
+                    hwnd,
+                    NULL,
+                    suggested->left,
+                    suggested->top,
+                    suggested->right - suggested->left,
+                    suggested->bottom - suggested->top,
+                    SWP_NOZORDER | SWP_NOACTIVATE
+                );
+            }
+            zcsr_surface_update_dpi_scale(s, (float)dpi / 96.0f);
+        }
         return 0;
     }
     return DefWindowProcA(hwnd, msg, wp, lp);
@@ -223,6 +361,10 @@ zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
         return 0;
     }
     surface->hwnd = hwnd;
+    surface->dpi_scale = zcsr_surface_get_dpi_scale(surface);
+    if (!isfinite(surface->dpi_scale) || surface->dpi_scale <= 0.0f) {
+        surface->dpi_scale = 1.0f;
+    }
     return surface;
 }
 
@@ -267,6 +409,10 @@ zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
         return 0;
     }
     surface->ns_window = window;
+    surface->dpi_scale = zcsr_surface_get_dpi_scale(surface);
+    if (!isfinite(surface->dpi_scale) || surface->dpi_scale <= 0.0f) {
+        surface->dpi_scale = 1.0f;
+    }
     return surface;
 }
 
@@ -1074,9 +1220,270 @@ void zcsr_surface_get_client_size(const zcsr_surface* s, int* w, int* h) {
     if (h) *h = wa.height;
 }
 
-float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
+static float zcsr_xft_dpi(Display* dpy) {
+    Window root;
+    Atom actual_type = None;
+    int actual_format = 0;
+    unsigned long nitems = 0;
+    unsigned long bytes_after = 0;
+    unsigned char* property = NULL;
+    int status;
+    float result = 0.0f;
+    const char* p;
+    const char* end;
+    if (!dpy) return 0.0f;
+    root = RootWindow(dpy, DefaultScreen(dpy));
+    status = XGetWindowProperty(
+        dpy, root, XA_RESOURCE_MANAGER, 0, 65536, False, AnyPropertyType,
+        &actual_type, &actual_format, &nitems, &bytes_after, &property
+    );
+    if (status != Success || !property ||
+        actual_format != 8 || nitems == 0) {
+        if (property) XFree(property);
+        return 0.0f;
+    }
+    p = (const char*)property;
+    end = p + nitems;
+    while (p < end) {
+        const char* line_end = p;
+        const char* key;
+        char* endptr;
+        double value;
+        while (line_end < end && *line_end != '\n') {
+            ++line_end;
+        }
+        key = p;
+        while (key < line_end && isspace((unsigned char)*key)) {
+            ++key;
+        }
+        if ((size_t)(line_end - key) >= 7 &&
+            memcmp(key, "Xft.dpi", 7) == 0) {
+            const char* q = key + 7;
+            while (q < line_end && isspace((unsigned char)*q)) ++q;
+            if (q < line_end && *q == ':') {
+                char buffer[64];
+                size_t len;
+                ++q;
+                while (q < line_end && isspace((unsigned char)*q)) ++q;
+                len = (size_t)(line_end - q);
+                if (len >= sizeof(buffer)) len = sizeof(buffer) - 1;
+                memcpy(buffer, q, len);
+                buffer[len] = '\0';
+                errno = 0;
+                value = strtod(buffer, &endptr);
+                if (endptr != buffer && errno != ERANGE &&
+                    value > 0.0 && isfinite(value)) {
+                    const char* tail = endptr;
+                    while (*tail != '\0' && isspace((unsigned char)*tail)) {
+                        ++tail;
+                    }
+                    if (*tail == '\0') {
+                        result = (float)value;
+                    }
+                }
+                break;
+            }
+        }
+        p = line_end < end ? line_end + 1 : end;
+    }
+    XFree(property);
+    return result;
+}
+
+static uint16_t zcsr_xsettings_u16(const unsigned char* p, bool little_endian) {
+    if (little_endian) return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+    return ((uint16_t)p[0] << 8) | (uint16_t)p[1];
+}
+
+static uint32_t zcsr_xsettings_u32(const unsigned char* p, bool little_endian) {
+    if (little_endian) {
+        return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+             | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    }
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16)
+         | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+static size_t zcsr_xsettings_pad4(size_t n) {
+    return (n + 3U) & ~(size_t)3U;
+}
+
+static float zcsr_xsettings_dpi(Display* dpy) {
+    Window owner;
+    Atom selection_atom;
+    Atom settings_atom;
+    Atom actual_type = None;
+    int actual_format = 0;
+    unsigned long nitems = 0;
+    unsigned long bytes_after = 0;
+    unsigned char* data = NULL;
+    int status;
+    size_t size;
+    size_t pos;
+    uint32_t count;
+    bool little_endian;
+    float result = 0.0f;
+    if (!dpy) return 0.0f;
+    selection_atom = XInternAtom(dpy, "_XSETTINGS_S0", False);
+    settings_atom = XInternAtom(dpy, "_XSETTINGS_SETTINGS", False);
+    owner = XGetSelectionOwner(dpy, selection_atom);
+    if (owner == None) return 0.0f;
+    status = XGetWindowProperty(
+        dpy, owner, settings_atom, 0, 262144, False, settings_atom,
+        &actual_type, &actual_format, &nitems, &bytes_after, &data
+    );
+    if (status != Success || !data ||
+        actual_type != settings_atom || actual_format != 8 ||
+        nitems < 12 || bytes_after != 0) {
+        if (data) XFree(data);
+        return 0.0f;
+    }
+    size = (size_t)nitems;
+    if (data[0] == 0) little_endian = true;
+    else if (data[0] == 1) little_endian = false;
+    else { XFree(data); return 0.0f; }
+    count = zcsr_xsettings_u32(data + 8, little_endian);
+    pos = 12;
+    if (count > 65536U) { XFree(data); return 0.0f; }
+    for (uint32_t i = 0; i < count; ++i) {
+        uint8_t type;
+        uint16_t name_len;
+        uint32_t value;
+        size_t name_start;
+        size_t serial_pos;
+        size_t value_pos;
+        if ((uint64_t)pos + 4U > (uint64_t)size) break;
+        type = data[pos];
+        name_len = zcsr_xsettings_u16(data + pos + 2, little_endian);
+        name_start = pos + 4;
+        if ((uint64_t)name_start + name_len > (uint64_t)size) break;
+        serial_pos = pos + 4 + zcsr_xsettings_pad4(name_len);
+        if ((uint64_t)serial_pos + 4U > (uint64_t)size) break;
+        value_pos = serial_pos + 4;
+        if (type == 0) {
+            if ((uint64_t)value_pos + 4U > (uint64_t)size) break;
+            value = zcsr_xsettings_u32(data + value_pos, little_endian);
+            if (name_len == 7 &&
+                memcmp(data + name_start, "Xft/DPI", 7) == 0) {
+                float dpi = (float)((int32_t)value) / 1024.0f;
+                if (isfinite(dpi) && dpi > 0.0f) result = dpi;
+                break;
+            }
+            pos = value_pos + 4;
+        } else if (type == 1) {
+            uint32_t string_len;
+            size_t aligned_len;
+            if ((uint64_t)value_pos + 4U > (uint64_t)size) break;
+            string_len = zcsr_xsettings_u32(data + value_pos, little_endian);
+            aligned_len = zcsr_xsettings_pad4(string_len);
+            if ((uint64_t)value_pos + 4U + aligned_len > (uint64_t)size) break;
+            pos = value_pos + 4 + aligned_len;
+        } else if (type == 2) {
+            if ((uint64_t)value_pos + 8U > (uint64_t)size) break;
+            pos = value_pos + 8;
+        } else {
+            break;
+        }
+        if (pos > size) break;
+    }
+    XFree(data);
+    return result;
+}
+
+#if defined(ZCSR_HAVE_XRANDR)
+static float zcsr_randr_surface_dpi(const zcsr_surface* s) {
+    Display* dpy;
+    Window root;
+    Window child = None;
+    XWindowAttributes attrs;
+    int root_x = 0;
+    int root_y = 0;
+    XRRScreenResources* resources = NULL;
+    float result = 0.0f;
+    int i;
+    if (!s || !s->in_use || !s->display || !s->window) return 0.0f;
+    dpy = (Display*)s->display;
+    root = RootWindow(dpy, DefaultScreen(dpy));
+    if (!XGetWindowAttributes(dpy, (Window)s->window, &attrs)) return 0.0f;
+    if (!XTranslateCoordinates(dpy, (Window)s->window, root,
+                                attrs.width / 2, attrs.height / 2,
+                                &root_x, &root_y, &child)) return 0.0f;
+    resources = XRRGetScreenResources(dpy, root);
+    if (!resources) return 0.0f;
+    for (i = 0; i < resources->noutput; ++i) {
+        XRROutputInfo* output_info = NULL;
+        XRRCrtcInfo* crtc_info = NULL;
+        RROutput output = resources->outputs[i];
+        RRCrtc crtc;
+        double dpi;
+        output_info = XRRGetOutputInfo(dpy, resources, output);
+        if (!output_info) continue;
+        if (output_info->connection != RR_Connected ||
+            output_info->crtc == None ||
+            output_info->mm_width <= 0) {
+            XRRFreeOutputInfo(output_info);
+            continue;
+        }
+        crtc = output_info->crtc;
+        crtc_info = XRRGetCrtcInfo(dpy, resources, crtc);
+        if (crtc_info && crtc_info->width > 0 && crtc_info->height > 0 &&
+            root_x >= crtc_info->x && root_y >= crtc_info->y &&
+            root_x < crtc_info->x + (int)crtc_info->width &&
+            root_y < crtc_info->y + (int)crtc_info->height) {
+            dpi = (double)crtc_info->width * 25.4 / (double)output_info->mm_width;
+            if (dpi > 0.0 && isfinite(dpi)) result = (float)dpi;
+        }
+        if (crtc_info) XRRFreeCrtcInfo(crtc_info);
+        XRRFreeOutputInfo(output_info);
+        if (result > 0.0f) break;
+    }
+    XRRFreeScreenResources(resources);
+    return result;
+}
+#else
+static float zcsr_randr_surface_dpi(const zcsr_surface* s) {
     (void)s;
-    return 1.0f; /* reliable X11 DPI scaling is deferred to A2 */
+    return 0.0f;
+}
+#endif
+
+static bool zcsr_linux_refresh_xsettings_owner(zcsr_surface* s) {
+    Display* dpy;
+    Window owner;
+    if (!s || !s->in_use || !s->display) return false;
+    dpy = (Display*)s->display;
+    if (s->xsettings_selection_atom == 0) {
+        s->xsettings_selection_atom =
+            XInternAtom(dpy, "_XSETTINGS_S0", False);
+    }
+    if (s->xsettings_settings_atom == 0) {
+        s->xsettings_settings_atom =
+            XInternAtom(dpy, "_XSETTINGS_SETTINGS", False);
+    }
+    owner = XGetSelectionOwner(dpy, s->xsettings_selection_atom);
+    if (owner == s->xsettings_owner) return false;
+    if (s->xsettings_owner != None && s->xsettings_owner != owner) {
+        XSelectInput(dpy, s->xsettings_owner, NoEventMask);
+    }
+    s->xsettings_owner = owner;
+    if (owner != None) {
+        XSelectInput(dpy, owner, PropertyChangeMask);
+    }
+    return true;
+}
+
+float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
+    Display* dpy;
+    float dpi;
+    if (!s || !s->in_use || !s->display) return 1.0f;
+    dpy = (Display*)s->display;
+    dpi = zcsr_xft_dpi(dpy);
+    if (dpi > 0.0f) return dpi / 96.0f;
+    dpi = zcsr_xsettings_dpi(dpy);
+    if (dpi > 0.0f) return dpi / 96.0f;
+    dpi = zcsr_randr_surface_dpi(s);
+    if (dpi > 0.0f) return dpi / 96.0f;
+    return 1.0f;
 }
 
 #else
