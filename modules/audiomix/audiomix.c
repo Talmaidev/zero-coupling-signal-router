@@ -22,11 +22,14 @@
 #include <objbase.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
+#include <limits.h>
+#include <wchar.h>
 
 DEFINE_GUID(CLSID_MMDeviceEnumerator, 0xBCDE0395, 0xE52F, 0x467C, 0x8E, 0x3D, 0xC4, 0x57, 0x92, 0x91, 0x69, 0x2E);
 DEFINE_GUID(IID_IMMDeviceEnumerator, 0xA95664D2, 0x9614, 0x4F35, 0xA7, 0x46, 0xDE, 0x8D, 0xB6, 0x36, 0x17, 0xE6);
 DEFINE_GUID(IID_IAudioClient, 0x1CB9AD4C, 0xDBFA, 0x4C32, 0xB1, 0x78, 0x2A, 0x69, 0x72, 0x6B, 0x5C, 0x3F);
 DEFINE_GUID(IID_IAudioRenderClient, 0xF294ACFC, 0x3146, 0x4483, 0xA7, 0xBF, 0xAD, 0xDC, 0xA7, 0xC2, 0x60, 0xE2);
+DEFINE_GUID(IID_IMMNotificationClient, 0x7991EEC9, 0x7E89, 0x4D85, 0x83, 0x90, 0x6C, 0x70, 0x3C, 0xEC, 0x60, 0xC0);
 #else
 #include <pthread.h>
 #include <time.h>
@@ -184,6 +187,9 @@ typedef struct {
     bool com_initialized;
     DWORD retry_after_tick;
     unsigned timeout_count;
+
+    /* Preserved across backend_open/backend_close structure resets. */
+    zcsr_mixer* owner;
 #endif
     bool opened;
 } zcsr_mix_backend;
@@ -476,7 +482,8 @@ void zcsr_mix_set_device_callback(
 }
 
 #if defined(__GNUC__)
-__attribute__((unused)) /* wired up by platform device callbacks in a later block */
+/* Wired by Windows IMMNotificationClient in block 4; Linux/Android callbacks land in later blocks. */
+__attribute__((unused))
 #endif
 static void zcsr_mix_device_set_pending(
     zcsr_mixer *m,
@@ -857,9 +864,638 @@ static void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsi
 }
 #elif defined(_WIN32)
 
+/* === Windows IMMNotificationClient (block 4) === */
+
+/* Forward declaration for the already-implemented block 3 state machine. */
+static void zcsr_mix_device_set_pending(zcsr_mixer* m, unsigned flags);
+
+enum {
+    ZCSR_MIX_NOTIFICATION_ENDPOINT_CAP = 512
+};
+
+typedef struct zcsr_mix_notification_client {
+    /* COM interface must be the first member. */
+    IMMNotificationClient iface;
+
+    /* ULONG-compatible storage for COM AddRef/Release. */
+    atomic_ulong ref_count;
+
+    /* Read by notification threads; cleared during backend teardown. */
+    _Atomic(zcsr_mixer*) owner;
+
+    /* Protects endpoint_id and endpoint_id_valid. */
+    atomic_flag endpoint_id_lock;
+    WCHAR endpoint_id[ZCSR_MIX_NOTIFICATION_ENDPOINT_CAP];
+    bool endpoint_id_valid;
+
+    /* Prevents mixer destruction while a callback already in progress runs. */
+    atomic_uint callbacks_active;
+
+    /* Fixed-pool slot index; immutable while allocated. */
+    size_t pool_index;
+} zcsr_mix_notification_client;
+
+static zcsr_mix_notification_client
+    g_zcsr_mix_notification_pool[ZCSR_MIX_POOL] = {
+        { .endpoint_id_lock = ATOMIC_FLAG_INIT }
+    };
+
+static atomic_bool
+    g_zcsr_mix_notification_pool_used[ZCSR_MIX_POOL] = {
+        false
+    };
+
+static zcsr_mix_notification_client* zcsr_mix_notification_from_iface(IMMNotificationClient* iface) {
+    if (!iface) return NULL;
+    return (zcsr_mix_notification_client*)iface;
+}
+
+static HRESULT STDMETHODCALLTYPE zcsr_mix_notification_query_interface(
+    IMMNotificationClient* This,
+    REFIID riid,
+    void** ppvObject);
+static ULONG STDMETHODCALLTYPE zcsr_mix_notification_add_ref(IMMNotificationClient* This);
+static ULONG STDMETHODCALLTYPE zcsr_mix_notification_release(IMMNotificationClient* This);
+static HRESULT STDMETHODCALLTYPE zcsr_mix_notification_on_device_state_changed(
+    IMMNotificationClient* This,
+    LPCWSTR pwstrDeviceId,
+    DWORD dwNewState);
+static HRESULT STDMETHODCALLTYPE zcsr_mix_notification_on_device_added(
+    IMMNotificationClient* This,
+    LPCWSTR pwstrDeviceId);
+static HRESULT STDMETHODCALLTYPE zcsr_mix_notification_on_device_removed(
+    IMMNotificationClient* This,
+    LPCWSTR pwstrDeviceId);
+static HRESULT STDMETHODCALLTYPE zcsr_mix_notification_on_default_device_changed(
+    IMMNotificationClient* This,
+    EDataFlow flow,
+    ERole role,
+    LPCWSTR pwstrDefaultDeviceId);
+static HRESULT STDMETHODCALLTYPE zcsr_mix_notification_on_property_value_changed(
+    IMMNotificationClient* This,
+    LPCWSTR pwstrDeviceId,
+    const PROPERTYKEY key);
+
+static IMMNotificationClientVtbl g_zcsr_mix_notification_vtbl = {
+    zcsr_mix_notification_query_interface,
+    zcsr_mix_notification_add_ref,
+    zcsr_mix_notification_release,
+    zcsr_mix_notification_on_device_state_changed,
+    zcsr_mix_notification_on_device_added,
+    zcsr_mix_notification_on_device_removed,
+    zcsr_mix_notification_on_default_device_changed,
+    zcsr_mix_notification_on_property_value_changed
+};
+
+/* ---------- Pool allocation and reference counting ---------- */
+
+static zcsr_mix_notification_client* zcsr_mix_notification_create(zcsr_mixer* owner) {
+    if (!owner) return NULL;
+
+    for (size_t i = 0; i < ZCSR_MIX_POOL; ++i) {
+        bool expected = false;
+
+        if (!atomic_compare_exchange_strong_explicit(
+                &g_zcsr_mix_notification_pool_used[i],
+                &expected,
+                true,
+                memory_order_acq_rel,
+                memory_order_acquire)) {
+            continue;
+        }
+
+        zcsr_mix_notification_client* client =
+            &g_zcsr_mix_notification_pool[i];
+
+        client->iface.lpVtbl = &g_zcsr_mix_notification_vtbl;
+        atomic_init(&client->ref_count, 1UL);
+        atomic_init(&client->owner, owner);
+        atomic_init(&client->callbacks_active, 0U);
+
+        atomic_flag_clear_explicit(
+            &client->endpoint_id_lock, memory_order_release);
+
+        client->endpoint_id[0] = L'\0';
+        client->endpoint_id_valid = false;
+        client->pool_index = i;
+
+        return client;
+    }
+
+    return NULL;
+}
+
+static ULONG STDMETHODCALLTYPE zcsr_mix_notification_add_ref(IMMNotificationClient* This) {
+    zcsr_mix_notification_client* client =
+        zcsr_mix_notification_from_iface(This);
+    unsigned long current;
+
+    if (!client) return 0UL;
+
+    current = atomic_load_explicit(
+        &client->ref_count, memory_order_relaxed);
+
+    for (;;) {
+        if (current == 0UL) return 0UL;
+        if (current == ULONG_MAX) return (ULONG)current;
+
+        if (atomic_compare_exchange_weak_explicit(
+                &client->ref_count,
+                &current,
+                current + 1UL,
+                memory_order_relaxed,
+                memory_order_relaxed)) {
+            return (ULONG)(current + 1UL);
+        }
+    }
+}
+
+static ULONG STDMETHODCALLTYPE zcsr_mix_notification_release(IMMNotificationClient* This) {
+    zcsr_mix_notification_client* client =
+        zcsr_mix_notification_from_iface(This);
+    unsigned long current;
+    unsigned long next;
+
+    if (!client) return 0UL;
+
+    current = atomic_load_explicit(
+        &client->ref_count, memory_order_acquire);
+
+    for (;;) {
+        if (current == 0UL) return 0UL;
+
+        next = current - 1UL;
+
+        if (atomic_compare_exchange_weak_explicit(
+                &client->ref_count,
+                &current,
+                next,
+                memory_order_acq_rel,
+                memory_order_acquire)) {
+            break;
+        }
+    }
+
+    if (next != 0UL) return (ULONG)next;
+
+    /*
+     * Final reference: this slot can only reach zero after successful
+     * unregistration or failed registration cleanup.
+     */
+    atomic_store_explicit(&client->owner, NULL, memory_order_release);
+    client->endpoint_id_valid = false;
+    client->endpoint_id[0] = L'\0';
+
+    /*
+     * Publish the vacant slot only after all object fields above have
+     * been finalized. Do not touch client after releasing the slot.
+     */
+    atomic_store_explicit(
+        &g_zcsr_mix_notification_pool_used[client->pool_index],
+        false,
+        memory_order_release);
+
+    return 0UL;
+}
+
+static HRESULT STDMETHODCALLTYPE zcsr_mix_notification_query_interface(
+    IMMNotificationClient* This,
+    REFIID riid,
+    void** ppvObject) {
+    zcsr_mix_notification_client* client =
+        zcsr_mix_notification_from_iface(This);
+
+    if (!ppvObject) return E_POINTER;
+    *ppvObject = NULL;
+
+    if (!client || !riid) return E_POINTER;
+
+    if (IsEqualIID(riid, &IID_IUnknown) ||
+        IsEqualIID(riid, &IID_IMMNotificationClient)) {
+        *ppvObject = &client->iface;
+        (void)zcsr_mix_notification_add_ref(&client->iface);
+        return S_OK;
+    }
+
+    return E_NOINTERFACE;
+}
+
+/* ---------- Callback lifetime and endpoint-ID cache ---------- */
+
+static zcsr_mixer* zcsr_mix_notification_callback_begin(
+    zcsr_mix_notification_client* client) {
+    if (!client) return NULL;
+
+    atomic_fetch_add_explicit(
+        &client->callbacks_active, 1U, memory_order_acq_rel);
+
+    return atomic_load_explicit(
+        &client->owner, memory_order_acquire);
+}
+
+static void zcsr_mix_notification_callback_end(
+    zcsr_mix_notification_client* client) {
+    if (!client) return;
+
+    atomic_fetch_sub_explicit(
+        &client->callbacks_active, 1U, memory_order_release);
+}
+
+static void zcsr_mix_notification_wait_callbacks(
+    zcsr_mix_notification_client* client) {
+    if (!client) return;
+
+    while (atomic_load_explicit(
+                &client->callbacks_active, memory_order_acquire) != 0U) {
+        /* Teardown path only; callbacks themselves never wait here. */
+        Sleep(0);
+    }
+}
+
+/*
+ * Writer: mixer worker only.
+ * It may yield while waiting for the short reader critical section.
+ *
+ * Policy:
+ *   id == NULL       -> invalid cache, empty string
+ *   length <= 511    -> complete valid ID
+ *   length > 511     -> truncate to 511, but mark invalid
+ */
+static void zcsr_mix_notification_update_endpoint_id(
+    zcsr_mix_notification_client* client,
+    LPCWSTR id) {
+    size_t length = 0U;
+    size_t copy_length = 0U;
+
+    if (!client) return;
+
+    while (atomic_flag_test_and_set_explicit(
+                &client->endpoint_id_lock, memory_order_acquire)) {
+        Sleep(0);
+    }
+
+    if (!id) {
+        client->endpoint_id[0] = L'\0';
+        client->endpoint_id_valid = false;
+        atomic_flag_clear_explicit(
+            &client->endpoint_id_lock, memory_order_release);
+        return;
+    }
+
+    length = wcslen(id);
+    copy_length = length;
+
+    if (copy_length >= ZCSR_MIX_NOTIFICATION_ENDPOINT_CAP) {
+        copy_length = ZCSR_MIX_NOTIFICATION_ENDPOINT_CAP - 1U;
+    }
+
+    wmemcpy(client->endpoint_id, id, copy_length);
+    client->endpoint_id[copy_length] = L'\0';
+
+    client->endpoint_id_valid =
+        (length < ZCSR_MIX_NOTIFICATION_ENDPOINT_CAP);
+
+    atomic_flag_clear_explicit(
+        &client->endpoint_id_lock, memory_order_release);
+}
+
+/*
+ * Reader: COM notification thread.
+ * This is strictly trylock: if another thread owns the lock, return false
+ * immediately and let the caller publish CHANGED conservatively.
+ */
+static bool zcsr_mix_notification_read_endpoint_id(
+    zcsr_mix_notification_client* client,
+    WCHAR out_id[ZCSR_MIX_NOTIFICATION_ENDPOINT_CAP],
+    bool* out_valid) {
+    if (!client || !out_id || !out_valid) return false;
+
+    out_id[0] = L'\0';
+    *out_valid = false;
+
+    if (atomic_flag_test_and_set_explicit(
+            &client->endpoint_id_lock, memory_order_acquire)) {
+        return false;
+    }
+
+    *out_valid = client->endpoint_id_valid;
+
+    if (*out_valid) {
+        wmemcpy(
+            out_id,
+            client->endpoint_id,
+            ZCSR_MIX_NOTIFICATION_ENDPOINT_CAP);
+    } else {
+        out_id[0] = L'\0';
+    }
+
+    atomic_flag_clear_explicit(
+        &client->endpoint_id_lock, memory_order_release);
+
+    return true;
+}
+
+static bool zcsr_mix_notification_endpoint_matches(
+    zcsr_mix_notification_client* client,
+    LPCWSTR device_id,
+    bool* out_cache_valid) {
+    WCHAR cached_id[ZCSR_MIX_NOTIFICATION_ENDPOINT_CAP];
+    bool cache_valid = false;
+    bool lock_acquired;
+
+    if (out_cache_valid) *out_cache_valid = false;
+    if (!client || !device_id) return false;
+
+    lock_acquired = zcsr_mix_notification_read_endpoint_id(
+        client, cached_id, &cache_valid);
+
+    if (!lock_acquired || !cache_valid) {
+        return false;
+    }
+
+    if (out_cache_valid) *out_cache_valid = true;
+
+    /* Endpoint IDs are compared as complete, case-insensitive strings. */
+    return _wcsicmp(cached_id, device_id) == 0;
+}
+
+/* ---------- Registration and unregistration ---------- */
+
+static bool zcsr_mix_notification_register(
+    zcsr_mixer* owner,
+    IMMDeviceEnumerator* enumerator) {
+    HRESULT hr;
+    zcsr_mix_notification_client* client;
+
+    if (!owner || !enumerator) return false;
+    if (owner->device_notification_client) return true;
+
+    client = zcsr_mix_notification_create(owner);
+    if (!client) return false;
+
+    /*
+     * Initial ref_count == 1 is the creator reference.
+     *
+     * RegisterEndpointNotificationCallback does not AddRef this object.
+     * Keep the creator reference across Register so that even an immediate
+     * callback cannot observe freed storage.
+     */
+    hr = enumerator->lpVtbl->RegisterEndpointNotificationCallback(
+        enumerator, &client->iface);
+
+    if (FAILED(hr)) {
+        atomic_store_explicit(
+            &client->owner, NULL, memory_order_release);
+        zcsr_mix_notification_wait_callbacks(client);
+        (void)client->iface.lpVtbl->Release(&client->iface);
+        return false;
+    }
+
+    /*
+     * The registration reference is distinct from the creator reference.
+     * It is released only after UnregisterEndpointNotificationCallback
+     * succeeds.
+     */
+    (void)client->iface.lpVtbl->AddRef(&client->iface);
+    owner->device_notification_client = &client->iface;
+
+    return true;
+}
+
+/*
+ * Returns true for successful/no-op cleanup.
+ *
+ * If unregister fails, do NOT release the registration reference:
+ * pin the static-pool slot, null the owner, and release only the creator
+ * reference. This deliberately trades one permanently occupied fixed-pool
+ * slot for avoiding use-after-free if the COM system keeps the callback.
+ */
+static bool zcsr_mix_notification_unregister(
+    zcsr_mixer* owner,
+    IMMDeviceEnumerator* enumerator) {
+    IMMNotificationClient* iface;
+    zcsr_mix_notification_client* client;
+    HRESULT hr = E_FAIL;
+    bool unregistered = false;
+
+    if (!owner || !owner->device_notification_client) return true;
+
+    iface = owner->device_notification_client;
+    client = zcsr_mix_notification_from_iface(iface);
+
+    if (!client) {
+        owner->device_notification_client = NULL;
+        return false;
+    }
+
+    if (enumerator) {
+        hr = enumerator->lpVtbl->UnregisterEndpointNotificationCallback(
+            enumerator, iface);
+        unregistered = SUCCEEDED(hr);
+    }
+
+    /*
+     * From here on, callbacks must see owner == NULL.
+     * Wait for callbacks already in progress before the mixer may be reset.
+     */
+    atomic_store_explicit(
+        &client->owner, NULL, memory_order_release);
+
+    owner->device_notification_client = NULL;
+
+    zcsr_mix_notification_wait_callbacks(client);
+
+    if (unregistered) {
+        /* Drop the registered-lifetime reference, then creator reference. */
+        (void)iface->lpVtbl->Release(iface);
+        (void)iface->lpVtbl->Release(iface);
+        return true;
+    }
+
+    /*
+     * Failed/unavailable unregistration: leave the registration reference
+     * pinned. The owner's pointer is cleared and future callbacks will
+     * return without touching the mixer.
+     */
+    (void)iface->lpVtbl->Release(iface);
+    return false;
+}
+
+/* ---------- IMMNotificationClient methods ---------- */
+
+static HRESULT STDMETHODCALLTYPE zcsr_mix_notification_on_device_state_changed(
+    IMMNotificationClient* This,
+    LPCWSTR pwstrDeviceId,
+    DWORD dwNewState) {
+    zcsr_mix_notification_client* client =
+        zcsr_mix_notification_from_iface(This);
+    zcsr_mixer* owner;
+    bool cache_valid = false;
+    bool matches;
+
+    if (!client) return E_POINTER;
+
+    owner = zcsr_mix_notification_callback_begin(client);
+    if (!owner) {
+        zcsr_mix_notification_callback_end(client);
+        return S_OK;
+    }
+
+    if (!pwstrDeviceId) {
+        /* Unknown identity: don't assert that the current device was lost. */
+        zcsr_mix_device_set_pending(
+            owner, ZCSR_MIX_DEVICE_PENDING_CHANGED);
+        zcsr_mix_notification_callback_end(client);
+        return S_OK;
+    }
+
+    matches = zcsr_mix_notification_endpoint_matches(
+        client, pwstrDeviceId, &cache_valid);
+
+    if (!cache_valid) {
+        /* Invalid/contended cache: conservative rebuild request. */
+        zcsr_mix_device_set_pending(
+            owner, ZCSR_MIX_DEVICE_PENDING_CHANGED);
+    } else if (matches && dwNewState != DEVICE_STATE_ACTIVE) {
+        zcsr_mix_device_set_pending(
+            owner, ZCSR_MIX_DEVICE_PENDING_LOST);
+    } else if (matches && dwNewState == DEVICE_STATE_ACTIVE) {
+        zcsr_mix_device_set_pending(
+            owner, ZCSR_MIX_DEVICE_PENDING_CHANGED);
+    }
+
+    zcsr_mix_notification_callback_end(client);
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE zcsr_mix_notification_on_device_added(
+    IMMNotificationClient* This,
+    LPCWSTR pwstrDeviceId) {
+    (void)This;
+    (void)pwstrDeviceId;
+
+    /*
+     * M3 decision: no CHANGED for every added endpoint.
+     * Unopened-backend retry remains the responsibility of block 9.
+     */
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE zcsr_mix_notification_on_device_removed(
+    IMMNotificationClient* This,
+    LPCWSTR pwstrDeviceId) {
+    zcsr_mix_notification_client* client =
+        zcsr_mix_notification_from_iface(This);
+    zcsr_mixer* owner;
+    bool cache_valid = false;
+    bool matches;
+
+    if (!client) return E_POINTER;
+
+    owner = zcsr_mix_notification_callback_begin(client);
+    if (!owner) {
+        zcsr_mix_notification_callback_end(client);
+        return S_OK;
+    }
+
+    if (!pwstrDeviceId) {
+        zcsr_mix_device_set_pending(
+            owner, ZCSR_MIX_DEVICE_PENDING_CHANGED);
+        zcsr_mix_notification_callback_end(client);
+        return S_OK;
+    }
+
+    matches = zcsr_mix_notification_endpoint_matches(
+        client, pwstrDeviceId, &cache_valid);
+
+    if (!cache_valid) {
+        /*
+         * M4: GetId failure, truncation, or failed trylock means identity
+         * cannot be trusted; publish CHANGED instead of asserting LOST.
+         */
+        zcsr_mix_device_set_pending(
+            owner, ZCSR_MIX_DEVICE_PENDING_CHANGED);
+    } else if (matches) {
+        zcsr_mix_device_set_pending(
+            owner, ZCSR_MIX_DEVICE_PENDING_LOST);
+    }
+
+    /* A valid cached ID that differs from the removed ID is ignored. */
+    zcsr_mix_notification_callback_end(client);
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE zcsr_mix_notification_on_default_device_changed(
+    IMMNotificationClient* This,
+    EDataFlow flow,
+    ERole role,
+    LPCWSTR pwstrDefaultDeviceId) {
+    zcsr_mix_notification_client* client =
+        zcsr_mix_notification_from_iface(This);
+    zcsr_mixer* owner;
+
+    if (!client) return E_POINTER;
+
+    owner = zcsr_mix_notification_callback_begin(client);
+    if (!owner) {
+        zcsr_mix_notification_callback_end(client);
+        return S_OK;
+    }
+
+    /*
+     * This backend opens eRender + eConsole. Ignore capture and other roles.
+     * A NULL new default ID means no default endpoint is currently available.
+     */
+    if (flow == eRender && role == eConsole) {
+        if (!pwstrDefaultDeviceId) {
+            zcsr_mix_device_set_pending(
+                owner, ZCSR_MIX_DEVICE_PENDING_LOST);
+        } else {
+            zcsr_mix_device_set_pending(
+                owner, ZCSR_MIX_DEVICE_PENDING_CHANGED);
+        }
+    }
+
+    zcsr_mix_notification_callback_end(client);
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE zcsr_mix_notification_on_property_value_changed(
+    IMMNotificationClient* This,
+    LPCWSTR pwstrDeviceId,
+    const PROPERTYKEY key) {
+    (void)This;
+    (void)pwstrDeviceId;
+    (void)key;
+
+    /* Property changes do not necessarily require rebuilding an audio stream. */
+    return S_OK;
+}
+
 static void zcsr_mix_backend_close(zcsr_mix_backend* b) {
+    zcsr_mixer* owner;
+
     if (!b) return;
 
+    /*
+     * M1: preserve owner across the final structure reset. This is required
+     * because backend_close_ex may be followed by backend_open_ex to rebuild.
+     */
+    owner = b->owner;
+
+    /*
+     * COM notification cleanup must happen before the enumerator is released.
+     * On success: unregister, null owner, wait for in-flight callbacks,
+     * release registration reference, then release creator reference.
+     *
+     * On failure: helper pins the registration reference and pool slot,
+     * so an unexpectedly late notification cannot reference freed storage.
+     */
+    if (owner && owner->device_notification_client) {
+        (void)zcsr_mix_notification_unregister(owner, b->enumerator);
+    }
+
+    /* Existing backend teardown continues below. */
     if (b->opened && b->audio_client) {
         (void)b->audio_client->lpVtbl->Stop(b->audio_client);
     }
@@ -890,16 +1526,28 @@ static void zcsr_mix_backend_close(zcsr_mix_backend* b) {
     }
 
     *b = (zcsr_mix_backend){ 0 };
+
+    /* Keep ownership available for the next open/retry. */
+    b->owner = owner;
 }
 
 static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
     HRESULT hr;
+    HRESULT id_hr;
     IMMDevice* device = NULL;
     WAVEFORMATEX wfx = { 0 };
+    zcsr_mixer* owner;
+    LPWSTR endpoint_id = NULL;
 
     if (!b) return;
 
+    /*
+     * M1: backend_open resets resource fields but must preserve the
+     * owning mixer so notification registration and cleanup can find it.
+     */
+    owner = b->owner;
     *b = (zcsr_mix_backend){ 0 };
+    b->owner = owner;
 
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (FAILED(hr)) {
@@ -917,6 +1565,17 @@ static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
     );
     if (FAILED(hr) || !b->enumerator) goto fail;
 
+    /*
+     * M2: register as soon as the enumerator exists, before resolving the
+     * current default endpoint. Registration is best-effort: if notification
+     * registration fails, audio can still open and block 9 can recover from
+     * write/open failures. Any later open failure follows the normal close
+     * path and unregisters this callback.
+     */
+    if (owner) {
+        (void)zcsr_mix_notification_register(owner, b->enumerator);
+    }
+
     hr = b->enumerator->lpVtbl->GetDefaultAudioEndpoint(
         b->enumerator,
         eRender,
@@ -924,6 +1583,21 @@ static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
         &device
     );
     if (FAILED(hr) || !device) goto fail;
+
+    /*
+     * Capture the endpoint ID now, but publish it to the notification
+     * cache only after every backend initialization step succeeds.
+     *
+     * GetId's result is allocated by COM and must be freed with
+     * CoTaskMemFree, including error/cleanup paths.
+     */
+    id_hr = device->lpVtbl->GetId(device, &endpoint_id);
+    if (FAILED(id_hr) || !endpoint_id) {
+        if (endpoint_id) {
+            CoTaskMemFree(endpoint_id);
+            endpoint_id = NULL;
+        }
+    }
 
     hr = device->lpVtbl->Activate(
         device,
@@ -989,9 +1663,32 @@ static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
     b->opened = true;
     b->timeout_count = 0;
     b->retry_after_tick = 0;
+
+    /*
+     * M4: cache only after backend startup succeeds.
+     * A NULL endpoint_id invalidates the cache without failing audio open.
+     * An overlong ID is truncated to 511 WCHAR and also marked invalid.
+     */
+    if (owner && owner->device_notification_client) {
+        zcsr_mix_notification_update_endpoint_id(
+            zcsr_mix_notification_from_iface(
+                owner->device_notification_client),
+            endpoint_id);
+    }
+
+    if (endpoint_id) {
+        CoTaskMemFree(endpoint_id);
+        endpoint_id = NULL;
+    }
+
     return;
 
 fail:
+    if (endpoint_id) {
+        CoTaskMemFree(endpoint_id);
+        endpoint_id = NULL;
+    }
+
     if (device) {
         device->lpVtbl->Release(device);
         device = NULL;
@@ -999,6 +1696,9 @@ fail:
 
     zcsr_mix_backend_close(b);
 
+    /*
+     * backend_close preserves owner; keep the existing backoff behavior.
+     */
     b->retry_after_tick = GetTickCount() + (DWORD)1000;
 }
 
@@ -1164,15 +1864,20 @@ static bool zcsr_mix_backend_open_ex(zcsr_mixer* m) {
 
 #if defined(__ANDROID__)
     /*
-     * Current AAudio startup opens the stream in zcsr_mix_start().
-     * The actual Android close/recreate/start path is completed in later blocks.
+     * Android stream lifecycle is handled by blocks 6/9.
+     * The existing stream must already be open here.
      */
     return m->backend.opened && m->backend.stream != NULL;
-#else
+#elif defined(_WIN32)
     /*
-     * The current platform open functions return void.
-     * Their authoritative success indicator is backend.opened.
+     * M1: set owner before open. zcsr_mix_backend_open preserves this pointer
+     * through its struct reset and uses it for COM callback registration.
      */
+    m->backend.owner = m;
+
+    zcsr_mix_backend_open(&m->backend);
+    return m->backend.opened;
+#else
     zcsr_mix_backend_open(&m->backend);
     return m->backend.opened;
 #endif
