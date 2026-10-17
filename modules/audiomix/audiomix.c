@@ -187,6 +187,7 @@ typedef struct {
     zcsr_snd_pcm_writei_fn writei;
     zcsr_snd_pcm_prepare_fn prepare;
     zcsr_snd_pcm_close_fn close;
+    zcsr_mixer* owner;
 #elif defined(_WIN32)
     IMMDeviceEnumerator* enumerator;
     IAudioClient* audio_client;
@@ -972,12 +973,33 @@ static zcsr_alsa_sym zcsr_mix_alsa_sym(void* lib, const char* name) {
 
 static void zcsr_mix_backend_close(zcsr_mix_backend* b) {
     zcsr_snd_config_update_free_global_fn config_free_global;
+    zcsr_mixer* owner;
+
     if (!b) return;
-    if (b->opened && b->pcm && b->close) b->close(b->pcm);
-    config_free_global = b->lib ? zcsr_mix_alsa_sym(b->lib, "snd_config_update_free_global").config_free_global : 0;
-    if (config_free_global) config_free_global();
-    if (b->lib) dlclose(b->lib);
+
+    /* Keep the owning mixer across close/rebuild and failed open attempts. */
+    owner = b->owner;
+
+    if (b->opened && b->pcm && b->close) {
+        (void)b->close(b->pcm);
+    }
+
+    config_free_global =
+        b->lib
+            ? zcsr_mix_alsa_sym(
+                  b->lib, "snd_config_update_free_global").config_free_global
+            : 0;
+
+    if (config_free_global) {
+        config_free_global();
+    }
+
+    if (b->lib) {
+        dlclose(b->lib);
+    }
+
     *b = (zcsr_mix_backend){ 0 };
+    b->owner = owner;
 }
 
 static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
@@ -1005,13 +1027,41 @@ static void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsi
         zcsr_mix_sleep_period();
         return;
     }
-    while (frames > 0) {
+
+    while (frames > 0U) {
         snd_pcm_sframes_t n = b->writei(b->pcm, pcm, frames);
+
         if (n < 0) {
-            (void)b->prepare(b->pcm);
+            int prepare_result;
+
+            /*
+             * A failed write can be a recoverable ALSA underrun or stream
+             * state error. First try ALSA's normal prepare recovery.
+             */
+            prepare_result =
+                b->prepare ? b->prepare(b->pcm) : -1;
+
+            if (prepare_result < 0) {
+                /*
+                 * Recovery failed: treat the backend as unavailable.
+                 * Publish only a pending flag; do not close/open here.
+                 */
+                if (b->owner) {
+                    zcsr_mix_device_set_pending(
+                        b->owner, ZCSR_MIX_DEVICE_PENDING_LOST);
+                }
+
+                return;
+            }
+
+            /* Prepare succeeded: preserve the existing non-rebuild behavior. */
             break;
         }
-        if (n == 0) break;
+
+        if (n == 0) {
+            break;
+        }
+
         pcm += (unsigned)n * 2U;
         frames -= (unsigned)n;
     }
@@ -1856,44 +1906,44 @@ fail:
     b->retry_after_tick = GetTickCount() + (DWORD)1000;
 }
 
-static bool zcsr_mix_backend_reopen(zcsr_mix_backend* b) {
-    if (!b) return false;
-
-    zcsr_mix_backend_close(b);
-    zcsr_mix_backend_open(b);
-
-    return b->opened;
-}
-
 static void zcsr_mix_backend_write(
     zcsr_mix_backend* b,
     const int16_t* pcm,
     unsigned frames ) {
-    unsigned done = 0;
-    bool retried = false;
+    unsigned done = 0U;
 
-    if (!b || !pcm || frames == 0) {
+    if (!b || !pcm || frames == 0U) {
         zcsr_mix_sleep_period();
         return;
     }
 
+    /*
+     * Initial open failures used to call backend_open() directly from the
+     * write path. Route that retry through the worker state machine too.
+     *
+     * CHANGED is used here because no preceding LOST event has necessarily
+     * been published. If open later succeeds, the state machine reports
+     * CHANGED rather than RECOVERED.
+     */
     if (!b->opened) {
         DWORD now = GetTickCount();
 
         if ((LONG)(now - b->retry_after_tick) >= 0) {
-            zcsr_mix_backend_open(b);
+            if (b->owner) {
+                zcsr_mix_device_set_pending(
+                    b->owner, ZCSR_MIX_DEVICE_PENDING_CHANGED);
+                return;
+            }
         }
 
-        if (!b->opened) {
-            zcsr_mix_sleep_period();
-            return;
-        }
+        zcsr_mix_sleep_period();
+        return;
     }
 
     while (done < frames) {
         DWORD wait_result;
         HRESULT hr;
-        UINT32 padding = 0;
+        UINT32 padding = 0U;
         UINT32 available;
         UINT32 chunk;
         BYTE* dst = NULL;
@@ -1903,30 +1953,39 @@ static void zcsr_mix_backend_write(
         if (wait_result == WAIT_TIMEOUT) {
             ++b->timeout_count;
 
+            /*
+             * Keep the existing policy: one timeout is not device loss.
+             * Five consecutive timeouts trigger the same failure path that
+             * previously attempted a backend reopen.
+             */
             if (b->timeout_count >= 5U) {
-                b->timeout_count = 0;
+                b->timeout_count = 0U;
 
-                if (!retried && zcsr_mix_backend_reopen(b)) {
-                    retried = true;
-                    continue;
+                if (b->owner) {
+                    zcsr_mix_device_set_pending(
+                        b->owner, ZCSR_MIX_DEVICE_PENDING_LOST);
                 }
 
-                break;
+                /*
+                 * Whether owner is valid or NULL, stop writing this period.
+                 * The next backend operation must not continue here.
+                 */
+                return;
             }
 
             continue;
         }
 
         if (wait_result != WAIT_OBJECT_0) {
-            if (!retried && zcsr_mix_backend_reopen(b)) {
-                retried = true;
-                continue;
+            if (b->owner) {
+                zcsr_mix_device_set_pending(
+                    b->owner, ZCSR_MIX_DEVICE_PENDING_LOST);
             }
 
-            break;
+            return;
         }
 
-        b->timeout_count = 0;
+        b->timeout_count = 0U;
 
         hr = b->audio_client->lpVtbl->GetCurrentPadding(
             b->audio_client,
@@ -1934,12 +1993,12 @@ static void zcsr_mix_backend_write(
         );
 
         if (FAILED(hr)) {
-            if (!retried && zcsr_mix_backend_reopen(b)) {
-                retried = true;
-                continue;
+            if (b->owner) {
+                zcsr_mix_device_set_pending(
+                    b->owner, ZCSR_MIX_DEVICE_PENDING_LOST);
             }
 
-            break;
+            return;
         }
 
         if (padding >= b->buffer_frame_count) {
@@ -1953,7 +2012,7 @@ static void zcsr_mix_backend_write(
             chunk = available;
         }
 
-        if (chunk == 0) {
+        if (chunk == 0U) {
             continue;
         }
 
@@ -1964,12 +2023,12 @@ static void zcsr_mix_backend_write(
         );
 
         if (FAILED(hr) || !dst) {
-            if (!retried && zcsr_mix_backend_reopen(b)) {
-                retried = true;
-                continue;
+            if (b->owner) {
+                zcsr_mix_device_set_pending(
+                    b->owner, ZCSR_MIX_DEVICE_PENDING_LOST);
             }
 
-            break;
+            return;
         }
 
         memcpy(
@@ -1985,12 +2044,12 @@ static void zcsr_mix_backend_write(
         );
 
         if (FAILED(hr)) {
-            if (!retried && zcsr_mix_backend_reopen(b)) {
-                retried = true;
-                continue;
+            if (b->owner) {
+                zcsr_mix_device_set_pending(
+                    b->owner, ZCSR_MIX_DEVICE_PENDING_LOST);
             }
 
-            break;
+            return;
         }
 
         done += (unsigned)chunk;
@@ -2017,20 +2076,19 @@ static bool zcsr_mix_backend_open_ex(zcsr_mixer* m) {
     if (!m) return false;
 
 #if defined(__ANDROID__)
-    /*
-     * Android stream lifecycle is handled by blocks 6/9.
-     * The existing stream must already be open here.
-     */
+    /* Android stream open/recovery is handled in the Android backend path. */
     return m->backend.opened && m->backend.stream != NULL;
-#elif defined(_WIN32)
-    /*
-     * M1: set owner before open. zcsr_mix_backend_open preserves this pointer
-     * through its struct reset and uses it for COM callback registration.
-     */
-    m->backend.owner = m;
 
+#elif defined(__linux__) && !defined(__ANDROID__)
+    m->backend.owner = m;
     zcsr_mix_backend_open(&m->backend);
     return m->backend.opened;
+
+#elif defined(_WIN32)
+    m->backend.owner = m;
+    zcsr_mix_backend_open(&m->backend);
+    return m->backend.opened;
+
 #else
     zcsr_mix_backend_open(&m->backend);
     return m->backend.opened;
