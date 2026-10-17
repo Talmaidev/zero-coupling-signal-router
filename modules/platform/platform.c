@@ -18,6 +18,7 @@ struct zcsr_surface {
     float dpi_scale;
     zcsr_dpi_changed_fn dpi_cb;
     void* dpi_user;
+    int min_w, min_h, max_w, max_h; /* 0 = no limit; client-area pixels */
 #if defined(__ANDROID__)
     void* native_window;
 #elif defined(_WIN32)
@@ -93,6 +94,36 @@ void zcsr_surface_set_dpi_callback(
     s->dpi_user = callback ? user : NULL;
 }
 
+/* Forward declaration for platform-specific size-limit application.
+ * Defined in the _WIN32 and __linux__ (non-Android) blocks below. */
+#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
+static void zcsr_surface_apply_size_limits(zcsr_surface* s);
+#endif
+
+bool zcsr_surface_set_size_limits(
+    zcsr_surface* s,
+    int min_w, int min_h,
+    int max_w, int max_h
+) {
+    if (!s || !s->in_use) return false;
+    /* Android / macOS / unknown platforms do not support window size limits.
+     * Note: Android defines __linux__ but is excluded explicitly. */
+#if !(defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__)))
+    return false;
+#endif
+    if (min_w < 0 || min_h < 0 || max_w < 0 || max_h < 0) return false;
+    if ((min_w > 0 && max_w > 0 && min_w > max_w) ||
+        (min_h > 0 && max_h > 0 && min_h > max_h)) return false;
+    s->min_w = min_w;
+    s->min_h = min_h;
+    s->max_w = max_w;
+    s->max_h = max_h;
+#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
+    zcsr_surface_apply_size_limits(s);
+#endif
+    return true;
+}
+
 #if defined(__ANDROID__)
 zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
     zcsr_surface* surface;
@@ -128,6 +159,7 @@ void zcsr_surface_pump_events(zcsr_surface* s) {
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <limits.h>
 #if defined(ZCSR_HAVE_XRANDR)
 #include <X11/extensions/Xrandr.h>
 #endif
@@ -285,10 +317,72 @@ void zcsr_surface_pump_events(zcsr_surface* s) {
     }
 }
 
+static void zcsr_linux_apply_size_hints(zcsr_surface* s) {
+    Display* dpy;
+    XSizeHints* hints;
+    long supplied = 0;
+    if (!s || !s->in_use || !s->display || !s->window) return;
+    dpy = (Display*)s->display;
+    hints = XAllocSizeHints();
+    if (!hints) return;
+    if (XGetWMNormalHints(dpy, (Window)s->window, hints, &supplied)) {
+        hints->flags &= ~(PMinSize | PMaxSize);
+    } else {
+        hints->flags = 0;
+    }
+    if (s->min_w > 0 || s->min_h > 0) {
+        hints->min_width = s->min_w > 0 ? s->min_w : 1;
+        hints->min_height = s->min_h > 0 ? s->min_h : 1;
+        hints->flags |= PMinSize;
+    }
+    if (s->max_w > 0 || s->max_h > 0) {
+        hints->max_width = s->max_w > 0 ? s->max_w : INT_MAX;
+        hints->max_height = s->max_h > 0 ? s->max_h : INT_MAX;
+        hints->flags |= PMaxSize;
+    }
+    XSetWMNormalHints(dpy, (Window)s->window, hints);
+    XFree(hints);
+}
+
+static void zcsr_surface_apply_size_limits(zcsr_surface* s) {
+    if (!s || !s->display || !s->window) return;
+    zcsr_linux_apply_size_hints(s);
+}
+
 #elif defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stddef.h>
+
+static void zcsr_surface_apply_size_limits(zcsr_surface* s) {
+    if (!s || !s->hwnd) return;
+    /* Force the system to re-query WM_GETMINMAXINFO with new limits. */
+    SetWindowPos((HWND)s->hwnd, NULL, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+}
+
+static void zcsr_win_client_to_window(HWND hwnd, int client_w, int client_h,
+                                       int* win_w, int* win_h) {
+    RECT r = {0, 0, client_w, client_h};
+    LONG style = GetWindowLong(hwnd, GWL_STYLE);
+    LONG exstyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+    BOOL ok = FALSE;
+    HMODULE user32 = GetModuleHandleA("user32.dll");
+    if (user32) {
+        typedef BOOL (WINAPI *adjust_fn)(LPRECT, DWORD, BOOL, DWORD, UINT);
+        adjust_fn p = (adjust_fn)(void*)GetProcAddress(user32, "AdjustWindowRectExForDpi");
+        if (p) {
+            typedef UINT (WINAPI *get_dpi_fn)(HWND);
+            get_dpi_fn gp = (get_dpi_fn)(void*)GetProcAddress(user32, "GetDpiForWindow");
+            UINT dpi = gp ? gp(hwnd) : 96;
+            if (dpi == 0) dpi = 96;
+            ok = p(&r, style, FALSE, exstyle, dpi);
+        }
+    }
+    if (!ok) AdjustWindowRectEx(&r, style, FALSE, exstyle);
+    if (win_w) *win_w = r.right - r.left;
+    if (win_h) *win_h = r.bottom - r.top;
+}
 
 static zcsr_surface* zcsr_surface_find_by_hwnd(HWND hwnd) {
     size_t i;
@@ -324,6 +418,29 @@ static LRESULT CALLBACK zcsr_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
                 );
             }
             zcsr_surface_update_dpi_scale(s, (float)dpi / 96.0f);
+        }
+        return 0;
+    }
+    if (msg == WM_GETMINMAXINFO) {
+        zcsr_surface* s = zcsr_surface_find_by_hwnd(hwnd);
+        if (s && (s->min_w > 0 || s->min_h > 0 || s->max_w > 0 || s->max_h > 0)) {
+            MINMAXINFO* mmi = (MINMAXINFO*)lp;
+            if (s->min_w > 0 || s->min_h > 0) {
+                int ww, wh;
+                zcsr_win_client_to_window(hwnd,
+                    s->min_w > 0 ? s->min_w : 0,
+                    s->min_h > 0 ? s->min_h : 0, &ww, &wh);
+                if (s->min_w > 0) mmi->ptMinTrackSize.x = ww;
+                if (s->min_h > 0) mmi->ptMinTrackSize.y = wh;
+            }
+            if (s->max_w > 0 || s->max_h > 0) {
+                int ww, wh;
+                zcsr_win_client_to_window(hwnd,
+                    s->max_w > 0 ? s->max_w : 0,
+                    s->max_h > 0 ? s->max_h : 0, &ww, &wh);
+                if (s->max_w > 0) mmi->ptMaxTrackSize.x = ww;
+                if (s->max_h > 0) mmi->ptMaxTrackSize.y = wh;
+            }
         }
         return 0;
     }

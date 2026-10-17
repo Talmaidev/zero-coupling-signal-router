@@ -121,4 +121,19 @@ void zcsr_surface_set_dpi_callback(
     void* user
 );
 
+/*
+ * Set minimum and maximum client-area sizes for the window.
+ * A value of 0 means "no limit" on that axis.
+ * Returns false for negative values or when min > max on the same axis.
+ * On Windows the limits are hard-enforced (WM_GETMINMAXINFO).
+ * On Linux they are WM hints (XSizeHints); the window manager may ignore them.
+ * On Android/macOS this is unsupported and returns false.
+ * Limits may be set while fullscreen; they take effect after leaving fullscreen.
+ */
+bool zcsr_surface_set_size_limits(
+    zcsr_surface* surface,
+    int min_w, int min_h,
+    int max_w, int max_h
+);
+
 #endif /* ZCSR_PLATFORM_H */

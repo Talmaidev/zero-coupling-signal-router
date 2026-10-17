@@ -148,6 +148,36 @@ int main(void) {
                 zcsr_surface_set_dpi_callback(s, NULL, NULL);
             }
 
+            /* A4: window size limits */
+            {
+                /* 34: valid limits return true */
+                CHECK(zcsr_surface_set_size_limits(s, 320, 240, 1280, 720) != true, 34);
+                /* 35: negative returns false */
+                CHECK(zcsr_surface_set_size_limits(s, -1, 240, 1280, 720) != false, 35);
+                /* 36: min_w > max_w returns false */
+                CHECK(zcsr_surface_set_size_limits(s, 800, 240, 400, 720) != false, 36);
+                /* 37: min_h > max_h returns false */
+                CHECK(zcsr_surface_set_size_limits(s, 320, 800, 1280, 400) != false, 37);
+                /* 38: all zero (no limits) returns true */
+                CHECK(zcsr_surface_set_size_limits(s, 0, 0, 0, 0) != true, 38);
+                /* 39: re-set valid limits returns true */
+                CHECK(zcsr_surface_set_size_limits(s, 400, 300, 1024, 768) != true, 39);
+                /* 40: enter fullscreen */
+                CHECK(zcsr_surface_set_mode(s, ZCSR_WINDOW_FULLSCREEN) == false, 40);
+                /* 41: change limits while fullscreen returns true */
+                CHECK(zcsr_surface_set_size_limits(s, 200, 150, 800, 600) != true, 41);
+                /* 42: leave fullscreen */
+                CHECK(zcsr_surface_set_mode(s, ZCSR_WINDOW_WINDOWED) == false, 42);
+                /* 43: platform support — Android/macOS return false, Win/Linux return true */
+#if defined(__ANDROID__) || defined(__APPLE__)
+                CHECK(zcsr_surface_set_size_limits(s, 100, 100, 800, 600) != false, 43);
+#else
+                CHECK(zcsr_surface_set_size_limits(s, 100, 100, 800, 600) != true, 43);
+#endif
+                /* reset to no limits */
+                zcsr_surface_set_size_limits(s, 0, 0, 0, 0);
+            }
+
             zcsr_surface_destroy(s);
             printf("test_platform: real-window checks ran\n");
         } else {
