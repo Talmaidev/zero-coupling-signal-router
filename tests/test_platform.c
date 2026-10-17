@@ -24,6 +24,18 @@ static void test_dpi_callback(
     }
 }
 
+static void test_focus_callback(
+    zcsr_surface* surface,
+    zcsr_focus_event event,
+    void* user
+) {
+    int* count = (int*)user;
+    (void)surface;
+    if (count && (event == ZCSR_FOCUS_GAINED || event == ZCSR_FOCUS_LOST)) {
+        ++(*count);
+    }
+}
+
 int main(void) {
     int count = zcsr_display_count();
     int i;
@@ -176,6 +188,27 @@ int main(void) {
 #endif
                 /* reset to no limits */
                 zcsr_surface_set_size_limits(s, 0, 0, 0, 0);
+            }
+
+            /* A5: focus callback registration / replacement / unregistration */
+            {
+                int first_count = 0;
+                int second_count = 0;
+                /* 44: first registration does not invoke callback */
+                zcsr_surface_set_focus_callback(s, test_focus_callback, &first_count);
+                CHECK(first_count != 0, 44);
+                /* 45: replacement does not invoke either callback */
+                zcsr_surface_set_focus_callback(s, test_focus_callback, &second_count);
+                CHECK(first_count != 0 || second_count != 0, 45);
+                /* 46: NULL unregistration */
+                zcsr_surface_set_focus_callback(s, NULL, NULL);
+                CHECK(first_count != 0 || second_count != 0, 46);
+                /* 47: re-register after unregister */
+                zcsr_surface_set_focus_callback(s, test_focus_callback, &first_count);
+                CHECK(first_count != 0, 47);
+                /* 48: unregister before destroy */
+                zcsr_surface_set_focus_callback(s, NULL, NULL);
+                CHECK(first_count != 0, 48);
             }
 
             zcsr_surface_destroy(s);
