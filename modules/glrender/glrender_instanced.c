@@ -188,11 +188,14 @@ typedef uint32_t (*zcsr_instance_key_fn)(const zcsr_gl_instance*);
 static void zcsr_gl_radix(zcsr_gl_instance* items, size_t count,
                           zcsr_gl_instance* scratch, zcsr_instance_key_fn key_of) {
     int shift, b;
+    zcsr_gl_instance* src = items;
+    zcsr_gl_instance* dst = scratch;
+    if (count < 2) return;
     for (shift = 0; shift < 32; shift += 8) {
         uint32_t hist[256];
         size_t i;
         for (b = 0; b < 256; ++b) hist[b] = 0;
-        for (i = 0; i < count; ++i) ++hist[(key_of(&items[i]) >> shift) & 0xFFu];
+        for (i = 0; i < count; ++i) ++hist[(key_of(&src[i]) >> shift) & 0xFFu];
         uint32_t total = 0;
         for (b = 0; b < 256; ++b) {
             uint32_t c = hist[b];
@@ -200,11 +203,13 @@ static void zcsr_gl_radix(zcsr_gl_instance* items, size_t count,
             total += c;
         }
         for (i = 0; i < count; ++i) {
-            uint32_t key = key_of(&items[i]);
-            scratch[hist[(key >> shift) & 0xFFu]++] = items[i];
+            uint32_t key = key_of(&src[i]);
+            dst[hist[(key >> shift) & 0xFFu]++] = src[i];
         }
-        memcpy(items, scratch, count * sizeof(zcsr_gl_instance));
+        { zcsr_gl_instance* tmp = src; src = dst; dst = tmp; }
     }
+    /* 4 even passes end with src==items. Guard for odd pass counts. */
+    if (src != items) memcpy(items, src, count * sizeof(zcsr_gl_instance));
 }
 
 static uint32_t zcsr_key_tex(const zcsr_gl_instance* in) { return in->tex; }
