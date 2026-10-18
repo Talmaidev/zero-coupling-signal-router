@@ -20,6 +20,17 @@ if(APPLE)
   enable_language(OBJC)
 endif()
 
+# --- Optional Box2D v3 physics (fetched on demand; zero impact on default builds) ---
+option(ZCSR_ENABLE_BOX2D "Fetch Box2D v3 for game projects" OFF)
+if(ZCSR_ENABLE_BOX2D)
+  include(FetchContent)
+  FetchContent_Declare(box2d
+    GIT_REPOSITORY https://github.com/erincatto/box2d.git
+    GIT_TAG v3.1.1
+    GIT_SHALLOW TRUE)
+  FetchContent_MakeAvailable(box2d)
+endif()
+
 # --- Shared interface contracts: the ONLY include surface modules may use ---
 add_library(zcsr_contracts INTERFACE)
 target_include_directories(zcsr_contracts INTERFACE ${CMAKE_SOURCE_DIR}/include)
@@ -273,6 +284,18 @@ target_link_libraries(zcsr_verify_windows PRIVATE zcsr_audiomix zcsr_inputext zc
 # (load-time bakes, not a per-frame budget); pure CPU, runs headless.
 add_executable(zcsr_image_bench integration/bench_image.c)
 target_link_libraries(zcsr_image_bench PRIVATE zcsr_image)
+
+# Optional Box2D physics demo (only built when ZCSR_ENABLE_BOX2D=ON; desktop only)
+if(ZCSR_ENABLE_BOX2D)
+  if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(NOT ANDROID)
+      add_executable(demo_physics integration/demo_physics.c)
+      target_link_libraries(demo_physics PRIVATE
+        zcsr_platform zcsr_glrender zcsr_input box2d::box2d)
+      target_compile_features(demo_physics PRIVATE c_std_11)
+    endif()
+  endif()
+endif()
 
 # --- Zero-coupling guard: fail if a module includes another module ---
 add_custom_target(check_coupling
