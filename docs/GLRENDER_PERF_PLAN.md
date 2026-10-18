@@ -256,3 +256,20 @@ commit / OS / CPU / GPU / driver / build type / resolution / VSync / workload / 
 5. **O4/O5**：待取证后决定
 
 每步独立 commit，独立验证，用户终审后才合入。
+
+---
+
+## 10. 落地结果（v1.1 执行后）
+
+| 项 | 内容 | 结果 |
+|---|---|---|
+| 基准修复 | C 降级功能测试 + p50/p95 + D1/D2/D3 基准 + P4/P5 微基准 | 完成 |
+| O1 | radix ping-pong + count<2 早退 | D1 排序 best 0.331→0.270ms (-18%), p50 -17%, p95 -24% |
+| O2 | instanced 状态外提（framebuffer/viewport/program/VAO 提到 run 循环外） | D3 多纹理 128 runs best 6.70→1.20ms (-82%) |
+| O3 | VBO orphaning 实验（glBufferData NULL + SubData） | **不采用**：D3 p50 1.24→3.36ms 变差，保持 SubData |
+| O4 | P4/P5 上下文开销测量 | make_current+update_size 17.2μs/对，每帧 1-2 次 = 3-6% 帧时间，**不是瓶颈** |
+| O5 | 纹理 hash 索引（256-slot open addressing，替换 O(128) 线性扫） | A 场景 best 0.632→0.590ms (-6.6%), p50 -5.3% |
+
+**验证**：ctest 19/19 全部通过，耦合守卫 PASS，编译零警告。
+**测试透明度**：排序正确性测试（200 items 对比参考稳定排序 + 稳定性验证 + 边界测试），基准输出 best/p50/p95。
+**未优化项**：P2（instanced VBO  stride）、P6（text 字形缓存）收益重叠或待取证；P4/P5 非瓶颈；N1-N3 正确性隐患单列待修。
