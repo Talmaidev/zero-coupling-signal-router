@@ -164,3 +164,59 @@ void zcsr_gl_submit_atlas_batch(zcsr_gl_renderer* r, const zcsr_gl_atlas_sprite*
     for (i = 0; i < count; ++i) zcsr_gl_submit_atlas(r, &sprites[i]);
     zcsr_gl_flush(r);
 }
+
+/* ===========================================================================================
+ * Basic geometry (white-texture quads, enqueue-only)
+ * =========================================================================================== */
+
+void zcsr_gl_fill_rect(zcsr_gl_renderer* r,
+                       float x, float y, float w, float h,
+                       float cr, float cg, float cb, float ca) {
+    size_t first;
+    if (!r || w <= 0.0f || h <= 0.0f) return;
+    if (r->vertex_count + 6u > ZCSR_GL_MAX_VERTICES) return;
+    first = r->vertex_count;
+    zcsr_gl_push_quad(r, (zcsr_rectf){ x, y, w, h }, 0.0f,
+                      cr, cg, cb, ca, ZCSR_MOD_MULTIPLY, 0.0f);
+    zcsr_gl_record_draw(r, r->white_tex, first, r->vertex_count - first);
+}
+
+void zcsr_gl_draw_line(zcsr_gl_renderer* r,
+                       float x1, float y1, float x2, float y2,
+                       float width,
+                       float cr, float cg, float cb, float ca) {
+    float dx, dy, len, cx, cy, rot;
+    size_t first;
+    if (!r || width <= 0.0f) return;
+    dx = x2 - x1;
+    dy = y2 - y1;
+    len = sqrtf(dx * dx + dy * dy);
+    if (len <= 0.0f) return;
+    if (r->vertex_count + 6u > ZCSR_GL_MAX_VERTICES) return;
+    cx = (x1 + x2) * 0.5f;
+    cy = (y1 + y2) * 0.5f;
+    rot = atan2f(dy, dx);
+    first = r->vertex_count;
+    zcsr_gl_push_quad(r, (zcsr_rectf){ cx - len * 0.5f, cy - width * 0.5f, len, width }, rot,
+                      cr, cg, cb, ca, ZCSR_MOD_MULTIPLY, 0.0f);
+    zcsr_gl_record_draw(r, r->white_tex, first, r->vertex_count - first);
+}
+
+void zcsr_gl_draw_rect(zcsr_gl_renderer* r,
+                       float x, float y, float w, float h,
+                       float thickness,
+                       float cr, float cg, float cb, float ca) {
+    if (!r || w <= 0.0f || h <= 0.0f || thickness <= 0.0f) return;
+    /* Degenerate: outline thicker than the rectangle itself → filled rect. */
+    if (w <= 2.0f * thickness || h <= 2.0f * thickness) {
+        zcsr_gl_fill_rect(r, x, y, w, h, cr, cg, cb, ca);
+        return;
+    }
+    /* Allocate all four edges atomically: 24 vertices + 4 draw records. */
+    if (r->vertex_count + 24u > ZCSR_GL_MAX_VERTICES) return;
+    if (r->draw_count + 4u > ZCSR_GL_MAX_SPRITES) return;
+    zcsr_gl_fill_rect(r, x, y, w, thickness, cr, cg, cb, ca);
+    zcsr_gl_fill_rect(r, x, y + h - thickness, w, thickness, cr, cg, cb, ca);
+    zcsr_gl_fill_rect(r, x, y + thickness, thickness, h - 2.0f * thickness, cr, cg, cb, ca);
+    zcsr_gl_fill_rect(r, x + w - thickness, y + thickness, thickness, h - 2.0f * thickness, cr, cg, cb, ca);
+}

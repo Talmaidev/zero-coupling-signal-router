@@ -145,4 +145,24 @@ size_t zcsr_sort_state(zcsr_gl_instance* instances, size_t count, void* temp, si
 void zcsr_gl_submit_state(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count,
                           void* temp, size_t temp_bytes);
 
+/* ---- Basic geometry (additive, white-texture quads) ----
+ * Enqueue into the current sprite batch; caller still owns flush/present semantics. */
+
+/* Draw a filled axis-aligned rectangle in screen pixels. Uses the internal white texture. */
+void zcsr_gl_fill_rect(zcsr_gl_renderer*,
+                       float x, float y, float w, float h,
+                       float r, float g, float b, float a);
+
+/* Draw a line segment of given pixel width. Internally a rotated quad. */
+void zcsr_gl_draw_line(zcsr_gl_renderer*,
+                       float x1, float y1, float x2, float y2,
+                       float width,
+                       float r, float g, float b, float a);
+
+/* Draw a rectangle outline of given thickness. Internally four filled rects. */
+void zcsr_gl_draw_rect(zcsr_gl_renderer*,
+                       float x, float y, float w, float h,
+                       float thickness,
+                       float r, float g, float b, float a);
+
 #endif /* ZCSR_GL_RENDER_H */
