@@ -14,6 +14,7 @@
  * depend on them (Windows: windows.h before GL/gl.h). */
 #if defined(__ANDROID__)
 #  include <android/native_window.h>
+#  include <android/log.h>
 #  include <EGL/egl.h>
 #  include <EGL/eglext.h>
 #  include <GLES3/gl3.h>
@@ -30,6 +31,15 @@
 #  include "glad/glad.h"   /* GL/gl.h + glext.h from the Windows SDK */
 #elif defined(__APPLE__)
 #  include "glad/glad.h"   /* the loader header switches to OpenGL/gl3.h on Apple */
+#endif
+
+/* GLSL version selection: GLES 3.0 on Android, GLSL 330 core everywhere else. */
+#if defined(__ANDROID__)
+#  define ZCSR_GL_GLSL_VERSION "#version 300 es\n"
+#  define ZCSR_GL_GLSL_FRAGMENT_PRECISION "precision highp float;\n"
+#else
+#  define ZCSR_GL_GLSL_VERSION "#version 330 core\n"
+#  define ZCSR_GL_GLSL_FRAGMENT_PRECISION ""
 #endif
 
 enum {
@@ -128,5 +138,32 @@ bool zcsr_gl_make_current(zcsr_gl_renderer* r);
 void zcsr_gl_update_size(zcsr_gl_renderer* r);
 void zcsr_gl_swap(zcsr_gl_renderer* r);
 void zcsr_gl_platform_set_vsync(zcsr_gl_renderer* r, bool on);
+
+/* ---- Core (shader/program/VAO/VBO/FBO/white-tex/texture CRUD/clear/set_target) -------------- */
+/* Shared shader helpers (used by both core sprite-program and instanced program). */
+void zcsr_gl_log_object_info(const char* label, unsigned int object, bool is_program);
+unsigned int zcsr_gl_compile(unsigned int type, const char* src);
+
+bool zcsr_gl_core_init(zcsr_gl_renderer* r);
+void zcsr_gl_core_destroy(zcsr_gl_renderer* r);
+zcsr_gl_tex_entry* zcsr_gl_find_tex(zcsr_gl_renderer* r, zcsr_gl_texture t);
+zcsr_gl_tex_entry* zcsr_gl_free_tex(zcsr_gl_renderer* r);
+
+/* ---- Sprite (vertex queue / quad push / draw recording / flush / batch) ------------------- */
+void zcsr_gl_push_vertex(zcsr_gl_renderer* r, float x, float y, float u, float v,
+                         float cr, float cg, float cb, float ca,
+                         zcsr_color_mode mode, float amount);
+void zcsr_gl_push_quad(zcsr_gl_renderer* r, zcsr_rectf dst, float rot,
+                       float cr, float cg, float cb, float ca,
+                       zcsr_color_mode mode, float amount);
+void zcsr_gl_push_quad_uv(zcsr_gl_renderer* r, zcsr_rectf dst, float rot,
+                          float u0, float v0, float u1, float v1,
+                          float cr, float cg, float cb, float ca,
+                          zcsr_color_mode mode, float amount);
+void zcsr_gl_record_draw(zcsr_gl_renderer* r, unsigned int texture, size_t first, size_t count);
+
+/* ---- Instanced (program/init/destroy/draw/radix sort/state sort) --------------------------- */
+bool zcsr_gl_instanced_init(zcsr_gl_renderer* r);
+void zcsr_gl_instanced_destroy(zcsr_gl_renderer* r);
 
 #endif /* ZCSR_GLRENDER_INTERNAL_H */

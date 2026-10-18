@@ -36,6 +36,13 @@ add_library(zcsr_phase0 SHARED
     "${ZCSR_ROOT}/modules/input/input.c"
     "${ZCSR_ROOT}/modules/inputext/inputext.c"
     "${ZCSR_ROOT}/modules/glrender/glrender.c"
+    "${ZCSR_ROOT}/modules/glrender/glrender_core.c"
+    "${ZCSR_ROOT}/modules/glrender/glrender_sprite.c"
+    "${ZCSR_ROOT}/modules/glrender/glrender_instanced.c"
+    "${ZCSR_ROOT}/modules/glrender/glrender_text.c"
+    "${ZCSR_ROOT}/modules/glrender/glrender_platform_glx.c"
+    "${ZCSR_ROOT}/modules/glrender/glrender_platform_egl.c"
+    "${ZCSR_ROOT}/modules/glrender/glrender_platform_wgl.c"
     "${ZCSR_ROOT}/modules/audiomix/audiomix.c"
     "${NATIVE_APP_GLUE_DIR}/android_native_app_glue.c"
 )
