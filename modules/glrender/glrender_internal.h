@@ -1,8 +1,8 @@
 #ifndef ZCSR_GLRENDER_INTERNAL_H
 #define ZCSR_GLRENDER_INTERNAL_H
 /* Module-private shared definitions for the GL renderer. This is NOT a public contract — it is
- * included only by the two translation units of modules/glrender:
- *   - glrender.c        : platform-independent GL logic + the Linux/GLX and Windows/WGL backends
+ * included only by the translation units of modules/glrender:
+ *   - glrender.c        : platform-independent GL logic + Linux/GLX, Windows/WGL, Android/EGL backends
  *   - glrender_cocoa.m  : the macOS/NSOpenGL backend (compiled only when APPLE)
  * The zero-coupling guard (tools/check_no_cross_includes.sh) bans "../" and "modules/" includes;
  * a same-directory internal header like this one is allowed and never leaves the module.
@@ -39,7 +39,7 @@ enum {
     ZCSR_GL_MAX_INSTANCES = 10000
 };
 
-/* Interleaved vertex: pos(2) + uv(2) + color(4) + color-mode(1) + mix-amount(1) = 9 floats. */
+/* Interleaved vertex: pos(2) + uv(2) + color(4) + mode(1) + amount(1) = 10 floats. */
 typedef struct {
     float x, y;
     float u, v;
@@ -115,7 +115,7 @@ struct zcsr_gl_renderer {
 };
 
 /* ---- Platform backend -----------------------------------------------------------------------
- * One definition of each exists per target: in glrender.c for Linux/Windows, in glrender_cocoa.m
+ * One definition of each exists per target: in glrender.c for Linux/Windows/Android, in glrender_cocoa.m
  * for macOS. zcsr_gl_create/destroy (shared, in glrender.c) call these around the GL setup.
  *
  * platform_init: create a GL 3.3 Core context on the surface, make it current, and load the GL
