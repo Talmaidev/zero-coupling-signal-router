@@ -74,10 +74,10 @@ static void create_ground(void) {
     b2CreatePolygonShape(ground, &sd, &floor);
 }
 
-/* ---- meters -> screen pixels (y flipped: Box2D y-up, screen y-down) ---- */
+/* ---- meters -> screen pixels (Box2D y-down aligned with screen y-down, no flip) ---- */
 static zcsr_rectf world_to_screen(b2Vec2 center, float half_w, float half_h) {
     float sx = (center.x - half_w) * PIXELS_PER_M;
-    float sy = WIN_H - (center.y + half_h) * PIXELS_PER_M;
+    float sy = (center.y - half_h) * PIXELS_PER_M;
     return (zcsr_rectf){ sx, sy, half_w * 2.0f * PIXELS_PER_M, half_h * 2.0f * PIXELS_PER_M };
 }
 
@@ -153,10 +153,10 @@ int main(void) {
         zcsr_gl_clear(renderer, 0.1f, 0.1f, 0.12f, 1.0f);
         zcsr_gl_begin(renderer);
 
-        /* ground */
+        /* ground (y=11.5m, half_h=0.5m → sy=550px, h=50px) */
         zcsr_gl_fill_rect(renderer,
-            0.0f, WIN_H - 0.5f * PIXELS_PER_M,
-            (float)WIN_W, 0.5f * PIXELS_PER_M,
+            0.0f, 550.0f,
+            (float)WIN_W, 50.0f,
             0.3f, 0.3f, 0.35f, 1.0f);
 
         /* boxes */
@@ -170,7 +170,6 @@ int main(void) {
         }
 
         zcsr_gl_flush(renderer);
-        zcsr_gl_present(renderer);
     }
 
     /* ---- cleanup ---- */
