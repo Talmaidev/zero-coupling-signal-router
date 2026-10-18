@@ -273,3 +273,20 @@ commit / OS / CPU / GPU / driver / build type / resolution / VSync / workload / 
 **验证**：ctest 19/19 全部通过，耦合守卫 PASS，编译零警告。
 **测试透明度**：排序正确性测试（200 items 对比参考稳定排序 + 稳定性验证 + 边界测试），基准输出 best/p50/p95。
 **未优化项**：P2（instanced VBO  stride）、P6（text 字形缓存）收益重叠或待取证；P4/P5 非瓶颈；N1-N3 正确性隐患单列待修。
+
+---
+
+## 11. Release 构建基线（首次）
+
+构建：build-release（Ninja, -O2），MSVC。Debug vs Release 对比（best/p50）：
+
+| 场景 | Debug best | Release best | 加速 |
+|---|---|---|---|
+| D1 排序 10000 inst | 0.270 ms | 0.114 ms | 2.4x |
+| A 1000 sprites x 128 tex | 0.590 ms | 0.487 ms | 1.2x |
+| B 10000 sprites x 1 tex | 1.451 ms | 0.616 ms | 2.4x |
+| D2 instanced 1 run | 0.475 ms | 0.335 ms | 1.4x |
+| D3 instanced 128 runs | 1.261 ms | 0.607 ms | 2.1x |
+| P4/P5 系统调用 | 17.2 μs/对 | 17.2 μs/对 | 1.0x（非 CPU 瓶颈） |
+
+**结论**：CPU 密集路径（排序/顶点生成/提交）在 Release 下提速 1.2-2.4x；系统调用（wglMakeCurrent/GetClientRect）不变。所有后续优化承诺应以 Release 基线为准。
