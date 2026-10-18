@@ -129,15 +129,61 @@ static unsigned int zcsr_gl_create_white_texture(void) {
 
 /* ===========================================================================================
  * Texture table (shared with sprite/instanced/text via internal.h)
+ * O5: hash lookup (256-slot open addressing) replaces O(128) linear scan.
  * =========================================================================================== */
 
-zcsr_gl_tex_entry* zcsr_gl_find_tex(zcsr_gl_renderer* r, zcsr_gl_texture t) {
-    size_t i;
-    if (!r || t == 0) return 0;
-    for (i = 0; i < ZCSR_GL_MAX_TEXTURES; ++i) {
-        if (r->textures[i].in_use && r->textures[i].id == t) return &r->textures[i];
+#define TEX_INDEX_SIZE 256
+#define TEX_INDEX_MASK (TEX_INDEX_SIZE - 1)
+
+static int zcsr_tex_index_lookup(const zcsr_gl_renderer* r, uint32_t key) {
+    size_t h = (size_t)(key & TEX_INDEX_MASK);
+    for (int i = 0; i < TEX_INDEX_SIZE; ++i) {
+        size_t slot = (h + (size_t)i) & TEX_INDEX_MASK;
+        if (r->tex_index_key[slot] == 0) return -1;
+        if (r->tex_index_key[slot] == key) return (int)r->tex_index_val[slot];
     }
-    return 0;
+    return -1;
+}
+
+static void zcsr_tex_index_insert(zcsr_gl_renderer* r, uint32_t key, uint8_t value) {
+    size_t h = (size_t)(key & TEX_INDEX_MASK);
+    for (int i = 0; i < TEX_INDEX_SIZE; ++i) {
+        size_t slot = (h + (size_t)i) & TEX_INDEX_MASK;
+        if (r->tex_index_key[slot] == 0 || r->tex_index_key[slot] == key) {
+            r->tex_index_key[slot] = key;
+            r->tex_index_val[slot] = value;
+            return;
+        }
+    }
+}
+
+static void zcsr_tex_index_remove(zcsr_gl_renderer* r, uint32_t key) {
+    size_t h = (size_t)(key & TEX_INDEX_MASK);
+    for (int i = 0; i < TEX_INDEX_SIZE; ++i) {
+        size_t slot = (h + (size_t)i) & TEX_INDEX_MASK;
+        if (r->tex_index_key[slot] == key) {
+            r->tex_index_key[slot] = 0;
+            /* rehash subsequent entries in the same probe chain */
+            for (int j = i + 1; j < TEX_INDEX_SIZE; ++j) {
+                size_t next = (h + (size_t)j) & TEX_INDEX_MASK;
+                if (r->tex_index_key[next] == 0) break;
+                uint32_t k = r->tex_index_key[next];
+                uint8_t v = r->tex_index_val[next];
+                r->tex_index_key[next] = 0;
+                zcsr_tex_index_insert(r, k, v);
+            }
+            return;
+        }
+        if (r->tex_index_key[slot] == 0) return;
+    }
+}
+
+zcsr_gl_tex_entry* zcsr_gl_find_tex(zcsr_gl_renderer* r, zcsr_gl_texture t) {
+    int idx;
+    if (!r || t == 0) return 0;
+    idx = zcsr_tex_index_lookup(r, (uint32_t)t);
+    if (idx < 0) return 0;
+    return &r->textures[idx];
 }
 
 zcsr_gl_tex_entry* zcsr_gl_free_tex(zcsr_gl_renderer* r) {
@@ -223,6 +269,7 @@ zcsr_gl_texture zcsr_gl_texture_create(zcsr_gl_renderer* r, const uint8_t* rgba,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     *e = (zcsr_gl_tex_entry){ tex, w, h, true };
+    zcsr_tex_index_insert(r, tex, (uint8_t)(e - r->textures));
     return tex;
 }
 
@@ -246,6 +293,7 @@ bool zcsr_gl_texture_upload(zcsr_gl_renderer* r, zcsr_gl_texture t, const uint8_
 void zcsr_gl_texture_destroy(zcsr_gl_renderer* r, zcsr_gl_texture t) {
     zcsr_gl_tex_entry* e = zcsr_gl_find_tex(r, t);
     if (!e || !zcsr_gl_make_current(r)) return;
+    zcsr_tex_index_remove(r, (uint32_t)t);
     glDeleteTextures(1, &e->id);
     *e = (zcsr_gl_tex_entry){ 0 };
 }
