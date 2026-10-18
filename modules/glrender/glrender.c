@@ -36,6 +36,9 @@ zcsr_gl_renderer* zcsr_gl_create(zcsr_surface* surface, void* buffer, size_t byt
         return 0;
     }
     if (!zcsr_gl_instanced_init(r)) {
+        /* N3 fix: instanced_init may have created partial GL resources (program/VAO/VBOs)
+         * before failing — release them before tearing down core/platform. */
+        zcsr_gl_instanced_destroy(r);
         zcsr_gl_core_destroy(r);
         zcsr_gl_platform_destroy(r);
         memset(r, 0, sizeof(*r));

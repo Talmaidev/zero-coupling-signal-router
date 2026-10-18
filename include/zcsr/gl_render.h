@@ -115,7 +115,14 @@ void zcsr_gl_draw_instances(zcsr_gl_renderer*, zcsr_gl_texture texture,
 /* Sort a writable instance array into texture runs (and blend mode within a texture) so that
  * drawing needs one state setup per run. Pure CPU, no heap: `temp` is caller scratch of at least
  * `count * sizeof(zcsr_gl_instance)` bytes. Returns the number of distinct texture runs. After
- * sorting, iterate runs with zcsr_instance_run to get each run's texture/start/count. */
+ * sorting, iterate runs with zcsr_instance_run to get each run's texture/start/count.
+ *
+ * CONTRACT (N2): this function REORDERS the input array in place. Instances are grouped by
+ * texture; the relative order of instances with the same texture is preserved (stable), but the
+ * relative order of instances with DIFFERENT textures is not. Callers that rely on the original
+ * input order for overlapping instances (painter's order) must use zcsr_sort_state instead of
+ * this function, or be aware that overlapping instances across texture boundaries may be drawn
+ * in a different order than submitted. */
 size_t zcsr_sort_instances(zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes);
 
 /* Describe one texture run produced by zcsr_sort_instances. `run_index` in 0..return-1.
@@ -124,12 +131,21 @@ void zcsr_instance_run(const zcsr_gl_instance* sorted, size_t count, size_t run_
                        zcsr_gl_texture* out_texture, size_t* out_start, size_t* out_len);
 
 /* Convenience: sort and draw all instances (one instanced call per texture run). `temp` is
- * caller scratch (>= count * sizeof instance). */
+ * caller scratch (>= count * sizeof instance).
+ * CONTRACT (N2): sorts the input array in place via zcsr_sort_instances, then draws runs in
+ * texture order. The relative order of instances across texture boundaries is not preserved;
+ * callers with overlap dependencies must sort first with zcsr_sort_state and draw manually. */
 void zcsr_gl_submit_instance_batch(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count,
                                    void* temp, size_t temp_bytes);
 
 /* ---- full state sort (opaque vs translucent) ----
  * An instance is treated as translucent when its alpha < 1.0 or its color mode is MIX/ADD.
+ * NOTE (N1): translucency is classified from INSTANCE FIELDS ONLY. Texture pixel alpha is not
+ * inspected (it lives on the GPU and is not readable here). If a texture contains transparent
+ * pixels, instances using it MUST be marked translucent by the caller (set alpha < 1.0 or use
+ * a MIX/ADD mode), otherwise they sort into the opaque group and may blend incorrectly when
+ * overlapping translucent instances. This is a documented caller contract, not a bug to be
+ * silently papered over.
  * Partitions the array into opaque instances first (sorted by texture, for batching) then
  * translucent instances sorted back-to-front by z (larger z = farther, painter's algorithm).
  * Returns the number of opaque instances. After sorting:
