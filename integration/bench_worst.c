@@ -98,6 +98,22 @@ static zcsr_bench_stats zcsr_bench_sort(zcsr_gl_instance* instances, size_t coun
     return zcsr_compute_stats(samples, ITERS);
 }
 
+/* --- bench instanced submit_batch (CPU submit + sort + draw setup, no swap wait) --- */
+static zcsr_bench_stats zcsr_bench_instanced(zcsr_gl_renderer* renderer,
+                                              zcsr_gl_instance* instances, size_t count,
+                                              void* temp, size_t temp_bytes) {
+    static uint64_t samples[ITERS];
+    static zcsr_gl_instance pristine[MAX_INSTANCES];
+    for (size_t i = 0; i < count; ++i) pristine[i] = instances[i];
+    for (int i = 0; i < ITERS; ++i) {
+        for (size_t j = 0; j < count; ++j) instances[j] = pristine[j];
+        uint64_t t0 = zcsr_now_ns();
+        zcsr_gl_submit_instance_batch(renderer, instances, count, temp, temp_bytes);
+        samples[i] = zcsr_now_ns() - t0;
+    }
+    return zcsr_compute_stats(samples, ITERS);
+}
+
 static void zcsr_print_stats(const char* label, zcsr_bench_stats s) {
     printf("%-55s best=%8.4f ms  p50=%8.4f ms  p95=%8.4f ms\n", label, s.best_ms, s.p50_ms, s.p95_ms);
 }
@@ -207,6 +223,28 @@ int main(void) {
     }
     zcsr_print_stats("C. 1000 sprites x mixed modes [FUNCTIONAL: same tex merges to 1 draw]",
                      zcsr_bench_batch(renderer, sprites, 1000));
+
+    /* D2: instanced single-texture draw (10000 instances, 1 texture = 1 run) */
+    for (int i = 0; i < MAX_INSTANCES; ++i) {
+        instances[i] = (zcsr_gl_instance){
+            .cx = (float)((i * 17u) % 760u), .cy = (float)((i * 29u) % 560u),
+            .w = 8, .h = 8, .u0 = 0, .v0 = 0, .u1 = 1, .v1 = 1,
+            .r = 1, .g = 1, .b = 1, .a = 1,
+            .rotation = 0, .amount = 0, .mode = 0,
+            .tex = (uint32_t)textures[0], .z = 0
+        };
+    }
+    zcsr_print_stats("D2. instanced 10000 x 1 texture (1 run, state-hoisted)",
+                     zcsr_bench_instanced(renderer, instances, MAX_INSTANCES,
+                                          sort_temp, sizeof(sort_temp)));
+
+    /* D3: instanced multi-texture draw (10000 instances, 128 textures = ~128 runs) */
+    for (int i = 0; i < MAX_INSTANCES; ++i) {
+        instances[i].tex = (uint32_t)textures[(i * 7u) % MAX_TEXTURES];
+    }
+    zcsr_print_stats("D3. instanced 10000 x 128 textures (~128 runs, state-hoisted)",
+                     zcsr_bench_instanced(renderer, instances, MAX_INSTANCES,
+                                          sort_temp, sizeof(sort_temp)));
 
     printf("\nNOTE: C is a functional/merge test, not a blend-state-switch perf test.\n");
     printf("========================================\n");

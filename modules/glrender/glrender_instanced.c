@@ -149,6 +149,17 @@ void zcsr_gl_instanced_destroy(zcsr_gl_renderer* r) {
  * Public API: draw_instances
  * =========================================================================================== */
 
+/* Internal: per-run draw with GL state already set up (context current, framebuffer/viewport/
+ * program/uniforms/VAO bound). Only uploads VBO, binds texture, issues draw. No find_tex. */
+static void zcsr_gl_draw_instances_prepared(zcsr_gl_renderer* r, zcsr_gl_texture texture,
+                                             const zcsr_gl_instance* instances, size_t count) {
+    glBindBuffer(GL_ARRAY_BUFFER, r->inst_vbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, count * sizeof(zcsr_gl_instance), instances);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0, (GLsizei)count);
+}
+
 void zcsr_gl_draw_instances(zcsr_gl_renderer* r, zcsr_gl_texture texture,
                             const zcsr_gl_instance* instances, size_t count) {
     if (!r || !instances || count == 0 || texture == 0) return;
@@ -171,11 +182,7 @@ void zcsr_gl_draw_instances(zcsr_gl_renderer* r, zcsr_gl_texture texture,
     glUniform1i(r->inst_uniform_tex, 0);
 
     glBindVertexArray(r->inst_vao);
-    glBindBuffer(GL_ARRAY_BUFFER, r->inst_vbo);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, count * sizeof(zcsr_gl_instance), instances);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0, (GLsizei)count);
+    zcsr_gl_draw_instances_prepared(r, texture, instances, count);
     glBindVertexArray(0);
 }
 
@@ -266,12 +273,31 @@ void zcsr_gl_submit_instance_batch(zcsr_gl_renderer* r, zcsr_gl_instance* instan
     if (count > ZCSR_GL_MAX_INSTANCES) return;
     if (temp_bytes < count * sizeof(zcsr_gl_instance)) return;
     runs = zcsr_sort_instances(instances, count, temp, temp_bytes);
+
+    /* Set up shared GL state once for all texture runs (O2: state hoisting). */
+    if (!zcsr_gl_make_current(r)) return;
+    if (r->target == 0) {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        zcsr_gl_update_size(r);
+    } else {
+        glBindFramebuffer(GL_FRAMEBUFFER, r->fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               r->target, 0);
+    }
+    glViewport(0, 0, r->width, r->height);
+    glUseProgram(r->inst_program);
+    glUniform2f(r->inst_uniform_view, (float)r->width, (float)r->height);
+    glUniform1i(r->inst_uniform_tex, 0);
+    glBindVertexArray(r->inst_vao);
+
     for (i = 0; i < runs; ++i) {
         zcsr_gl_texture tex;
         size_t start, len;
         zcsr_instance_run(instances, count, i, &tex, &start, &len);
-        if (tex) zcsr_gl_draw_instances(r, tex, instances + start, len);
+        if (tex && zcsr_gl_find_tex(r, tex))
+            zcsr_gl_draw_instances_prepared(r, tex, instances + start, len);
     }
+    glBindVertexArray(0);
     if (r->target == 0) zcsr_gl_swap(r);
 }
 
