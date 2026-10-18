@@ -154,6 +154,11 @@ void zcsr_gl_instanced_destroy(zcsr_gl_renderer* r) {
 static void zcsr_gl_draw_instances_prepared(zcsr_gl_renderer* r, zcsr_gl_texture texture,
                                              const zcsr_gl_instance* instances, size_t count) {
     glBindBuffer(GL_ARRAY_BUFFER, r->inst_vbo);
+#ifdef ZCSR_GL_VBO_ORPHAN
+    /* Orphaning: discard old storage before partial upload to avoid GPU sync stall. */
+    glBufferData(GL_ARRAY_BUFFER, ZCSR_GL_MAX_INSTANCES * sizeof(zcsr_gl_instance), NULL,
+                 GL_DYNAMIC_DRAW);
+#endif
     glBufferSubData(GL_ARRAY_BUFFER, 0, count * sizeof(zcsr_gl_instance), instances);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texture);
