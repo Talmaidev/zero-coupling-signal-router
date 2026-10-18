@@ -21,6 +21,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/* internal functions for P4/P5 micro-benchmark (not part of public API) */
+extern bool zcsr_gl_make_current(zcsr_gl_renderer* r);
+extern void zcsr_gl_update_size(zcsr_gl_renderer* r);
+
 #define MAX_SPRITES   10000
 #define MAX_TEXTURES  128
 #define MAX_INSTANCES 10000
@@ -245,6 +249,23 @@ int main(void) {
     zcsr_print_stats("D3. instanced 10000 x 128 textures (~128 runs, state-hoisted)",
                      zcsr_bench_instanced(renderer, instances, MAX_INSTANCES,
                                           sort_temp, sizeof(sort_temp)));
+
+    /* P4/P5 micro-benchmark: context switch + resize query overhead.
+     * These are called 1-2x per frame (flush + batch), not per draw. */
+    {
+        static uint64_t samples[ITERS];
+        for (int i = 0; i < ITERS; ++i) {
+            uint64_t t0 = zcsr_now_ns();
+            for (int j = 0; j < 10000; ++j) {
+                zcsr_gl_make_current(renderer);
+                zcsr_gl_update_size(renderer);
+            }
+            samples[i] = zcsr_now_ns() - t0;
+        }
+        zcsr_bench_stats p = zcsr_compute_stats(samples, ITERS);
+        printf("P4/P5. make_current+update_size x10000  best=%8.4f ms  p50=%8.4f ms  (%.1f us/call pair)\n",
+               p.best_ms, p.p50_ms, p.p50_ms * 1000.0 / 10000.0);
+    }
 
     printf("\nNOTE: C is a functional/merge test, not a blend-state-switch perf test.\n");
     printf("========================================\n");
