@@ -51,11 +51,11 @@
 ### P1 纹理查找线性扫
 
 - **SOURCE**：`glrender_core.c:134-141`，线性扫 128 槽
-- **调用点**：`glrender_sprite.c:95`（submit）、`glrender_instanced.c:155`（draw_instances 每 run）
-- **裁决**：确认存在；128 万次比较是理论上界（每次扫满 128 槽），实际热点纹理可能在前部，**不确认是主瓶颈**
-- **优先级**：中低
-- **前置工作**：先在 bench 统计实际比较次数；句柄语义（uint32_t, 0=invalid）已确认，O(1) 索引不改变公开句柄
-- **改动估计**：测量 5-15 行；真正改索引 10-30 行
+- **调用点**：`glrender_sprite.c:94`（submit 每个 sprite 调一次）、`glrender_instanced.c:155`（draw_instances 每 run）；submit_batch 循环调 submit，故 B 场景 10000 sprites = 10000 次 find_tex
+- **裁决**：确认存在且调用频率已确认；128 万次比较是理论上界（每次扫满 128 槽），实际比较次数取决于命中槽位，**不确认是主瓶颈**
+- **优先级**：中（调用频率覆盖普通 sprite 全路径，但实际 CPU 成本未测）
+- **前置工作**：先在 bench 统计实际比较次数和 CPU 耗时；句柄语义（uint32_t, 0=invalid）已确认，O(1) 索引不改变公开句柄
+- **改动估计**：测量 5-15 行；真正改索引 30-60 行（需内部映射结构，见 O5）
 
 ### P2 instanced 每 run 重复状态设置
 
@@ -102,12 +102,14 @@
 - **改动估计**：10-25 行
 - **验收**：逐元素对照原排序结果，空/单元素/重复键/极端数量/scratch 容量测试
 
-### G1 bench C 计时口径
+### G1 bench 计时口径（A/B/C 同属）
 
-- **SOURCE**：`bench_worst.c:43-53` 计时只包围 submit_batch，不含 flush/GPU/swap
-- **裁决**：C 的 0.2423ms 不能解释为 shader 分支性能；若 flush 在计时外，根本没测到 GPU
+- **SOURCE**：`bench_worst.c:43-53`，A/B/C 三个场景计时均只包围 `zcsr_gl_submit_batch` 的 CPU 调用区间，不含 flush/GPU/swap
+- **裁决**：三个场景的现有耗时都不能解释为完整 GPU 绘制成本或完整渲染流水线基准
+- **B 额外限制**：10000 sprites × 6 vertices = 60000 = MAX_VERTICES，容量恰好用满；若 flush 触发且进入计时区间，1.4361ms 不是干净的纯提交基线
+- **C 额外限制**：同纹理不同 mode 可合并为 1 draw，不能解释为 blend state 切换或 shader 分支性能
 - **优先级**：基准有效性阻塞项
-- **方向**：C 降级为功能测试；新基准分开 CPU 提交 / flush CPU / GPU / swap
+- **方向**：分离 CPU 提交 / flush CPU / GPU（可用时）/ swap 四段计时；GPU 不可用时标 MISSING，不用 CPU 代替
 
 ### G2 radix 小分区快速路径
 
@@ -141,7 +143,10 @@
 
 **不可主张独有**：
 - 基础几何（line/rect/fill）——SDL2 有 `SDL_RenderDrawLine/Rect/FillRect`
-- viewport/clip/logical size——SDL2 有对应 API
+- 带旋转/flip 的纹理绘制——SDL2 有 `SDL_RenderCopyEx`
+- viewport/clip/logical size——SDL2 有 `SDL_RenderSetViewport/ClipRect/LogicalSize`
+- 缩放/整数缩放——SDL2 有 `SDL_RenderSetScale/SetIntegerScale`
+- 像素读取——SDL2 有 `SDL_RenderReadPixels`
 - 顶点几何——SDL2 有 `SDL_RenderGeometry/GeometryRaw`
 - 内部 batching——SDL2 有 render command queue + `SDL_RenderFlush`
 
@@ -159,10 +164,13 @@
 | 优先级 | 方向 | 范围 | 收益来源 | 风险 | 验收 |
 |---|---|---|---|---|---|
 | O1 | P6 radix ping-pong + G2 早退 | glrender_instanced.c，10-25 行 | CPU 内存搬运减少 | 须保持稳定性，最终回到 items | 逐元素对照原结果 |
+
+**O1 排第一的理由**：低风险、纯 CPU、可逐元素对照验证，不是"收益最大"。实际收益须通过 D1 排序基准测量，结果出来前不承诺任何提升比例。
+
 | O2 | P2 instanced 批次状态外提 | glrender_instanced.c，15-35 行 | 减少冗余 GL 状态命令 | 须保持 target/viewport 语义 | 同输入图像对照，GL 调用计数 |
 | O3 | P3 上传策略对照 | glrender_sprite.c + instanced.c，5-20 行原型 | 可能减少 GPU/CPU 同步 | 驱动依赖，无稳定收益则不采用 | 同负载对照耗时+图像 |
 | O4 | P4/P5 查询与上下文评估 | core + 平台，15-50 行 | 减少重复平台查询 | resize/高DPI/生命周期风险 | 各平台尺寸变化测试 |
-| O5 | P1 内部纹理索引 | glrender_core.c，10-30 行 | 若实测查找耗时显著则降成本 | 句柄语义已确认(uint32_t)，不 breaking | 查找正确性+销毁重建+边界测试 |
+| O5 | P1 内部纹理索引 | glrender_core.c + 内部结构，30-60 行 | 若实测查找耗时显著则降成本 | 需内部映射（hash/开放寻址+槽位复用），句柄语义不变，不 breaking | 查找正确性+销毁重建+槽位复用+无效句柄+边界测试 |
 
 **共同验收原则**：
 1. 先有可复现对照基线，再谈收益
@@ -175,8 +183,11 @@
 
 ## 6. 新 bench 设计
 
-### D：Instanced
-- D1 排序成本：sort_instances CPU 时间、实例数、输入分布
+### D：Instanced（D1 先行，为 O1 提供决策依据）
+
+**实施顺序**：D1（排序成本）→ D2/D3（绘制）→ D4（state 排序）。先取得 D1 数据再决定是否实施 O1 radix 优化，不先实施再找证明。
+
+- D1 排序成本：sort_instances CPU 时间、实例数、输入分布（O1 的决策依赖此项）
 - D2 单纹理绘制：CPU 提交、draw call 数、GPU 时间
 - D3 多纹理 run：固定总量，递增纹理数，记录 run 数/纹理绑定数/draw call 数
 - D4 state 排序：opaque/translucent 各自排序成本+视觉正确性
@@ -204,17 +215,19 @@ commit / OS / CPU / GPU / driver / build type / resolution / VSync / workload / 
 
 ## 7. 正确性隐患（独立于性能优化）
 
-### N1：instanced 透明纹理分类
-- 位置：`glrender_instanced.c` `zcsr_is_translucent` + `zcsr_sort_state`
-- 风险：分类只看实例字段（alpha<0.9999 或 mode∈{MIX,ADD}），不看纹理像素透明
-- alpha=1 实例配带透明像素的纹理 → 归 opaque → 可能遮挡错误
-- 复现：透明纹理 + alpha=1 实例 + 重叠 + 改变深度次序
-- 性质：正确性隐患，不进性能表
+### N1：instanced 透明纹理分类（SOURCE 机制，运行影响待测试）
+- 位置：`glrender_instanced.c` `zcsr_is_translucent` + `zcsr_sort_state`；`gl_render.h` 中 `zcsr_sort_state` 注释明写 "opaque instances first (sorted by texture)"
+- 机制（SOURCE）：分类只看实例字段（alpha<0.9999 或 mode∈{MIX,ADD}），不读取纹理内部像素透明信息
+- 风险：alpha=1 实例配带透明像素的纹理 → 归 opaque → 可能影响重叠时的混合结果
+- 复现：透明纹理（含全透明/半透明/不透明区域）+ alpha=1 实例 + 重叠 + 改变深度次序
+- 性质：正确性隐患，不进性能表；机制有源码依据，实际视觉错误是否出现须实测确认
 
-### N2：submit_instance_batch 排序契约
+### N2：submit_instance_batch 排序契约缺口（SOURCE）
 - 位置：`gl_render.h` API 注释 + `glrender_instanced.c:257-271`
-- 风险：输入数组按纹理排序，但契约头未说明排序行为和调用方顺序依赖限制
-- 方向：优先补文档（不 breaking）；是否改 API 语义由用户决定
+- 缺口（SOURCE）：`submit_instance_batch` 和 `sort_instances` 的契约注释均未声明排序可能改变重叠实例绘制顺序；同一头文件中 `zcsr_gl_draw_instances` 明说 "drawn as-is (no sorting)"
+- 与实现对照：实现按纹理排序，公共契约未充分说明排序行为
+- 方向：补注释（additive，不 breaking，不改语义）；是否改 API 语义由用户决定
+- 验收：头文件注释与实现一致，重叠实例+不同纹理+不同输入顺序的测试验证调用方理解契约
 
 ### N3：create 失败路径资源清理
 - 位置：`glrender.c` `zcsr_gl_create` + core_init / instanced_init
