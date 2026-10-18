@@ -15,6 +15,12 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <time.h>
+#elif defined(__APPLE__)
+#include <AudioToolbox/AudioToolbox.h>
+#include <AudioUnit/AudioUnit.h>
+#include <CoreAudio/CoreAudio.h>
+#include <pthread.h>
+#include <time.h>
 #elif defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <initguid.h>
@@ -200,6 +206,12 @@ typedef struct {
 
     /* Preserved across backend_open/backend_close structure resets. */
     zcsr_mixer* owner;
+#elif defined(__APPLE__)
+    AudioComponentInstance output_unit;
+    zcsr_mixer* owner;
+    bool output_unit_initialized;
+    bool output_unit_started;
+    bool default_output_listener_registered;
 #endif
     bool opened;
 } zcsr_mix_backend;
@@ -219,14 +231,25 @@ struct zcsr_mixer {
     atomic_uint finished_head;
     atomic_uint finished_tail;
     int16_t mix_buffer[ZCSR_MIX_PERIOD_FRAMES * 2];
-#if defined(__ANDROID__)
-    /* SPSC PCM ring: mixer thread is producer, AAudio callback is consumer. */
+#if defined(__ANDROID__) || defined(__APPLE__)
+    /* SPSC PCM ring: mixer thread produces; platform output callback consumes. */
     atomic_uint pcm_head;
     atomic_uint pcm_tail;
+
+    /* Used by Android startup only; macOS initializes it but does not gate start. */
     atomic_bool pcm_prefilled;
+
     atomic_uint pcm_underruns;
     int16_t pcm_ring[4096U * 2U];
 #endif
+
+#if defined(__APPLE__)
+    /* CoreAudio property-listener lifecycle; all storage stays in the mixer pool. */
+    atomic_uint mac_listener_callbacks_active;
+    atomic_bool mac_listener_accepting;
+    atomic_bool mac_listener_removal_failed;
+#endif
+
     zcsr_mix_backend backend;
 
     /* Device recovery state; platform callbacks only set pending flags. */
@@ -2056,6 +2079,458 @@ static void zcsr_mix_backend_write(
     }
 }
 
+#if defined(__APPLE__)
+
+enum {
+    ZCSR_MAC_PCM_RING_FRAMES = 4096U
+};
+
+static const AudioObjectPropertyAddress zcsr_mac_default_output_address = {
+    kAudioHardwarePropertyDefaultOutputDevice,
+    kAudioObjectPropertyScopeGlobal,
+    kAudioObjectPropertyElementMain
+};
+
+/*
+ * AudioUnit's render callback is a real-time audio callback.
+ *
+ * It must not allocate, lock, sleep, log, call user callbacks, or invoke
+ * backend lifecycle functions. It only reads the SPSC PCM ring atomically
+ * and fills output buffers.
+ */
+static OSStatus zcsr_mix_macos_render_callback(
+    void* in_ref_con,
+    AudioUnitRenderActionFlags* io_action_flags,
+    const AudioTimeStamp* in_time_stamp,
+    UInt32 in_bus_number,
+    UInt32 in_number_frames,
+    AudioBufferList* io_data) {
+    zcsr_mixer* m = (zcsr_mixer*)in_ref_con;
+    AudioBuffer* buffer;
+    int16_t* out;
+    size_t required_bytes;
+    unsigned head;
+    bool underrun = false;
+
+    (void)io_action_flags;
+    (void)in_time_stamp;
+    (void)in_bus_number;
+
+    if (!io_data) return noErr;
+
+    /* Default every supplied output buffer to silence first. */
+    for (UInt32 i = 0; i < io_data->mNumberBuffers; ++i) {
+        AudioBuffer* current = &io_data->mBuffers[i];
+        if (current->mData && current->mDataByteSize > 0U) {
+            memset(current->mData, 0, current->mDataByteSize);
+        }
+    }
+
+    if (!m || in_number_frames == 0U ||
+        io_data->mNumberBuffers != 1U) {
+        if (m) {
+            atomic_fetch_add_explicit(
+                &m->pcm_underruns, 1U, memory_order_relaxed);
+        }
+        return noErr;
+    }
+
+    buffer = &io_data->mBuffers[0];
+
+    /*
+     * The negotiated format is interleaved signed 16-bit stereo:
+     * one buffer, two channels, four bytes per sample frame.
+     */
+    if (!buffer->mData ||
+        buffer->mNumberChannels != 2U) {
+        atomic_fetch_add_explicit(
+            &m->pcm_underruns, 1U, memory_order_relaxed);
+        return noErr;
+    }
+
+    required_bytes = (size_t)in_number_frames * 2U * sizeof(int16_t);
+    if ((size_t)buffer->mDataByteSize < required_bytes) {
+        atomic_fetch_add_explicit(
+            &m->pcm_underruns, 1U, memory_order_relaxed);
+        return noErr;
+    }
+
+    out = (int16_t*)buffer->mData;
+    head = atomic_load_explicit(&m->pcm_head, memory_order_relaxed);
+
+    for (UInt32 frame = 0; frame < in_number_frames; ++frame) {
+        unsigned tail = atomic_load_explicit(
+            &m->pcm_tail, memory_order_acquire);
+        unsigned used = tail - head;
+
+        if (used != 0U && used <= ZCSR_MAC_PCM_RING_FRAMES) {
+            unsigned slot = head & (ZCSR_MAC_PCM_RING_FRAMES - 1U);
+
+            out[(size_t)frame * 2U] =
+                m->pcm_ring[(size_t)slot * 2U];
+            out[(size_t)frame * 2U + 1U] =
+                m->pcm_ring[(size_t)slot * 2U + 1U];
+
+            ++head;
+        } else {
+            /* Keep silence for any frames not yet produced. */
+            out[(size_t)frame * 2U] = 0;
+            out[(size_t)frame * 2U + 1U] = 0;
+            underrun = true;
+        }
+    }
+
+    atomic_store_explicit(&m->pcm_head, head, memory_order_release);
+
+    if (underrun) {
+        atomic_fetch_add_explicit(
+            &m->pcm_underruns, 1U, memory_order_relaxed);
+    }
+
+    return noErr;
+}
+
+/*
+ * CoreAudio default-output listener.
+ *
+ * This is a device-property callback, not the real-time AudioUnit render
+ * callback. It only reads the current default output identifier and
+ * publishes a pending event; it never closes or opens an AudioUnit.
+ */
+static OSStatus zcsr_mix_macos_default_output_changed(
+    AudioObjectID in_object_id,
+    UInt32 in_number_addresses,
+    const AudioObjectPropertyAddress in_addresses[],
+    void* in_client_data) {
+    zcsr_mixer* m = (zcsr_mixer*)in_client_data;
+    AudioDeviceID current_device = kAudioObjectUnknown;
+    UInt32 data_size = sizeof(current_device);
+    OSStatus status;
+
+    (void)in_object_id;
+    (void)in_number_addresses;
+    (void)in_addresses;
+
+    if (!m) return noErr;
+
+    atomic_fetch_add_explicit(
+        &m->mac_listener_callbacks_active, 1U, memory_order_acq_rel);
+
+    if (!atomic_load_explicit(
+            &m->mac_listener_accepting, memory_order_acquire)) {
+        atomic_fetch_sub_explicit(
+            &m->mac_listener_callbacks_active, 1U, memory_order_release);
+        return noErr;
+    }
+
+    status = AudioObjectGetPropertyData(
+        kAudioObjectSystemObject,
+        &zcsr_mac_default_output_address,
+        0U,
+        NULL,
+        &data_size,
+        &current_device);
+
+    if (status == noErr && current_device == kAudioObjectUnknown) {
+        /* The system reports that no default output device is available. */
+        zcsr_mix_device_set_pending(
+            m, ZCSR_MIX_DEVICE_PENDING_LOST);
+    } else {
+        /*
+         * A new default output exists, or the query is temporarily
+         * inconclusive. Treat this as a route change, not proven device loss.
+         */
+        zcsr_mix_device_set_pending(
+            m, ZCSR_MIX_DEVICE_PENDING_CHANGED);
+    }
+
+    atomic_fetch_sub_explicit(
+        &m->mac_listener_callbacks_active, 1U, memory_order_release);
+
+    return noErr;
+}
+
+#endif /* defined(__APPLE__) */
+
+#elif defined(__APPLE__)
+
+static void zcsr_mix_backend_close(zcsr_mix_backend* b) {
+    zcsr_mixer* owner;
+
+    if (!b) return;
+
+    owner = b->owner;
+
+    /*
+     * Stop accepting notifications before attempting removal, then wait for
+     * in-flight property listener callbacks to finish before mixer teardown.
+     */
+    if (owner) {
+        atomic_store_explicit(
+            &owner->mac_listener_accepting, false, memory_order_release);
+    }
+
+    if (owner && b->default_output_listener_registered) {
+        OSStatus remove_status = AudioObjectRemovePropertyListener(
+            kAudioObjectSystemObject,
+            &zcsr_mac_default_output_address,
+            zcsr_mix_macos_default_output_changed,
+            owner);
+
+        if (remove_status != noErr) {
+            /*
+             * A failed removal must not permit this static mixer slot to be
+             * reused. The listener's context is the mixer itself, whose
+             * storage is static. Its accepting flag remains false.
+             */
+            atomic_store_explicit(
+                &owner->mac_listener_removal_failed,
+                true,
+                memory_order_release);
+
+            (void)fprintf(
+                stderr,
+                "zcsr audiomix macOS: unable to remove default output listener "
+                "(OSStatus %d); mixer slot will be quarantined\n",
+                (int)remove_status);
+        }
+
+        while (atomic_load_explicit(
+                    &owner->mac_listener_callbacks_active,
+                    memory_order_acquire) != 0U) {
+            struct timespec ts = { 0, 1000000L };
+            (void)nanosleep(&ts, NULL);
+        }
+    }
+
+    /*
+     * The worker has stopped producing frames before calling backend_close.
+     * Stop the AudioUnit so its render callback cannot access the PCM ring
+     * after this close operation returns.
+     */
+    if (b->output_unit_started && b->output_unit) {
+        OSStatus status = AudioOutputUnitStop(b->output_unit);
+        if (status != noErr) {
+            (void)fprintf(
+                stderr,
+                "zcsr audiomix macOS: AudioOutputUnitStop failed (%d)\n",
+                (int)status);
+        }
+        b->output_unit_started = false;
+    }
+
+    if (b->output_unit_initialized && b->output_unit) {
+        (void)AudioUnitUninitialize(b->output_unit);
+        b->output_unit_initialized = false;
+    }
+
+    if (b->output_unit) {
+        (void)AudioComponentInstanceDispose(b->output_unit);
+        b->output_unit = NULL;
+    }
+
+    /*
+     * Once the consumer is stopped, discard queued output from the previous
+     * device. WAV data and channel playback positions remain untouched.
+     */
+    if (owner) {
+        unsigned tail = atomic_load_explicit(
+            &owner->pcm_tail, memory_order_relaxed);
+
+        atomic_store_explicit(
+            &owner->pcm_head, tail, memory_order_release);
+    }
+
+    *b = (zcsr_mix_backend){ 0 };
+
+    /* M1-style owner preservation across structure reset. */
+    b->owner = owner;
+}
+
+static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
+    zcsr_mixer* owner;
+    AudioComponentDescription description;
+    AudioComponent component;
+    AudioStreamBasicDescription format;
+    AURenderCallbackStruct render_callback;
+    OSStatus status;
+
+    if (!b) return;
+
+    owner = b->owner;
+    *b = (zcsr_mix_backend){ 0 };
+    b->owner = owner;
+
+    if (!owner) return;
+
+    /*
+     * An earlier CoreAudio listener failed to unregister. Do not create a
+     * second listener or reactivate its old context; let A3's worker retry
+     * logic remain in RECOVERY_PENDING.
+     */
+    if (atomic_load_explicit(
+            &owner->mac_listener_removal_failed, memory_order_acquire)) {
+        return;
+    }
+
+    memset(&description, 0, sizeof(description));
+    description.componentType = kAudioUnitType_Output;
+    description.componentSubType = kAudioUnitSubType_DefaultOutput;
+    description.componentManufacturer = kAudioUnitManufacturer_Apple;
+
+    component = AudioComponentFindNext(NULL, &description);
+    if (!component) goto fail;
+
+    status = AudioComponentInstanceNew(component, &b->output_unit);
+    if (status != noErr || !b->output_unit) goto fail;
+
+    /*
+     * Request signed 16-bit interleaved stereo PCM at the mixer sample rate.
+     * The DefaultOutput unit routes this format to the system's default
+     * output device.
+     */
+    memset(&format, 0, sizeof(format));
+    format.mSampleRate = (Float64)ZCSR_MIX_RATE;
+    format.mFormatID = kAudioFormatLinearPCM;
+    format.mFormatFlags =
+        kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+    format.mBytesPerPacket = 4U;
+    format.mFramesPerPacket = 1U;
+    format.mBytesPerFrame = 4U;
+    format.mChannelsPerFrame = 2U;
+    format.mBitsPerChannel = 16U;
+    format.mReserved = 0U;
+
+    status = AudioUnitSetProperty(
+        b->output_unit,
+        kAudioUnitProperty_StreamFormat,
+        kAudioUnitScope_Input,
+        0U,
+        &format,
+        (UInt32)sizeof(format));
+    if (status != noErr) goto fail;
+
+    render_callback.inputProc = zcsr_mix_macos_render_callback;
+    render_callback.inputProcRefCon = owner;
+
+    status = AudioUnitSetProperty(
+        b->output_unit,
+        kAudioUnitProperty_SetRenderCallback,
+        kAudioUnitScope_Input,
+        0U,
+        &render_callback,
+        (UInt32)sizeof(render_callback));
+    if (status != noErr) goto fail;
+
+    status = AudioUnitInitialize(b->output_unit);
+    if (status != noErr) goto fail;
+    b->output_unit_initialized = true;
+
+    /*
+     * Register a listener on the system default output property.
+     * AudioUnit creation can still fail if the listener cannot be registered:
+     * B1's contract includes device-change detection, not only playback.
+     */
+    atomic_store_explicit(
+        &owner->mac_listener_accepting, true, memory_order_release);
+
+    status = AudioObjectAddPropertyListener(
+        kAudioObjectSystemObject,
+        &zcsr_mac_default_output_address,
+        zcsr_mix_macos_default_output_changed,
+        owner);
+
+    if (status != noErr) {
+        atomic_store_explicit(
+            &owner->mac_listener_accepting, false, memory_order_release);
+        goto fail;
+    }
+
+    b->default_output_listener_registered = true;
+
+    status = AudioOutputUnitStart(b->output_unit);
+    if (status != noErr) goto fail;
+
+    b->output_unit_started = true;
+    b->opened = true;
+    return;
+
+fail:
+    if (owner) {
+        atomic_store_explicit(
+            &owner->mac_listener_accepting, false, memory_order_release);
+    }
+
+    zcsr_mix_backend_close(b);
+    b->owner = owner;
+    b->opened = false;
+}
+
+static void zcsr_mix_backend_write(
+    zcsr_mix_backend* b,
+    const int16_t* pcm,
+    unsigned frames) {
+    zcsr_mixer* m;
+    unsigned done = 0U;
+
+    if (!b || !pcm || frames == 0U) return;
+
+    m = b->owner;
+    if (!m) return;
+
+    /*
+     * No direct open/reopen from write. A missing backend publishes pending
+     * and returns so the mixer worker can perform the next attempt.
+     */
+    if (!b->opened || !b->output_unit_started) {
+        zcsr_mix_device_set_pending(
+            m, ZCSR_MIX_DEVICE_PENDING_CHANGED);
+        return;
+    }
+
+    while (done < frames &&
+           atomic_load_explicit(&m->running, memory_order_acquire)) {
+        unsigned head = atomic_load_explicit(
+            &m->pcm_head, memory_order_acquire);
+        unsigned tail = atomic_load_explicit(
+            &m->pcm_tail, memory_order_relaxed);
+        unsigned used = tail - head;
+        unsigned free_frames =
+            (used < ZCSR_MAC_PCM_RING_FRAMES)
+                ? (ZCSR_MAC_PCM_RING_FRAMES - used)
+                : 0U;
+        unsigned chunk = frames - done;
+
+        if (chunk > free_frames) chunk = free_frames;
+
+        if (chunk == 0U) {
+            /*
+             * Producer-side backpressure only. The AudioUnit render callback
+             * never sleeps; it emits silence if it has no queued PCM frames.
+             */
+            struct timespec ts = { 0, 1000000L };
+            (void)nanosleep(&ts, NULL);
+            continue;
+        }
+
+        for (unsigned i = 0; i < chunk; ++i) {
+            unsigned slot =
+                (tail + i) & (ZCSR_MAC_PCM_RING_FRAMES - 1U);
+
+            m->pcm_ring[(size_t)slot * 2U] =
+                pcm[(size_t)(done + i) * 2U];
+            m->pcm_ring[(size_t)slot * 2U + 1U] =
+                pcm[(size_t)(done + i) * 2U + 1U];
+        }
+
+        tail += chunk;
+        atomic_store_explicit(
+            &m->pcm_tail, tail, memory_order_release);
+
+        done += chunk;
+    }
+}
+
 #else
 
 static void zcsr_mix_backend_close(zcsr_mix_backend* b) { if (b) *b = (zcsr_mix_backend){ 0 }; }
@@ -2089,6 +2564,16 @@ static bool zcsr_mix_backend_open_ex(zcsr_mixer* m) {
     zcsr_mix_backend_open(&m->backend);
     return m->backend.opened;
 
+#elif defined(__APPLE__)
+    if (atomic_load_explicit(
+            &m->mac_listener_removal_failed, memory_order_acquire)) {
+        return false;
+    }
+
+    m->backend.owner = m;
+    zcsr_mix_backend_open(&m->backend);
+    return m->backend.opened;
+
 #else
     zcsr_mix_backend_open(&m->backend);
     return m->backend.opened;
@@ -2115,6 +2600,12 @@ static bool zcsr_mix_backend_close_ex(zcsr_mixer* m) {
            m->backend.render_client == NULL &&
            m->backend.event == NULL &&
            !m->backend.com_initialized;
+#elif defined(__APPLE__)
+    return !m->backend.opened &&
+           m->backend.output_unit == NULL &&
+           !m->backend.output_unit_initialized &&
+           !m->backend.output_unit_started &&
+           !m->backend.default_output_listener_registered;
 #else
     return !m->backend.opened;
 #endif
@@ -2534,6 +3025,34 @@ zcsr_mixer* zcsr_mix_start(void) {
             memset(m, 0, sizeof(*m));
             return 0;
         }
+
+#elif defined(__APPLE__)
+        atomic_init(&m->pcm_head, 0U);
+        atomic_init(&m->pcm_tail, 0U);
+        atomic_init(&m->pcm_prefilled, false);
+        atomic_init(&m->pcm_underruns, 0U);
+
+        atomic_init(&m->mac_listener_callbacks_active, 0U);
+        atomic_init(&m->mac_listener_accepting, false);
+        atomic_init(&m->mac_listener_removal_failed, false);
+
+        for (int c = 0; c < ZCSR_MIX_CHANNELS; ++c) {
+            atomic_init(&m->channels[c].state, ZCSR_MIX_CH_FREE);
+            m->channels[c].sound = -1;
+        }
+
+        /*
+         * The render callback is real-time and relies on lock-free ring
+         * index/statistic atomics. If these guarantees are unavailable,
+         * don't start an AudioUnit using potentially blocking atomics.
+         */
+        if (!atomic_is_lock_free(&m->pcm_head) ||
+            !atomic_is_lock_free(&m->pcm_tail) ||
+            !atomic_is_lock_free(&m->pcm_underruns)) {
+            memset(m, 0, sizeof(*m));
+            return 0;
+        }
+
 #else
         for (int c = 0; c < ZCSR_MIX_CHANNELS; ++c) {
             atomic_store(&m->channels[c].state, ZCSR_MIX_CH_FREE);
@@ -2625,6 +3144,21 @@ void zcsr_mix_stop(zcsr_mixer* m) {
     if (g_active_mixer == m) {
         g_active_mixer = 0;
     }
+
+#if defined(__APPLE__)
+    if (atomic_load_explicit(
+            &m->mac_listener_removal_failed, memory_order_acquire)) {
+        /*
+         * A CoreAudio listener could not be unregistered. Do not allow this
+         * mixer slot or its atomic callback context to be reused.
+         * The slot deliberately remains in_use; the rest of the pool is
+         * unaffected if another slot is available.
+         */
+        m->thread_started = false;
+        zcsr_mix_set_device_callback(m, NULL, NULL);
+        return;
+    }
+#endif
 
     /*
      * The worker has exited, so callback state, pending flags, platform

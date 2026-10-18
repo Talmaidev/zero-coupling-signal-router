@@ -1,0 +1,36 @@
+name: macOS CI
+
+on:
+  push:
+    branches:
+      - main
+      - "claude/**"
+
+  pull_request:
+    branches:
+      - main
+      - "claude/**"
+
+jobs:
+  build-test:
+    name: macOS C11 Build and Test
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build-macos
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+          -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build-macos --parallel
+
+      - name: Test
+        run: ctest --test-dir build-macos --output-on-failure
+
+      - name: Coupling guard
+        run: bash tools/check_no_cross_includes.sh

@@ -1,4 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
+
+set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING
+    "Minimum supported macOS version")
+
 project(zcsr C)
 
 set(CMAKE_C_STANDARD 11)          # C11/C17 — no C++
@@ -127,6 +131,16 @@ if(APPLE)
     message(FATAL_ERROR "OpenGL framework not found — required for the macOS glrender backend.")
   endif()
   target_link_libraries(zcsr_glrender PUBLIC ${COCOA_FRAMEWORK} ${OPENGL_FRAMEWORK})
+
+  # B1: macOS AudioUnit backend for audiomix.
+  find_library(ZCSR_COREAUDIO_FRAMEWORK CoreAudio REQUIRED)
+  find_library(ZCSR_AUDIOTOOLBOX_FRAMEWORK AudioToolbox REQUIRED)
+  find_library(ZCSR_AUDIOUNIT_FRAMEWORK AudioUnit REQUIRED)
+  target_link_libraries(zcsr_audiomix PUBLIC
+    "${ZCSR_COREAUDIO_FRAMEWORK}"
+    "${ZCSR_AUDIOTOOLBOX_FRAMEWORK}"
+    "${ZCSR_AUDIOUNIT_FRAMEWORK}"
+  )
 endif()
 
 # --- Agent 6: Integration & Validation (architecture/review owned) ---
@@ -135,6 +149,28 @@ foreach(exe zcsr_demo)
   target_link_libraries(${exe} PRIVATE
     zcsr_core zcsr_signal zcsr_hsm zcsr_overlay zcsr_platform)
 endforeach()
+
+if(APPLE AND TARGET zcsr_demo)
+  set_target_properties(zcsr_demo PROPERTIES
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_INFO_PLIST
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Info.plist.in"
+    MACOSX_BUNDLE_BUNDLE_NAME "zcsr_demo"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "org.zcsr.demo"
+    MACOSX_BUNDLE_BUNDLE_VERSION "1"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
+    MACOSX_BUNDLE_COPYRIGHT "Copyright ZCSR contributors"
+  )
+endif()
+
+if(APPLE)
+  add_executable(verify_macos
+    "${CMAKE_CURRENT_SOURCE_DIR}/integration/verify_macos.c"
+  )
+  target_link_libraries(verify_macos PRIVATE
+    zcsr_audiomix
+  )
+endif()
 
 # --- Tests ---
 enable_testing()
