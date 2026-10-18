@@ -49,3 +49,26 @@ cmake --build build --target check_coupling   # zero-coupling guard
 `include/zcsr/`: `value.h`, `arena.h`, `state_buffer.h`, `signal.h`, `hsm.h`, `platform.h`,
 `overlay.h`. Each module implements the prototypes from its own contract header. See
 `docs/ARCHITECTURE.md` for the dependency phases and the signal-router contract details.
+
+## macOS Build
+
+The macOS audio backend uses AudioUnit DefaultOutput, minimum macOS 12.0.
+Requires Xcode Command Line Tools and CMake 3.16 or newer.
+
+```sh
+cmake -S . -B build -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+To build and run the manual device-switch verification:
+
+```sh
+cmake --build build --target verify_macos
+./build/verify_macos
+```
+
+The program plays a 440 Hz tone and waits 30 seconds. During that time, switch
+the default output device in System Settings or plug/unplug headphones to
+observe LOST / CHANGED / RECOVERED events. This is a manual integration test,
+not an automated ctest.
