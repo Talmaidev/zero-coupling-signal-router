@@ -62,3 +62,37 @@ cmake --build build-box2d --parallel
 # 耦合守卫
 bash tools/check_no_cross_includes.sh
 ```
+
+## 七、glrender 性能优化阶段（最新进展，必读）
+
+性能计划：`docs/GLRENDER_PERF_PLAN.md`（v1.3，含落地结果 + Release 基线）。
+
+### 已落地（O1-O5 + N1-N3）
+
+| commit | 内容 | 效果 |
+|---|---|---|
+| `a0f1727` | O1 radix ping-pong + count<2 早退（glrender_instanced.c） | D1 排序 best 0.331→0.270ms (-18%) |
+| `a65b714` | O2 instanced 状态外提：framebuffer/viewport/program/VAO 提到 run 循环外；新增 static `zcsr_gl_draw_instances_prepared` | D3 多纹理 128 runs 6.70→1.20ms (-82%) |
+| `a051f87` | O3 VBO orphaning 实验（`#ifdef ZCSR_GL_VBO_ORPHAN`） | **不采用**，保持 SubData |
+| `45721ea` | O5 纹理 hash 索引（256-slot open addressing，glrender_core.c + glrender_internal.h） | A 场景 best -6.6% |
+| `8e7a490` | O4 P4/P5 测量（bench_worst.c 微基准） | 17.2μs/对，3-6% 帧时间，非瓶颈 |
+| `9ed51e6` | N1-N3 正确性修复：N3 发现 instanced_init 失败时未调 instanced_destroy（GL 资源泄漏），已修复；N1/N2 补契约注释 | — |
+| `7c03bf0` / `d87e39a` | perf plan v1.2/v1.3：落地结果 + Release 基线 | — |
+
+### 关键代码现状（写代码前必须 Read 确认）
+
+- `glrender_instanced.c`：`zcsr_gl_radix` 已是 ping-pong（src/dst 交替，4 pass 偶数结束 src==items）；`zcsr_gl_draw_instances_prepared` 是 static 内部函数（假设状态已设置，只做 VBO 上传+纹理绑定+draw）；`zcsr_gl_submit_instance_batch` 已状态外提（只调一次 make_current/framebuffer/viewport/program/VAO）
+- `glrender_core.c`：`zcsr_gl_find_tex` 已改为 hash 查找（`zcsr_tex_index_lookup/insert/remove`），不再 O(128) 线性扫；`zcsr_gl_texture_create` 调 `zcsr_tex_index_insert`，`zcsr_gl_texture_destroy` 调 `zcsr_tex_index_remove`
+- `glrender.c`：`zcsr_gl_create` 失败路径已修复（instanced_init 失败时调 instanced_destroy）
+- `zcsr_gl_instance` = 68 字节（15 float + uint32_t tex + float z），tex/z 是 CPU-only 字段（仅排序用，不进 GPU 顶点属性）
+- `glrender_text.c` = 28 行，5x7 块字形，draw_text 逐 glyph 生成顶点走 sprite 队列
+
+### Release 基线（build-release，Ninja -O2，MSVC）
+
+D1 排序 0.114ms / A 0.487ms / B 0.616ms / D2 0.335ms / D3 0.607ms。CPU 路径比 Debug 快 1.2-2.4x；系统调用不变。所有优化承诺以 Release 为准。
+
+### 当前剩余项
+
+- **P2**：instanced VBO stride（tex/z 12 字节 CPU-only 字段占 18%，是否拆出）
+- **P6**：text 字形缓存（draw_text 无缓存，逐 glyph 计算）
+- P2/P6 任务单由豆包发布给 GPT，GPT 出方案，豆包审核落地验证
