@@ -84,6 +84,10 @@ struct zcsr_gl_renderer {
     zcsr_gl_draw draws[ZCSR_GL_MAX_SPRITES];
     size_t draw_count;
     zcsr_gl_tex_entry textures[ZCSR_GL_MAX_TEXTURES];
+    /* O5: direct lookup table for texture handle -> textures[] slot.
+     * 256 slots (2x pool size, <50% load), open addressing. key=0 means empty. */
+    uint32_t tex_index_key[256];
+    uint8_t  tex_index_val[256];
     unsigned int program;
     unsigned int vao;
     unsigned int vbo;
