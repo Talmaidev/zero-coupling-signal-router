@@ -143,9 +143,16 @@ int main(void) {
     bool running = true;
 
     for (int frame = 0; running && frame < MAX_FRAMES; ++frame) {
-        zcsr_surface_pump_events(surface);
+        /* NOTE: input_pump must run BEFORE surface_pump_events on Windows.
+         * surface_pump_events uses PeekMessageA(...,0,PM_REMOVE) which drains
+         * all messages; input_pump uses PeekMessageA(...,hwnd,PM_REMOVE) and
+         * would find nothing if run second. (Same fix as demo_2048.c bfee234) */
         if (input) {
             zcsr_input_pump(input, surface);
+        }
+        zcsr_surface_pump_events(surface);
+
+        if (input) {
             zcsr_key_event ev;
             while (zcsr_input_poll(input, &ev)) {
                 if (ev.action == ZCSR_KEY_DOWN) {
