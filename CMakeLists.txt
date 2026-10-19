@@ -284,6 +284,12 @@ target_link_libraries(zcsr_culling_bench PRIVATE zcsr_culling)
 add_executable(zcsr_input_hsm_bench integration/bench_input_hsm.c)
 target_link_libraries(zcsr_input_hsm_bench PRIVATE zcsr_input zcsr_hsm zcsr_core zcsr_platform)
 
+# 2048 game demo (reuses game_core bitboard logic). Interactive, not a ctest.
+add_executable(zcsr_2048_demo integration/demo_2048.c integration/game_core.c)
+target_include_directories(zcsr_2048_demo PRIVATE integration)
+target_link_libraries(zcsr_2048_demo PRIVATE
+    zcsr_platform zcsr_glrender zcsr_input zcsr_hsm zcsr_core zcsr_audiomix zcsr_signal)
+
 # Windows backend verification (WASAPI + XInput + mouse). Interactive, not a ctest.
 add_executable(zcsr_verify_windows integration/verify_windows.c)
 target_link_libraries(zcsr_verify_windows PRIVATE zcsr_audiomix zcsr_inputext zcsr_platform)
