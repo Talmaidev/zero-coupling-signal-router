@@ -58,4 +58,18 @@ Box2D y=0 corresponds to the top of the window.
 
 - Runs ~15 seconds or until any key is pressed.
 - A new box spawns every 0.5 seconds (max 64).
-- Contact begin events print `[Box2D] contact begin: shapeA=.. shapeB=..`.
+- Contact begin events print `[Box2D] N contact(s) -> PHYSICS_CONTACT emitted`.
+- Each contact emits a `PHYSICS_CONTACT` signal routed via `ZCSR_DEFINE_ROUTER`
+  to `zcsr_mix_slot_play`, playing a 300ms 440Hz beep (`integration/click.wav`).
+
+## Integration verification (2026-10-19)
+
+| Item | Status |
+|---|---|
+| Windows default build (Box2D OFF) | ctest 18/18 pass, coupling guard PASS |
+| Windows Box2D ON build | `demo_physics` compiles and runs |
+| Window + rendering | 800x600 window, ground + falling boxes render correctly |
+| Contact events | `enableContactEvents=true`, begin events detected and printed |
+| Signal -> audio | `PHYSICS_CONTACT` -> `zcsr_mix_slot_play("click")`, beep audible on collision |
+| Android NDK | `libzcsr_phase0.so` compiles; `demo_physics` excluded from Android |
+| waveOut fallback | WASAPI `Activate(IID_IAudioClient)` fails on FxSound systems; waveOut backend auto-selected, skips FxSound virtual device |

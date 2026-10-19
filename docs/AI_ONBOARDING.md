@@ -62,14 +62,16 @@ C11 跨平台 2D 游戏引擎。零耦合模块设计，契约头驱动，无运
 - B 组 macOS AudioUnit 后端，tag `b-group`（代码完整，macOS 未编译验证）
 - glrender Step 1-3：平台条件一致性 → 拆分为 10 文件 → 基础几何 API → Box2D 可选集成
 - **glrender 性能优化闭环（P1-P6 全部处理）**：O1 radix ping-pong、O2 状态外提、O3 orphaning 实验(不采用)、O4 P4/P5 测量(非瓶颈)、O5 纹理 hash 索引；N1-N3 正确性修复；Release 基线建立
-- **方向3 真实点阵字体**：8x8 ASCII 32-126 bitmap font（font8x8_basic Public Domain），替换实心矩形占位；font atlas 纹理 + push_quad_uv 每字符 1 quad；core_init 失败路径资源泄漏修复
+- **方向3 真实点阵字体**：8x8 ASCII 32-126 bitmap font（font8x8_basic Public Domain），替换实心矩形占位；font atlas 纹理 + push_quad_uv 每字符 1 quad；core_init 失败路径资源泄漏修复；Windows text_demo + Android 1C.3 真机双端验证 PASS（GLES 3.2，font_tex 句柄3）
 - 文档整理：docs/ 精简为 API_REFERENCE + 本手册 + GLRENDER_PERF_PLAN，历史归档 docs/archive/
 
 ### 未做 / 暂停
 - 光照（light2d）——暂停中，等用户和群友研究完方案
 - macOS 真机验证（无 Mac 环境）
 - E 组低优先（iOS / 多点触控 / Android 键盘）
-- 方向1（其他模块优化）/ 方向2（细粒度剖析）/ 方向4（转向其他）：待评估
+- 方向1（其他模块优化）：已完成测量+优化。audiomix 是唯一瓶颈模块，已优化两处（render_period 8192 atomic_load→16快照 + Q8定点数消除float转换）。culling/atlas/input/hsm/gamelogic 无明显瓶颈
+- 方向2（细粒度剖析）：已完成（flush=98% sprite batch时间，CPU顶点生成=2%）
+- 方向4（转向其他）：待评估
 
 ### 关键数据
 - 契约头：`include/zcsr/*.h` 共 24 个
