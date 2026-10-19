@@ -25,6 +25,15 @@
 extern bool zcsr_gl_make_current(zcsr_gl_renderer* r);
 extern void zcsr_gl_update_size(zcsr_gl_renderer* r);
 
+/* internal functions for direction-2 phase breakdown (not part of public API) */
+typedef struct zcsr_gl_tex_entry zcsr_gl_tex_entry;
+extern zcsr_gl_tex_entry* zcsr_gl_find_tex(zcsr_gl_renderer* r, zcsr_gl_texture t);
+extern void zcsr_gl_push_quad(zcsr_gl_renderer* r, zcsr_rectf dst, float rot,
+                              float cr, float cg, float cb, float ca,
+                              zcsr_color_mode mode, float amount);
+extern void zcsr_gl_record_draw(zcsr_gl_renderer* r, unsigned int texture,
+                                size_t first, size_t count);
+
 #define MAX_SPRITES   10000
 #define MAX_TEXTURES  128
 #define MAX_INSTANCES 10000
@@ -113,6 +122,54 @@ static zcsr_bench_stats zcsr_bench_instanced(zcsr_gl_renderer* renderer,
         for (size_t j = 0; j < count; ++j) instances[j] = pristine[j];
         uint64_t t0 = zcsr_now_ns();
         zcsr_gl_submit_instance_batch(renderer, instances, count, temp, temp_bytes);
+        samples[i] = zcsr_now_ns() - t0;
+    }
+    return zcsr_compute_stats(samples, ITERS);
+}
+
+/* --- direction-2 phase breakdown: isolate find_tex / push_quad / flush --- */
+
+/* E1: find_tex only — pure texture lookup cost (O5 hash index), no vertex gen */
+static zcsr_bench_stats zcsr_bench_find_tex(zcsr_gl_renderer* r,
+                                            const zcsr_gl_sprite* sprites, size_t count) {
+    static uint64_t samples[ITERS];
+    for (int i = 0; i < ITERS; ++i) {
+        uint64_t t0 = zcsr_now_ns();
+        for (size_t j = 0; j < count; ++j) {
+            (void)zcsr_gl_find_tex(r, sprites[j].tex);
+        }
+        samples[i] = zcsr_now_ns() - t0;
+    }
+    return zcsr_compute_stats(samples, ITERS);
+}
+
+/* E2: push_quad only — pure vertex generation, no texture lookup, no draw record */
+static zcsr_bench_stats zcsr_bench_push_quad(zcsr_gl_renderer* r,
+                                             const zcsr_gl_sprite* sprites, size_t count) {
+    static uint64_t samples[ITERS];
+    for (int i = 0; i < ITERS; ++i) {
+        zcsr_gl_begin(r);
+        uint64_t t0 = zcsr_now_ns();
+        for (size_t j = 0; j < count; ++j) {
+            zcsr_gl_push_quad(r, sprites[j].dst, sprites[j].rotation,
+                              sprites[j].r, sprites[j].g, sprites[j].b, sprites[j].a,
+                              sprites[j].mode, sprites[j].amount);
+        }
+        samples[i] = zcsr_now_ns() - t0;
+    }
+    return zcsr_compute_stats(samples, ITERS);
+}
+
+/* E3: flush only — VBO upload + glDrawArrays, queue pre-filled by begin+submit (not timed).
+ * Note: submit_batch calls flush internally, so we must use begin+submit to fill the queue. */
+static zcsr_bench_stats zcsr_bench_flush(zcsr_gl_renderer* r,
+                                         const zcsr_gl_sprite* sprites, size_t count) {
+    static uint64_t samples[ITERS];
+    for (int i = 0; i < ITERS; ++i) {
+        zcsr_gl_begin(r);
+        for (size_t j = 0; j < count; ++j) zcsr_gl_submit(r, &sprites[j]);  /* fill queue, no flush */
+        uint64_t t0 = zcsr_now_ns();
+        zcsr_gl_flush(r);
         samples[i] = zcsr_now_ns() - t0;
     }
     return zcsr_compute_stats(samples, ITERS);
@@ -249,6 +306,26 @@ int main(void) {
     zcsr_print_stats("D3. instanced 10000 x 128 textures (~128 runs, state-hoisted)",
                      zcsr_bench_instanced(renderer, instances, MAX_INSTANCES,
                                           sort_temp, sizeof(sort_temp)));
+
+    /* E: direction-2 phase breakdown — isolate find_tex / push_quad / flush.
+     * Uses A-scenario data (1000 sprites x 128 textures) to expose texture lookup cost. */
+    for (int i = 0; i < 1000; ++i) {
+        sprites[i] = (zcsr_gl_sprite){
+            textures[i % MAX_TEXTURES],
+            { (float)((i * 17u) % 760u), (float)((i * 29u) % 560u), 8.0f, 8.0f },
+            0.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+            ZCSR_MOD_MULTIPLY, 0.0f
+        };
+    }
+    printf("\n--- E. phase breakdown (A scenario: 1000 sprites x 128 textures) ---\n");
+    zcsr_print_stats("E1. find_tex only (texture lookup, 1000x)",
+                     zcsr_bench_find_tex(renderer, sprites, 1000));
+    zcsr_print_stats("E2. push_quad only (vertex gen, 1000x)",
+                     zcsr_bench_push_quad(renderer, sprites, 1000));
+    zcsr_print_stats("E3. flush only (VBO upload + draws, 1000x)",
+                     zcsr_bench_flush(renderer, sprites, 1000));
+    zcsr_print_stats("E4. submit_batch total (A reference, 1000x)",
+                     zcsr_bench_batch(renderer, sprites, 1000));
 
     /* P4/P5 micro-benchmark: context switch + resize query overhead.
      * These are called 1-2x per frame (flush + batch), not per draw. */
