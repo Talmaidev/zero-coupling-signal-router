@@ -1885,10 +1885,31 @@ static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
         wfx2.nAvgBytesPerSec = wfx2.nSamplesPerSec * wfx2.nBlockAlign;
         wfx2.cbSize = 0;
 
-        MMRESULT mr = waveOutOpen(&b->wave_out, WAVE_MAPPER, &wfx2, (DWORD_PTR)b->wave_event, 0, CALLBACK_EVENT);
+        /* Find a real physical device, skip virtual drivers like FxSound */
+        UINT dev_count = waveOutGetNumDevs();
+        UINT chosen_device = WAVE_MAPPER;
+        for (UINT i = 0; i < dev_count; i++) {
+            WAVEOUTCAPS caps;
+            memset(&caps, 0, sizeof(caps));
+            if (waveOutGetDevCaps(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
+                if (wcsstr(caps.szPname, L"FxSound") == NULL &&
+                    wcsstr(caps.szPname, L"Virtual") == NULL) {
+                    chosen_device = i;
+                    break;
+                }
+            }
+        }
+
+        MMRESULT mr = waveOutOpen(&b->wave_out, chosen_device, &wfx2, (DWORD_PTR)b->wave_event, 0, CALLBACK_EVENT);
         if (mr != MMSYSERR_NOERROR || !b->wave_out) {
-            b->wave_out = NULL;
-            goto fail;
+            /* Fall back to WAVE_MAPPER if physical device fails */
+            if (chosen_device != WAVE_MAPPER) {
+                mr = waveOutOpen(&b->wave_out, WAVE_MAPPER, &wfx2, (DWORD_PTR)b->wave_event, 0, CALLBACK_EVENT);
+            }
+            if (mr != MMSYSERR_NOERROR || !b->wave_out) {
+                b->wave_out = NULL;
+                goto fail;
+            }
         }
 
         b->wave_buffer_frames = ZCSR_MIX_PERIOD_FRAMES * 4;
