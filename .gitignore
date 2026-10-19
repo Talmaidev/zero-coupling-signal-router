@@ -1,12 +1,14 @@
 build/
-build-box2d/
+build-*/
 build-release/
+out/
 *.o
 *.a
 *.obj
 *.exe
 *.out
 *.pdb
+*.ilk
 .cache/
 compile_commands.json
 zcsr_audiomix_test.wav
