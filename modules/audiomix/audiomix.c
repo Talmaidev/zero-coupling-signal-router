@@ -167,7 +167,8 @@ typedef struct {
     atomic_int state;
     int sound;
     uint32_t frame;
-    float volume;
+    float volume;     /* public-facing, set from API */
+    int32_t volume_q8; /* Q8 fixed-point (0..256), precomputed in apply_cmd for render hot path */
     bool loop;
 } zcsr_mix_channel;
 
@@ -2656,6 +2657,7 @@ static void zcsr_mix_apply_cmd(zcsr_mixer* m, const zcsr_mix_cmd* cmd) {
         ch->sound = cmd->sound;
         ch->frame = 0;
         ch->volume = cmd->volume;
+        ch->volume_q8 = (int32_t)(cmd->volume * 256.0f + 0.5f);  /* Q8 fixed-point for render hot path */
         ch->loop = cmd->loop;
         atomic_store_explicit(&ch->state, ZCSR_MIX_CH_ACTIVE, memory_order_release);
     } else if (cmd->type == ZCSR_MIX_CMD_STOP_CHANNEL && cmd->channel >= 0 && cmd->channel < ZCSR_MIX_CHANNELS) {
@@ -2714,8 +2716,8 @@ static void zcsr_mix_render_period(zcsr_mixer* m) {
                 }
             }
             sample = (s->offset + ch->frame) * 2U;
-            left += (int)((float)m->samples[sample] * ch->volume);
-            right += (int)((float)m->samples[sample + 1U] * ch->volume);
+            left += (m->samples[sample] * ch->volume_q8) >> 8;
+            right += (m->samples[sample + 1U] * ch->volume_q8) >> 8;
             ++ch->frame;
         }
         m->mix_buffer[frame * 2U] = zcsr_mix_clamp(left);
