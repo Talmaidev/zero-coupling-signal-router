@@ -280,6 +280,10 @@ target_link_libraries(zcsr_inst_bench PRIVATE zcsr_glrender zcsr_platform)
 add_executable(zcsr_culling_bench integration/bench_culling.c)
 target_link_libraries(zcsr_culling_bench PRIVATE zcsr_culling)
 
+# Input + HSM CPU baseline (is_down queries, hsm dispatch). Pure CPU, headless. Not a ctest.
+add_executable(zcsr_input_hsm_bench integration/bench_input_hsm.c)
+target_link_libraries(zcsr_input_hsm_bench PRIVATE zcsr_input zcsr_hsm zcsr_core zcsr_platform)
+
 # Windows backend verification (WASAPI + XInput + mouse). Interactive, not a ctest.
 add_executable(zcsr_verify_windows integration/verify_windows.c)
 target_link_libraries(zcsr_verify_windows PRIVATE zcsr_audiomix zcsr_inputext zcsr_platform)
