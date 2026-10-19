@@ -34,7 +34,7 @@
 
 /* ---- colors for each tile value (index = log2(value), 0=empty) ---- */
 static const float TILE_COLORS[12][3] = {
-    {0.73f, 0.68f, 0.63f},  /* 0 (empty) */
+    {0.80f, 0.76f, 0.71f},  /* 0 (empty cell - lighter than grid bg) */
     {0.93f, 0.89f, 0.85f},  /* 2 */
     {0.93f, 0.88f, 0.78f},  /* 4 */
     {0.95f, 0.69f, 0.47f},  /* 8 */
@@ -166,8 +166,8 @@ static void render_game(void) {
     }
 
     /* hint text */
-    zcsr_gl_draw_text(g_renderer, "Arrow keys / WASD to move | R to restart",
-                      30, WIN_H - 35, 0.9f, 0.47f, 0.43f, 0.40f, 1.0f);
+    zcsr_gl_draw_text(g_renderer, "Arrow/WASD move | R restart | F11 fullscreen | F10 borderless",
+                      20, WIN_H - 30, 0.7f, 0.47f, 0.43f, 0.40f, 1.0f);
 
     zcsr_gl_flush(g_renderer);
 }
@@ -294,6 +294,20 @@ int main(void) {
             zcsr_key_event ev;
             while (zcsr_input_poll(g_input, &ev)) {
                 if (ev.action != ZCSR_KEY_DOWN) continue;
+
+                /* window mode toggles work in any state */
+                if (ev.key == 122 /* F11 */) {
+                    static int fs = 0;
+                    fs = !fs;
+                    zcsr_surface_set_mode(g_surface, fs ? ZCSR_WINDOW_FULLSCREEN : ZCSR_WINDOW_WINDOWED);
+                    continue;
+                }
+                if (ev.key == 121 /* F10 */) {
+                    static int bl = 0;
+                    bl = !bl;
+                    zcsr_surface_set_mode(g_surface, bl ? ZCSR_WINDOW_BORDERLESS : ZCSR_WINDOW_WINDOWED);
+                    continue;
+                }
 
                 const char* state = zcsr_hsm_current(g_hsm);
 
