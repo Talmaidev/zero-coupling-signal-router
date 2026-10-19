@@ -2679,27 +2679,41 @@ static void zcsr_mix_drain_commands(zcsr_mixer* m) {
 }
 
 static void zcsr_mix_render_period(zcsr_mixer* m) {
+    /* Snapshot channel states once (16 atomic loads) instead of 8192 in the inner loop.
+     * render_period runs single-threaded after drain_commands; only ACTIVE channels are
+     * rendered. Concurrent FREE<->RESERVED transitions from zcsr_mix_play are irrelevant
+     * because they never become ACTIVE within this period (that happens in the next drain). */
+    int states[ZCSR_MIX_CHANNELS];
+    for (int c = 0; c < ZCSR_MIX_CHANNELS; ++c) {
+        states[c] = atomic_load_explicit(&m->channels[c].state, memory_order_acquire);
+    }
     for (unsigned frame = 0; frame < ZCSR_MIX_PERIOD_FRAMES; ++frame) {
         int left = 0;
         int right = 0;
         for (int c = 0; c < ZCSR_MIX_CHANNELS; ++c) {
-            zcsr_mix_channel* ch = &m->channels[c];
-            int state = atomic_load_explicit(&ch->state, memory_order_acquire);
-            if (state != ZCSR_MIX_CH_ACTIVE || ch->sound < 0 || ch->sound >= ZCSR_MIX_MAX_SOUNDS) continue;
-            zcsr_mix_sound* s = &m->sounds[ch->sound];
+            zcsr_mix_channel* ch;
+            zcsr_mix_sound* s;
+            uint32_t sample;
+            if (states[c] != ZCSR_MIX_CH_ACTIVE) continue;
+            ch = &m->channels[c];
+            if (ch->sound < 0 || ch->sound >= ZCSR_MIX_MAX_SOUNDS) continue;
+            s = &m->sounds[ch->sound];
             if (!s->used || s->frames == 0) {
+                states[c] = ZCSR_MIX_CH_FREE;
                 atomic_store_explicit(&ch->state, ZCSR_MIX_CH_FREE, memory_order_release);
                 continue;
             }
             if (ch->frame >= s->frames) {
-                if (ch->loop) ch->frame = 0;
-                else {
+                if (ch->loop) {
+                    ch->frame = 0;
+                } else {
+                    states[c] = ZCSR_MIX_CH_FREE;
                     atomic_store_explicit(&ch->state, ZCSR_MIX_CH_FREE, memory_order_release);
                     zcsr_mix_finished_push(m, c);
                     continue;
                 }
             }
-            uint32_t sample = (s->offset + ch->frame) * 2U;
+            sample = (s->offset + ch->frame) * 2U;
             left += (int)((float)m->samples[sample] * ch->volume);
             right += (int)((float)m->samples[sample + 1U] * ch->volume);
             ++ch->frame;
