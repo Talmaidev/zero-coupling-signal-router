@@ -92,6 +92,7 @@ struct zcsr_gl_renderer {
     unsigned int vao;
     unsigned int vbo;
     unsigned int white_tex;
+    unsigned int font_tex;
     unsigned int fbo;
     zcsr_gl_texture target;
     int uniform_view;

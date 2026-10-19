@@ -127,6 +127,45 @@ static unsigned int zcsr_gl_create_white_texture(void) {
     return tex;
 }
 
+/* 8x8 bitmap font data (ASCII 32-126), defined in glrender_text.c */
+extern const uint8_t zcsr_font8x8[95][8];
+
+static unsigned int zcsr_gl_create_font_texture(void) {
+    /* 128x64 RGBA atlas: 16 cols x 8 rows of 8x8 glyph slots.
+     * LSB = leftmost pixel (no mirror). Texture row 0 = font last row (no upside-down).
+     * Foreground = opaque white, modulated by vertex color; background = transparent. */
+    static unsigned char pixels[128 * 64 * 4];
+    unsigned int tex = 0;
+    int ch, gy, gx;
+    memset(pixels, 0, sizeof(pixels));
+    for (ch = 0; ch < 95; ++ch) {
+        int col = ch % 16;
+        int row = ch / 16;
+        for (gy = 0; gy < 8; ++gy) {
+            uint8_t bits = zcsr_font8x8[ch][7 - gy]; /* vertical flip */
+            for (gx = 0; gx < 8; ++gx) {
+                if (bits & (1u << gx)) { /* LSB = left */
+                    int px = col * 8 + gx;
+                    int py = row * 8 + gy;
+                    int off = (py * 128 + px) * 4;
+                    pixels[off + 0] = 255;
+                    pixels[off + 1] = 255;
+                    pixels[off + 2] = 255;
+                    pixels[off + 3] = 255;
+                }
+            }
+        }
+    }
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 128, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    return tex;
+}
+
 /* ===========================================================================================
  * Texture table (shared with sprite/instanced/text via internal.h)
  * O5: hash lookup (256-slot open addressing) replaces O(128) linear scan.
@@ -221,9 +260,10 @@ bool zcsr_gl_core_init(zcsr_gl_renderer* r) {
 
     glGenFramebuffers(1, &r->fbo);
     r->white_tex = zcsr_gl_create_white_texture();
+    r->font_tex = zcsr_gl_create_font_texture();
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    return r->vao != 0 && r->vbo != 0 && r->fbo != 0 && r->white_tex != 0;
+    return r->vao != 0 && r->vbo != 0 && r->fbo != 0 && r->white_tex != 0 && r->font_tex != 0;
 }
 
 void zcsr_gl_core_destroy(zcsr_gl_renderer* r) {
@@ -232,6 +272,7 @@ void zcsr_gl_core_destroy(zcsr_gl_renderer* r) {
         if (r->textures[i].in_use && r->textures[i].id) glDeleteTextures(1, &r->textures[i].id);
     }
     if (r->white_tex) glDeleteTextures(1, &r->white_tex);
+    if (r->font_tex) glDeleteTextures(1, &r->font_tex);
     if (r->fbo) glDeleteFramebuffers(1, &r->fbo);
     if (r->vbo) glDeleteBuffers(1, &r->vbo);
     if (r->vao) glDeleteVertexArrays(1, &r->vao);
