@@ -287,10 +287,15 @@ int main(void) {
     /* ---- main loop ---- */
     bool running = true;
     for (int frame = 0; running && frame < MAX_FRAMES; ++frame) {
+        /* input_pump FIRST: it PeekMessages only this window's hwnd and records
+         * key state. surface_pump_events afterwards drains the remaining thread
+         * messages. Reversing this order loses all input on Windows. */
+        if (g_input) {
+            zcsr_input_pump(g_input, g_surface);
+        }
         zcsr_surface_pump_events(g_surface);
 
         if (g_input) {
-            zcsr_input_pump(g_input, g_surface);
             zcsr_key_event ev;
             while (zcsr_input_poll(g_input, &ev)) {
                 if (ev.action != ZCSR_KEY_DOWN) continue;
