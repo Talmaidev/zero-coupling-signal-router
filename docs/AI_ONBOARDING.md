@@ -62,13 +62,14 @@ C11 跨平台 2D 游戏引擎。零耦合模块设计，契约头驱动，无运
 - B 组 macOS AudioUnit 后端，tag `b-group`（代码完整，macOS 未编译验证）
 - glrender Step 1-3：平台条件一致性 → 拆分为 10 文件 → 基础几何 API → Box2D 可选集成
 - **glrender 性能优化闭环（P1-P6 全部处理）**：O1 radix ping-pong、O2 状态外提、O3 orphaning 实验(不采用)、O4 P4/P5 测量(非瓶颈)、O5 纹理 hash 索引；N1-N3 正确性修复；Release 基线建立
+- **方向3 真实点阵字体**：8x8 ASCII 32-126 bitmap font（font8x8_basic Public Domain），替换实心矩形占位；font atlas 纹理 + push_quad_uv 每字符 1 quad；core_init 失败路径资源泄漏修复
 - 文档整理：docs/ 精简为 API_REFERENCE + 本手册 + GLRENDER_PERF_PLAN，历史归档 docs/archive/
 
 ### 未做 / 暂停
 - 光照（light2d）——暂停中，等用户和群友研究完方案
 - macOS 真机验证（无 Mac 环境）
 - E 组低优先（iOS / 多点触控 / Android 键盘）
-- 下一阶段方向评估中（四方向 GPT×DS 交叉验证）
+- 方向1（其他模块优化）/ 方向2（细粒度剖析）/ 方向4（转向其他）：待评估
 
 ### 关键数据
 - 契约头：`include/zcsr/*.h` 共 24 个
@@ -88,7 +89,7 @@ C11 跨平台 2D 游戏引擎。零耦合模块设计，契约头驱动，无运
 | `glrender_core.c` | shader/program/VAO/VBO/FBO/white_tex/纹理 CRUD/clear/set_target + **O5 纹理 hash 索引** | 298 |
 | `glrender_sprite.c` | push_quad/submit/flush/submit_batch/atlas/fill_rect/draw_line/draw_rect | 205 |
 | `glrender_instanced.c` | instanced program/init/draw + **O1 radix ping-pong** + **O2 状态外提(prepared 函数)** + O3 #ifdef 实验开关 | 341 |
-| `glrender_text.c` | 5x7 block glyph draw_text（所有可打印字节画同一实心矩形，无字形差异） | 28 |
+| `glrender_text.c` | 8x8 bitmap font draw_text（ASCII 32-126，font8x8_basic PD，font atlas + push_quad_uv） | ~130 |
 | `glrender_platform_glx.c` | Linux GLX | 118 |
 | `glrender_platform_egl.c` | Android EGL | 126 |
 | `glrender_platform_wgl.c` | Windows WGL | 125 |
@@ -187,7 +188,7 @@ cmake --build build-box2d --parallel
 - `glrender_instanced.c`：`zcsr_gl_radix` 已是 ping-pong；`zcsr_gl_draw_instances_prepared` 是 static（假设状态已设置，只做 VBO 上传+纹理绑定+draw）；`submit_instance_batch` 已状态外提
 - `glrender_core.c`：`zcsr_gl_find_tex` 已是 hash 查找（`zcsr_tex_index_lookup/insert/remove`），不再 O(128) 线性扫
 - `zcsr_gl_instance` = 68 字节（15 float + uint32_t tex + float z），tex/z 是 CPU-only 字段（仅排序用，不进 GPU 顶点属性）
-- `glrender_text.c` = 28 行，5x7 块字形，所有可打印字节画同一实心矩形
+- `glrender_text.c` = ~130 行，8x8 bitmap font（ASCII 32-126，font8x8_basic PD），font atlas + push_quad_uv 每字符 1 quad
 
 ### Release 基线（build-release，Ninja -O2，MSVC）
 
@@ -221,11 +222,11 @@ D1 排序 0.114ms / A 0.487ms / B 0.616ms / D2 0.335ms / D3 0.607ms。CPU 路径
 - E2 多点触控
 - E3 Android 键盘
 
-### 下一阶段评估中（四方向 GPT×DS 交叉验证）
-1. 转向其他模块性能优化（audiomix/input/atlas 等）
-2. glrender 细粒度剖析（分离排序/提交/上传各阶段成本）
-3. 真实点阵字体替换当前实心矩形
-4. 暂停 glrender，转向其他任务
+### 下一阶段方向（GPT×DS 交叉验证结论）
+1. [待评估] 转向其他模块性能优化（audiomix/input/atlas 等）
+2. [待评估] glrender 细粒度剖析（分离排序/提交/上传各阶段成本）
+3. [已完成] 真实点阵字体替换实心矩形 — commit d74f176，8x8 ASCII 32-126 bitmap font
+4. [待评估] 暂停 glrender，转向其他任务
 
 ---
 
