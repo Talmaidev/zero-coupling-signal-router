@@ -142,7 +142,7 @@ static unsigned int zcsr_gl_create_font_texture(void) {
         int col = ch % 16;
         int row = ch / 16;
         for (gy = 0; gy < 8; ++gy) {
-            uint8_t bits = zcsr_font8x8[ch][7 - gy]; /* vertical flip */
+            uint8_t bits = zcsr_font8x8[ch][gy]; /* no flip: OpenGL texture bottom = screen top */
             for (gx = 0; gx < 8; ++gx) {
                 if (bits & (1u << gx)) { /* LSB = left */
                     int px = col * 8 + gx;
