@@ -4,7 +4,7 @@
  *   glrender_core.c      — shader/program/VAO-VBO-FBO/white-tex/texture CRUD/clear/set_target
  *   glrender_sprite.c    — vertex queue/quad push/draw recording/flush/batch
  *   glrender_instanced.c — instanced program/init/destroy/draw/radix sort/state sort
- *   glrender_text.c      — 5x7 block glyph text
+ *   glrender_text.c      — 8x8 bitmap font text (ASCII 32-126)
  *   glrender_platform_*.c — Linux GLX / Android EGL / Windows WGL backends
  *   glrender_cocoa.m     — macOS NSOpenGL backend (unchanged)
  *
@@ -31,6 +31,9 @@ zcsr_gl_renderer* zcsr_gl_create(zcsr_surface* surface, void* buffer, size_t byt
         return 0;
     }
     if (!zcsr_gl_core_init(r)) {
+        /* core_init may have created partial GL resources (program/vao/vbo/fbo/white_tex/font_tex)
+         * before failing — release them before tearing down platform. */
+        zcsr_gl_core_destroy(r);
         zcsr_gl_platform_destroy(r);
         memset(r, 0, sizeof(*r));
         return 0;
