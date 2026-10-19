@@ -272,6 +272,11 @@ target_link_libraries(zcsr_text_demo PRIVATE zcsr_glrender zcsr_platform)
 add_executable(zcsr_window_demo integration/demo_window.c)
 target_link_libraries(zcsr_window_demo PRIVATE zcsr_glrender zcsr_platform zcsr_input)
 
+# Generic menu UI demo (reusable menu component + interactive test). Not a ctest.
+add_executable(zcsr_menu_demo integration/demo_menu.c integration/menu_ui.c)
+target_include_directories(zcsr_menu_demo PRIVATE integration)
+target_link_libraries(zcsr_menu_demo PRIVATE zcsr_glrender zcsr_platform zcsr_input)
+
 # Atlas end-to-end bench (unpacked vs packed). Not a ctest.
 add_executable(zcsr_atlas_bench integration/bench_atlas.c)
 target_link_libraries(zcsr_atlas_bench PRIVATE zcsr_glrender zcsr_atlas zcsr_platform)
