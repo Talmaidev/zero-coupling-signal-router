@@ -111,12 +111,13 @@ void zcsr_gl_draw_text(zcsr_gl_renderer* r, const char* utf8, float x, float y, 
                        float cr, float cg, float cb, float ca) {
     float pen = x;
     const unsigned char* p;
+    size_t first = 0;
+    int started = 0;
     if (!r || !utf8 || scale <= 0.0f || !r->font_tex) return;
     for (p = (const unsigned char*)utf8; *p; ++p) {
         unsigned char ch = *p;
         int idx, col, row;
         float u0, v0, u1, v1;
-        size_t first;
         if (ch == '\n') {
             pen = x;
             y += 9.0f * scale;
@@ -131,10 +132,12 @@ void zcsr_gl_draw_text(zcsr_gl_renderer* r, const char* utf8, float x, float y, 
         v0 = (float)row / 8.0f;
         u1 = (float)(col + 1) / 16.0f;
         v1 = (float)(row + 1) / 8.0f;
-        first = r->vertex_count;
+        if (!started) { first = r->vertex_count; started = 1; }
         zcsr_gl_push_quad_uv(r, (zcsr_rectf){ pen, y, 8.0f * scale, 8.0f * scale }, 0.0f,
                              u0, v0, u1, v1, cr, cg, cb, ca, ZCSR_MOD_MULTIPLY, 0.0f);
-        zcsr_gl_record_draw(r, r->font_tex, first, r->vertex_count - first);
         pen += 9.0f * scale;
+    }
+    if (started) {
+        zcsr_gl_record_draw(r, r->font_tex, first, r->vertex_count - first);
     }
 }
