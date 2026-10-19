@@ -13,6 +13,8 @@
 #include "zcsr/platform.h"
 #include "zcsr/gl_render.h"
 #include "zcsr/input.h"
+#include "zcsr/audio_mix.h"
+#include "zcsr/signal.h"
 
 #include <box2d/box2d.h>
 
@@ -28,6 +30,11 @@
 #define BOX_HALF       0.4f   /* 0.8m boxes */
 #define SPAWN_INTERVAL 0.5f   /* seconds */
 #define MAX_FRAMES     900    /* ~15s @60fps safety timeout */
+
+/* ---- compile-time signal router: PHYSICS_CONTACT -> audiomix slot_play ---- */
+#define PHYSICS_CONNS(X) \
+    X("PHYSICS_CONTACT", zcsr_mix_slot_play)
+ZCSR_DEFINE_ROUTER(physics, PHYSICS_CONNS)
 
 /* ---- caller-provided statics (no heap) ---- */
 static unsigned char g_renderer_buf[8 * 1024 * 1024];
@@ -99,6 +106,18 @@ int main(void) {
 
     zcsr_input* input = zcsr_input_init(g_input_buf, sizeof g_input_buf);
 
+    /* ---- audiomix (for collision sound via signal router) ---- */
+    zcsr_mixer* mixer = zcsr_mix_start();
+    if (mixer) {
+        /* click.wav lives in integration/; run from build-box2d/ so ../integration/ works */
+        if (!zcsr_mix_register_wav(mixer, "click", "../integration/click.wav"))
+            printf("[audiomix] WARN: failed to register click.wav (run from build-box2d/)\n");
+        else
+            printf("[audiomix] mixer started, click.wav registered\n");
+    } else {
+        printf("[audiomix] WARN: mixer unavailable (collision sounds disabled)\n");
+    }
+
     /* ---- Box2D world ---- */
     b2WorldDef wd = b2DefaultWorldDef();
     wd.gravity = (b2Vec2){ 0.0f, 9.8f };
@@ -141,12 +160,13 @@ int main(void) {
         /* step */
         b2World_Step(g_world, dt, 4);
 
-        /* contact events */
+        /* contact events: emit PHYSICS_CONTACT signal -> audiomix plays click */
         b2ContactEvents events = b2World_GetContactEvents(g_world);
         for (int i = 0; i < events.beginCount; ++i) {
-            printf("[Box2D] contact begin: shapeA=%d shapeB=%d\n",
+            printf("[Box2D] contact begin: shapeA=%d shapeB=%d -> emit PHYSICS_CONTACT\n",
                    events.beginEvents[i].shapeIdA.index1,
                    events.beginEvents[i].shapeIdB.index1);
+            physics_emit("PHYSICS_CONTACT", "click");
         }
 
         /* render */
@@ -173,6 +193,7 @@ int main(void) {
     }
 
     /* ---- cleanup ---- */
+    if (mixer) zcsr_mix_stop(mixer);
     b2DestroyWorld(g_world);
     zcsr_gl_destroy(renderer);
     zcsr_surface_destroy(surface);

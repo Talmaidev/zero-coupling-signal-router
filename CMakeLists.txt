@@ -295,7 +295,7 @@ if(ZCSR_ENABLE_BOX2D)
     if(NOT ANDROID)
       add_executable(demo_physics integration/demo_physics.c)
       target_link_libraries(demo_physics PRIVATE
-        zcsr_platform zcsr_glrender zcsr_input box2d::box2d)
+        zcsr_platform zcsr_glrender zcsr_input zcsr_audiomix zcsr_signal box2d::box2d)
       target_compile_features(demo_physics PRIVATE c_std_11)
     endif()
   endif()
