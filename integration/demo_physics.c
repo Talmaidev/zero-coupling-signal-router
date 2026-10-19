@@ -59,6 +59,7 @@ static void spawn_box(void) {
     sd.density = 1.0f;
     sd.material.friction = 0.4f;
     sd.material.restitution = 0.15f;
+    sd.enableContactEvents = true;  /* Box2D v3: contact events disabled by default */
     b2Polygon box = b2MakeBox(BOX_HALF, BOX_HALF);
     b2ShapeId shape = b2CreatePolygonShape(body, &sd, &box);
     if (!b2Shape_IsValid(shape)) return;
@@ -77,6 +78,7 @@ static void create_ground(void) {
     b2ShapeDef sd = b2DefaultShapeDef();
     sd.density = 0.0f;
     sd.material.friction = 0.6f;
+    sd.enableContactEvents = true;
     b2Polygon floor = b2MakeBox(8.0f, 0.5f);
     b2CreatePolygonShape(ground, &sd, &floor);
 }
@@ -109,13 +111,16 @@ int main(void) {
     /* ---- audiomix (for collision sound via signal router) ---- */
     zcsr_mixer* mixer = zcsr_mix_start();
     if (mixer) {
-        /* click.wav lives in integration/; run from build-box2d/ so ../integration/ works */
-        if (!zcsr_mix_register_wav(mixer, "click", "../integration/click.wav"))
-            printf("[audiomix] WARN: failed to register click.wav (run from build-box2d/)\n");
-        else
-            printf("[audiomix] mixer started, click.wav registered\n");
+        if (zcsr_mix_register_wav(mixer, "click", "../integration/click.wav")) {
+            printf("[audiomix] started, click.wav registered\n");
+            /* startup test: play immediately, print channel (>=0 = success) */
+            int ch = zcsr_mix_play(mixer, "click", 1.0f, false);
+            printf("[audiomix] startup test play -> channel=%d (-1=fail)\n", ch);
+        } else {
+            printf("[audiomix] WARN: click.wav register failed (run from build-box2d/)\n");
+        }
     } else {
-        printf("[audiomix] WARN: mixer unavailable (collision sounds disabled)\n");
+        printf("[audiomix] WARN: mixer unavailable\n");
     }
 
     /* ---- Box2D world ---- */
@@ -163,11 +168,10 @@ int main(void) {
         /* contact events: emit PHYSICS_CONTACT signal -> audiomix plays click */
         b2ContactEvents events = b2World_GetContactEvents(g_world);
         for (int i = 0; i < events.beginCount; ++i) {
-            printf("[Box2D] contact begin: shapeA=%d shapeB=%d -> emit PHYSICS_CONTACT\n",
-                   events.beginEvents[i].shapeIdA.index1,
-                   events.beginEvents[i].shapeIdB.index1);
             physics_emit("PHYSICS_CONTACT", "click");
         }
+        if (events.beginCount > 0)
+            printf("[Box2D] %d contact(s) -> PHYSICS_CONTACT emitted\n", events.beginCount);
 
         /* render */
         zcsr_gl_clear(renderer, 0.1f, 0.1f, 0.12f, 1.0f);
