@@ -1,6 +1,6 @@
 # zcsr 零耦合信号路由器 — 项目移交手册
 生成：2026-10-20
-分支：claude/image-agent4-tests（75 commits 未 push，禁止 push）
+分支：claude/image-agent4-tests（78 commits 未 push，禁止 push）
 
 ================================================================================
 一、总进度条
@@ -27,54 +27,51 @@
   ├── culling/atlas/input/hsm 基线 ...... ✓ 均无瓶颈
   └── 文字批处理优化 .................... ✓ 整串1 draw call
 
-游戏/Demo ██████████████░░░░░░░░ 70%
+游戏/Demo ████████████████░░░░ 85%
   ├── 2048 游戏 ......................... ✓ 可玩（bfee234 修复输入）
-  ├── Box2D 物理 demo ................... ✓ 碰撞→信号→音频
+  ├── Box2D 物理 demo ................... ✓ 碰撞→信号→音频（15af4e0 修复输入）
   ├── 打砖块设计文档 .................... ✓ 设计完成，未实现
-  ├── 窗口功能测试 demo ................. ✗ 未做
-  └── 通用 menu UI 骨架 ................. ✗ 未做
+  ├── 窗口功能测试 demo ................. ✓ zcsr_window_demo（7e9df23）
+  └── 通用 menu UI 骨架 ................. ✓ menu_ui.h/c + demo（170cbb7）
 
 跨平台验证 ████████████████████ 100%
-  ├── Windows ctest ..................... ✓ 18/18
+  ├── Windows ctest ..................... ✓ 19/19
   ├── 耦合守卫 .......................... ✓ PASS
   ├── Android NDK 编译 .................. ✓ 通过
   ├── Android 真机（Redmi K60 Pro）...... ✓ GLES 3.2 + 文字 PASS
   └── waveOut 回退（FxSound 环境）....... ✓ 已解决
 
-整体进度：约 90%（核心引擎完成，缺窗口测试 demo 和通用 menu UI）
+整体进度：约 93%（核心引擎+窗口测试+menu UI 完成，剩字体小字号验证和打砖块实现）
 
 ================================================================================
 二、已知问题 / 未完成项（新对话必须处理）
 ================================================================================
 
 【P0 - 已知 bug】
-1. demo_physics.c 有同样的 Windows input pump 顺序 bug
-   - 位置：integration/demo_physics.c 第146-148行
-   - 现象：surface_pump_events 先移除所有消息，input_pump 收不到按键
+1. ~~demo_physics.c 有同样的 Windows input pump 顺序 bug~~ ✓ 已修复（commit 15af4e0）
    - 修复：调换顺序，input_pump 先于 surface_pump_events
    - 参考：demo_2048.c 已修复（commit bfee234）
 
 2. 字体 "BEST" 在小字号下显示异常（疑似 "DESI"）
    - 可能原因：8x8 字体在 scale<1.0 时采样精度问题
    - 需验证：scale=0.8 时的文字渲染
+   - 可运行 zcsr_text_demo 观察小字号渲染
 
-【P1 - 缺失功能】
-3. 窗口功能测试 demo（方向1）
-   - 需验证：zcsr_surface_set_mode（窗口/无边框/全屏）
-   - 需验证：zcsr_surface_set_client_size（分辨率切换）
-   - 需验证：zcsr_display_count/get（多显示器）
-   - 需验证：zcsr_surface_get_dpi_scale（DPI）
-   - API 已存在于 include/zcsr/platform.h，只需写测试程序
+【P1 - 已完成】
+3. ~~窗口功能测试 demo~~ ✓ 已完成（commit 7e9df23，target: zcsr_window_demo）
+   - 覆盖：set_mode / set_client_size / display_count+get / dpi_scale / move_to_display / size_limits / dpi_callback / focus_callback
+   - 键盘：1/2/3 模式，+/- 缩放，Tab 切显示器，L 限制，R 重置，ESC 退出
 
-4. 通用 menu UI 骨架（方向2）
-   - 基于 hsm + glrender 做可复用的按钮/菜单组件
-   - 2048 已用 hsm 做状态机，但 UI 是硬编码的
-   - 目标：菜单选择、按钮高亮、键盘导航
+4. ~~通用 menu UI 骨架~~ ✓ 已完成（commit 170cbb7，integration/menu_ui.h/c）
+   - 基于 glrender + input，零堆分配，调用者提供缓冲区
+   - 支持：键盘导航（Up/Down/W/S）、Enter/Space 确认、ESC 取消、禁用项、高亮背景、自定义颜色
+   - demo: zcsr_menu_demo（主菜单→选项子菜单，含切换项和禁用项）
 
 【P2 - 可选】
-5. 打砖块游戏实现（设计文档 docs/BREAKOUT_DESIGN.md 已就绪）
+5. 打砖块游戏实现（设计文档 docs/BREAKOUT_DESIGN.md 已就绪，可复用 menu_ui）
 6. 2048 AI 自动玩（expectimax，需 256MB 权重文件）
-7. demo_physics.c 完整运行验收（Box2D 碰撞→信号→音频）
+7. demo_physics.c 完整运行验收（Box2D 碰撞→信号→音频，需 ZCSR_ENABLE_BOX2D=ON）
+8. 字体小字号 scale<1 渲染验证（P0 残留）
 
 ================================================================================
 三、关键技术决策记录
@@ -142,7 +139,10 @@ wsl -d Ubuntu-24.04 -- bash /mnt/c/Users/chen/Documents/GitHub/zero-coupling-sig
 
 Demo/游戏：
   integration/demo_2048.c        — 2048 游戏（已修复输入）
-  integration/demo_physics.c     — Box2D 物理 demo（有输入bug待修）
+  integration/demo_physics.c     — Box2D 物理 demo（已修复输入，需 ZCSR_ENABLE_BOX2D=ON）
+  integration/demo_window.c      — 窗口功能测试 demo（target: zcsr_window_demo）
+  integration/demo_menu.c        — menu UI 演示（target: zcsr_menu_demo）
+  integration/menu_ui.h/c        — 通用菜单 UI 组件（可复用，零堆分配）
   integration/game_core.c/h      — 2048 核心逻辑（位板+预计算表）
   integration/verify_windows.c   — Windows 后端验证
 
@@ -159,9 +159,18 @@ Demo/游戏：
 六、新对话建议执行顺序
 ================================================================================
 
-第1步：修 demo_physics.c 的 input pump bug（5分钟，复制 2048 的修复）
-第2步：写窗口功能测试 demo（方向1，验证所有 platform API）
-第3步：设计通用 menu UI 骨架（方向2，可先发 GPT 评审）
-第4步：可选——实现打砖块或 2048 AI
+已完成（本次对话）：
+  ✓ 第1步：修 demo_physics.c input pump bug（commit 15af4e0）
+  ✓ 第2步：窗口功能测试 demo（commit 7e9df23，zcsr_window_demo）
+  ✓ 第3步：通用 menu UI 骨架（commit 170cbb7，menu_ui.h/c + zcsr_menu_demo）
 
-每步完成后：Windows ctest 18/18 + 耦合守卫 PASS + 独立 commit + 不 push
+下一步可选：
+  第4步：验证字体小字号 scale<1 渲染（P0 残留，运行 zcsr_text_demo 观察）
+  第5步：实现打砖块游戏（docs/BREAKOUT_DESIGN.md 已就绪，可复用 menu_ui）
+  第6步：2048 AI 自动玩（expectimax，需 256MB 权重文件）
+  第7步：demo_physics 完整运行验收（需 ZCSR_ENABLE_BOX2D=ON 编译）
+
+每步完成后：Windows ctest 19/19 + 耦合守卫 PASS + 独立 commit + 不 push
+
+Git 路径（系统 PATH 无 git）：
+  C:\Users\chen\AppData\Local\GitHubDesktop\app-3.6.4\resources\app\git\cmd\git.exe
