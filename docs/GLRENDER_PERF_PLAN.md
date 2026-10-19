@@ -272,7 +272,16 @@ commit / OS / CPU / GPU / driver / build type / resolution / VSync / workload / 
 
 **验证**：ctest 19/19 全部通过，耦合守卫 PASS，编译零警告。
 **测试透明度**：排序正确性测试（200 items 对比参考稳定排序 + 稳定性验证 + 边界测试），基准输出 best/p50/p95。
-**未优化项**：P2（instanced VBO  stride）、P6（text 字形缓存）收益重叠或待取证；P4/P5 非瓶颈；N1-N3 正确性隐患单列待修。
+**P1-P6 全部处理完毕**：P1→O5(hash索引), P2→O2(状态外提), P3→O3(orphaning实验不采用), P4/P5→O4(测量非瓶颈), P6→O1(ping-pong)。
+
+### 额外方向评估（GPT 分析，2026-10）
+
+| 方向 | 结论 | 理由 |
+|---|---|---|
+| VBO stride（拆出 tex/z CPU-only 字段） | **暂不实现** | tex(uint32=4B)+z(float=4B)=8B/实例=11.76%（非此前误算的 12B/18%）；方案A打包CPU成本(600KB读+600KB写)可能超过80KB上传节省；方案B公开ABI breaking不值得 |
+| text 字形缓存 | **暂不实现** | glrender_text.c 当前所有可打印字节(ch>=32)画同一个5x7实心矩形(white_tex, UV全0-1)，无字形差异，缓存128模板无意义；等引入真实点阵字体时再做 |
+
+**GPT 关键纠正**：① tex+z=8字节不是12字节；② glrender_text.c 无真实字形数据，缓存对象不存在。两点均已 Read 源码核实。
 
 ---
 
