@@ -82,7 +82,7 @@ else()
   target_link_libraries(zcsr_audio PUBLIC winmm)
 
   target_link_libraries(zcsr_audiomix
-    PUBLIC ole32 uuid avrt mmdevapi
+    PUBLIC ole32 uuid avrt mmdevapi winmm
   )
 
   target_link_libraries(zcsr_inputext
@@ -283,6 +283,10 @@ target_link_libraries(zcsr_culling_bench PRIVATE zcsr_culling)
 # Windows backend verification (WASAPI + XInput + mouse). Interactive, not a ctest.
 add_executable(zcsr_verify_windows integration/verify_windows.c)
 target_link_libraries(zcsr_verify_windows PRIVATE zcsr_audiomix zcsr_inputext zcsr_platform)
+
+# Minimal audiomix smoke test (3-second beep). Interactive, not a ctest.
+add_executable(zcsr_audio_smoke integration/audio_smoke_test.c)
+target_link_libraries(zcsr_audio_smoke PRIVATE zcsr_audiomix zcsr_signal)
 
 # Offline image-bake throughput (chroma-key / variant / palette). Informational, not a ctest gate
 # (load-time bakes, not a per-frame budget); pure CPU, runs headless.

@@ -23,11 +23,13 @@
 #include <time.h>
 #elif defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
+#define CINTERFACE
 #include <initguid.h>
 #include <windows.h>
 #include <objbase.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
+#include <mmsystem.h>
 #include <limits.h>
 #include <wchar.h>
 
@@ -204,6 +206,14 @@ typedef struct {
     bool com_initialized;
     DWORD retry_after_tick;
     unsigned timeout_count;
+
+    /* waveOut fallback (used when WASAPI Activate fails, e.g. FxSound virtual driver) */
+    HWAVEOUT wave_out;
+    WAVEHDR wave_hdr;
+    HANDLE wave_event;
+    bool use_waveout;
+    int16_t* wave_buffer;
+    unsigned wave_buffer_frames;
 
     /* Preserved across backend_open/backend_close structure resets. */
     zcsr_mixer* owner;
@@ -1753,6 +1763,24 @@ static void zcsr_mix_backend_close(zcsr_mix_backend* b) {
         b->com_initialized = false;
     }
 
+    /* waveOut fallback cleanup */
+    if (b->wave_out) {
+        waveOutReset(b->wave_out);
+        if (b->wave_hdr.lpData) {
+            waveOutUnprepareHeader(b->wave_out, &b->wave_hdr, sizeof(WAVEHDR));
+        }
+        waveOutClose(b->wave_out);
+        b->wave_out = NULL;
+    }
+    if (b->wave_event) {
+        CloseHandle(b->wave_event);
+        b->wave_event = NULL;
+    }
+    if (b->wave_buffer) {
+        free(b->wave_buffer);
+        b->wave_buffer = NULL;
+    }
+
     *b = (zcsr_mix_backend){ 0 };
 
     /* Keep ownership available for the next open/retry. */
@@ -1827,10 +1855,12 @@ static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
         }
     }
 
+    /* Use local IID to rule out global symbol conflict */
+    static const GUID local_iid_iaudioclient = {0x1CB9AD4C, 0xDBFA, 0x4C32, {0xB1, 0x78, 0x2A, 0x69, 0x72, 0x6B, 0x5C, 0x3F}};
     hr = device->lpVtbl->Activate(
         device,
-        &IID_IAudioClient,
-        CLSCTX_ALL,
+        &local_iid_iaudioclient,
+        CLSCTX_INPROC_SERVER,
         NULL,
         (void**)&b->audio_client
     );
@@ -1838,7 +1868,39 @@ static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
     device->lpVtbl->Release(device);
     device = NULL;
 
-    if (FAILED(hr) || !b->audio_client) goto fail;
+    if (FAILED(hr) || !b->audio_client) {
+        /* WASAPI Activate failed — fall back to waveOut (works around FxSound virtual driver) */
+        zcsr_mix_backend_close(b);
+        b->owner = owner;
+
+        b->wave_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+        if (!b->wave_event) goto fail;
+
+        WAVEFORMATEX wfx2 = { 0 };
+        wfx2.wFormatTag = WAVE_FORMAT_PCM;
+        wfx2.nChannels = 2;
+        wfx2.nSamplesPerSec = ZCSR_MIX_RATE;
+        wfx2.wBitsPerSample = 16;
+        wfx2.nBlockAlign = (WORD)(wfx2.nChannels * wfx2.wBitsPerSample / 8);
+        wfx2.nAvgBytesPerSec = wfx2.nSamplesPerSec * wfx2.nBlockAlign;
+        wfx2.cbSize = 0;
+
+        MMRESULT mr = waveOutOpen(&b->wave_out, WAVE_MAPPER, &wfx2, (DWORD_PTR)b->wave_event, 0, CALLBACK_EVENT);
+        if (mr != MMSYSERR_NOERROR || !b->wave_out) {
+            b->wave_out = NULL;
+            goto fail;
+        }
+
+        b->wave_buffer_frames = ZCSR_MIX_PERIOD_FRAMES * 4;
+        b->wave_buffer = (int16_t*)calloc(b->wave_buffer_frames * 2, sizeof(int16_t));
+        if (!b->wave_buffer) goto fail;
+
+        b->use_waveout = true;
+        b->opened = true;
+        b->timeout_count = 0;
+        b->retry_after_tick = 0;
+        return;
+    }
 
     wfx.wFormatTag = WAVE_FORMAT_PCM;
     wfx.nChannels = 2;
@@ -1961,6 +2023,39 @@ static void zcsr_mix_backend_write(
         }
 
         zcsr_mix_sleep_period();
+        return;
+    }
+
+    /* waveOut fallback path */
+    if (b->use_waveout) {
+        unsigned bytes = frames * 2 * sizeof(int16_t);
+        if (bytes > b->wave_buffer_frames * 2 * sizeof(int16_t)) {
+            bytes = b->wave_buffer_frames * 2 * sizeof(int16_t);
+        }
+        memcpy(b->wave_buffer, pcm, bytes);
+
+        memset(&b->wave_hdr, 0, sizeof(WAVEHDR));
+        b->wave_hdr.lpData = (LPSTR)b->wave_buffer;
+        b->wave_hdr.dwBufferLength = bytes;
+        b->wave_hdr.dwFlags = 0;
+
+        MMRESULT mr = waveOutPrepareHeader(b->wave_out, &b->wave_hdr, sizeof(WAVEHDR));
+        if (mr != MMSYSERR_NOERROR) {
+            zcsr_mix_sleep_period();
+            return;
+        }
+
+        ResetEvent(b->wave_event);
+        mr = waveOutWrite(b->wave_out, &b->wave_hdr, sizeof(WAVEHDR));
+        if (mr != MMSYSERR_NOERROR) {
+            waveOutUnprepareHeader(b->wave_out, &b->wave_hdr, sizeof(WAVEHDR));
+            zcsr_mix_sleep_period();
+            return;
+        }
+
+        /* Wait for playback to complete */
+        WaitForSingleObject(b->wave_event, 1000);
+        waveOutUnprepareHeader(b->wave_out, &b->wave_hdr, sizeof(WAVEHDR));
         return;
     }
 
