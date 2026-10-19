@@ -47,7 +47,7 @@ typedef struct {
     zcsr_gl_texture test_texture;
     zcsr_mixer* mixer;
     int audio_channel;
-    int scene;            /* 0=batch, 1=atlas, 2=instanced */
+    int scene;            /* 0=batch, 1=atlas, 2=instanced, 3=text */
     uint64_t scene_tick;  /* ns timestamp of last scene switch */
     zcsr_input_ext* input_ext;
     union {
@@ -297,6 +297,32 @@ static bool zcsr_android_draw_instanced_scene(
         LOGE("instanced draw generated GL error"); return false;
     }
     LOGI("1C.2 instanced PASS: 202 instances submitted");
+    return true;
+}
+
+static bool zcsr_android_draw_text_scene(
+    zcsr_android_runtime* runtime, int width, int height) {
+    if (!runtime || !runtime->renderer) return false;
+    (void)width; (void)height;
+    zcsr_android_drain_gl_errors();
+    zcsr_gl_clear(runtime->renderer, 0.03f, 0.03f, 0.06f, 1.0f);
+    zcsr_gl_draw_text(runtime->renderer, "Hello zcsr! 123",
+                      40.0f, 60.0f, 5.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+    zcsr_gl_draw_text(runtime->renderer, "The quick brown fox",
+                      40.0f, 140.0f, 4.0f, 0.5f, 0.9f, 1.0f, 1.0f);
+    zcsr_gl_draw_text(runtime->renderer, "jumps over 456 lazy dogs!",
+                      40.0f, 200.0f, 4.0f, 1.0f, 0.8f, 0.3f, 1.0f);
+    zcsr_gl_draw_text(runtime->renderer, "ABCDEFGHIJKLMNOP",
+                      40.0f, 280.0f, 4.0f, 0.9f, 0.5f, 0.9f, 1.0f);
+    zcsr_gl_draw_text(runtime->renderer, "QRSTUVWXYZ 0123456789",
+                      40.0f, 340.0f, 4.0f, 0.9f, 0.5f, 0.9f, 1.0f);
+    zcsr_gl_draw_text(runtime->renderer, "!@#$%^&*()_+-=[]{}|;:',.<>/?",
+                      40.0f, 400.0f, 3.0f, 0.6f, 0.8f, 0.6f, 1.0f);
+    zcsr_gl_flush(runtime->renderer);
+    if (!zcsr_android_check_gl("text draw")) {
+        LOGE("text draw generated GL error"); return false;
+    }
+    LOGI("1C.3 text PASS: 8x8 bitmap font rendered (6 lines)");
     return true;
 }
 
@@ -639,14 +665,16 @@ void android_main(struct android_app* state) {
             if (now - runtime.scene_tick >= 2000000000ull) {
                 int width = 0, height = 0;
                 runtime.scene_tick = now;
-                runtime.scene = (runtime.scene + 1) % 3; /* 1C.2: batch->atlas->instanced */
+                runtime.scene = (runtime.scene + 1) % 4; /* batch->atlas->instanced->text */
                 if (zcsr_android_query_egl_size(&width, &height)) {
                     if (runtime.scene == 0)
                         (void)zcsr_android_draw_batch_scene(&runtime, width, height);
                     else if (runtime.scene == 1)
                         (void)zcsr_android_draw_atlas_scene(&runtime, width, height);
-                    else
+                    else if (runtime.scene == 2)
                         (void)zcsr_android_draw_instanced_scene(&runtime, width, height);
+                    else
+                        (void)zcsr_android_draw_text_scene(&runtime, width, height);
                 }
             }
         }
