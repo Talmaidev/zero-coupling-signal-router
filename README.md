@@ -35,7 +35,7 @@ and the change is reviewed explicitly.
 
 Additional game-core modules live under `modules/input`, `modules/audio`, `modules/render`,
 `modules/gamelogic`, `modules/glrender`, `modules/audiomix`, and `modules/inputext`; see
-`docs/GAME_CORE.md` and `docs/ENGINE_EXTENSION.md`.
+`docs/AI_ONBOARDING.md` for the full module map and onboarding guide.
 
 ## Build
 ```sh
@@ -48,7 +48,7 @@ cmake --build build --target check_coupling   # zero-coupling guard
 ## Contracts (the only thing modules may include)
 `include/zcsr/`: `value.h`, `arena.h`, `state_buffer.h`, `signal.h`, `hsm.h`, `platform.h`,
 `overlay.h`. Each module implements the prototypes from its own contract header. See
-`docs/ARCHITECTURE.md` for the dependency phases and the signal-router contract details.
+`docs/API_REFERENCE.md` for the full API contract and `docs/AI_ONBOARDING.md` for architecture.
 
 ## macOS Build
 

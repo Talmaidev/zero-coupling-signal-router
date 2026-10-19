@@ -1,47 +1,151 @@
-# zcsr 新对话必读文件包
+# zcsr 移交手册（唯一入口）
 
-## 一、必读（按优先级）
+生成：2026-10-19，基线 commit `8b5e921`（glrender 性能优化闭环）
+新 AI/开发者**只读这一个文件**即可接上。API 细节查 `docs/API_REFERENCE.md`，性能计划查 `docs/GLRENDER_PERF_PLAN.md`。
 
-1. `docs/BOOTSTRAP_v5.0.md` — 启动指令 v5.0，项目定位、进度、约束、glrender 拆分结构、Box2D 集成、多 AI 权限
-2. `docs/PHASE_A_COMPLETE.md` — A 组封存报告
-3. `docs/PHASE_B_COMPLETE.md` — B 组 macOS 封存报告
-4. `docs/BOX2D_INTEGRATION.md` — Box2D v3.1.1 可选集成说明
+---
 
-## 二、按需读
+## 一、项目定位与核心方向
 
-- `include/zcsr/*.h` — 24 个契约头，唯一 ABI 真相
-- `modules/*/` — 15 个实现模块。glrender 已拆为 9 文件（见 BOOTSTRAP_v5.0 第四节）
-- `android/` — Android CMake 工程（独立 CMakeLists，手动列源文件）
-- `tests/*.c` — 19 个 ctest
-- `integration/*.c` — 基准测试、验证程序、demo_physics
-- `tools/check_no_cross_includes.sh` — 耦合守卫
-- `tools/android_pack.sh` — APK 打包
+C11 跨平台 2D 游戏引擎。零耦合模块设计，契约头驱动，无运行时堆。
 
-## 三、不要读
+**核心方向（等价交换）**：抛弃一切小众老旧/不好用折腾麻烦的东西，全面接收现代最新稳定主流系统和便利操作，换取全球第一纯纸面性能。手柄、主机光盘等小众玩法完全不理会。gl.c 模块化目标是超越 SDL2 的性能与现代化舒适度。
 
-- 历史 commit 全文（信 commit message 即可）
-- `docs/BOOTSTRAP_v4.0.md`（已过时，被 v5.0 取代）
-- `build/`、`build-release/`、`build-box2d/`、`build/android/out/`（构建产物）
-- `vc140.pdb` 等编译临时文件
+支持平台：Windows 10+ / Linux 桌面 / Android API 24+ / macOS 12+（代码已写，未编译验证）
+不做：3D、手柄作为一等输入、旧设备兼容、厂商 SDK、iOS
 
-## 四、git 状态速查
+---
 
+## 二、多 AI 分工与权限
+
+- **用户**：终审、测试操作、最高决策权
+- **豆包（执行器）**：全局控制、本地执行、反向派遣权、可质疑 DS/GPT、可自行决定是否执行 DS 指令
+- **GPT**：主攻代码与核心技术方案
+- **DeepSeek (DS)**：写方案、审核；豆包可选择不盲从，有更好方案时直接问用户
+
+**豆包的授权**：root 最高权限、自查自选询问权、反向让其他 AI 干活的任务发布权。DS/GPT 的执行单是参考，不是命令。
+
+---
+
+## 三、核心硬约束（红线，贯穿所有阶段）
+
+1. 契约头 additive 优先，breaking 先提议
+2. 每阶段独立 commit（Conventional Commits）
+3. 每阶段跑 Windows 回归 + 耦合守卫 PASS；Linux/Android 编译零警告
+4. 不 git push
+5. 失败保留原始日志，不猜
+6. 外部库只在集成层（integration/）include，zcsr 模块和契约头不暴露第三方类型
+7. 引擎不依赖第三方数学库
+8. 优先复用现有代码，不重写整个文件（用精确 Edit）
+9. 平台门控必须 `#if defined(__ANDROID__)` 优先于 `#elif defined(__linux__)`（NDK 同时定义两者）
+10. 平台文件整个用 `#if` 包裹，非目标平台为空翻译单元（加 dummy typedef 避免 MSVC C4206）
+11. Android 有独立 `android/CMakeLists.txt`，手动列源文件——新增 glrender 文件时必须同步加
+
+### 新 AI 禁忌
+
+- 不要重问已完成的工作（看本文档 + commit 链）
+- 不要复核已封存的 commit（直接信 commit 链）
+- 不要凭空发明 API（查 `include/zcsr/*.h`）
+- 不要跳过编译和测试就宣称完成
+- 不要给 zcsr 模块加第三方依赖（物理/光照等都放集成层）
+- 不要改 `include/zcsr/gl_render.h` 以外的契约头除非明确要求
+- 不要写汇编、不要做 3A、不要代码加密、不要申请软著
+
+---
+
+## 四、当前进度快照
+
+### 已完成
+- Windows / Linux 主线，ctest 19/19
+- Android Phase 0 + Phase 1（1A–1E），真机验证，tag `android-phase1`
+- A 组平台边缘情况（A6/A1/A2/A4/A5/A3），tag `platform-edge`
+- B 组 macOS AudioUnit 后端，tag `b-group`（代码完整，macOS 未编译验证）
+- glrender Step 1-3：平台条件一致性 → 拆分为 10 文件 → 基础几何 API → Box2D 可选集成
+- **glrender 性能优化闭环（P1-P6 全部处理）**：O1 radix ping-pong、O2 状态外提、O3 orphaning 实验(不采用)、O4 P4/P5 测量(非瓶颈)、O5 纹理 hash 索引；N1-N3 正确性修复；Release 基线建立
+- 文档整理：docs/ 精简为 API_REFERENCE + 本手册 + GLRENDER_PERF_PLAN，历史归档 docs/archive/
+
+### 未做 / 暂停
+- 光照（light2d）——暂停中，等用户和群友研究完方案
+- macOS 真机验证（无 Mac 环境）
+- E 组低优先（iOS / 多点触控 / Android 键盘）
+- 下一阶段方向评估中（四方向 GPT×DS 交叉验证）
+
+### 关键数据
+- 契约头：`include/zcsr/*.h` 共 24 个
+- 已有 tag：`android-phase1`、`platform-edge`、`b-group`
+- 测试基线：Windows 19/19，Linux 编译通过，Android NDK 编译通过，耦合守卫 PASS
+
+---
+
+## 五、glrender 模块结构（10 文件）
+
+`modules/glrender/`：
+
+| 文件 | 职责 | 行数 |
+|---|---|---|
+| `glrender.c` | 公共 API 入口 + 生命周期协调（create/destroy/vsync/present） | 64 |
+| `glrender_internal.h` | 唯一内部共享头（结构 + 跨文件声明 + GLSL 宏） | 157 |
+| `glrender_core.c` | shader/program/VAO/VBO/FBO/white_tex/纹理 CRUD/clear/set_target + **O5 纹理 hash 索引** | 298 |
+| `glrender_sprite.c` | push_quad/submit/flush/submit_batch/atlas/fill_rect/draw_line/draw_rect | 205 |
+| `glrender_instanced.c` | instanced program/init/draw + **O1 radix ping-pong** + **O2 状态外提(prepared 函数)** + O3 #ifdef 实验开关 | 341 |
+| `glrender_text.c` | 5x7 block glyph draw_text（所有可打印字节画同一实心矩形，无字形差异） | 28 |
+| `glrender_platform_glx.c` | Linux GLX | 118 |
+| `glrender_platform_egl.c` | Android EGL | 126 |
+| `glrender_platform_wgl.c` | Windows WGL | 125 |
+| `glrender_cocoa.m` | macOS NSOpenGL（未动） | 78 |
+
+生命周期顺序：`platform_init → core_init → instanced_init`，失败逆序清理。
+**N3 已修复**：instanced_init 失败时必须调 instanced_destroy，否则中途已建的 GL 资源泄漏。
+
+---
+
+## 六、Box2D 可选集成
+
+默认关闭，零影响。启用方式：
+```bash
+cmake -S . -B build-box2d -DZCSR_ENABLE_BOX2D=ON
+cmake --build build-box2d
+./build-box2d/demo_physics
 ```
-git log --oneline -15     # 看最近 commit
-git tag -l                # 看 tag（android-phase1, platform-edge, b-group）
-git status --short        # 工作树是否干净
+
+- FetchContent 拉取 Box2D v3.1.1（GIT_SHALLOW）
+- `demo_physics` 仅桌面（Win/Linux），Android 排除
+- zcsr 15 模块完全不知道物理存在，零耦合
+- Box2D v3 API：`b2CreateWorld`（非 `b2World_Create`）、`b2CreateBody`、`shape.material.friction`（嵌套）
+
+---
+
+## 七、测试体系
+
+### tests/ vs integration/（故意分离）
+
+| 目录 | 用途 | 运行方式 |
+|---|---|---|
+| `tests/` | 每模块独立单元/契约测试 + 1 个跨模块接线测试。正确性门禁。 | headless，ctest |
+| `integration/` | 可运行 demo + 性能基准。组合与性能测量。 | 手动，部分需要真实 GPU/窗口/声卡 |
+
+分离原因：零耦合规则要求每模块独立编译独立测试；基准依赖硬件不进 headless 套件。
+
+### ctest 命令
+```bash
+cmake -S . -B build && cmake --build build
+ctest --test-dir build            # 全量
+ctest --test-dir build -V         # 详细
+ctest --test-dir build -R glrender # 按模块名过滤
 ```
 
-## 五、源码定位
+19 个测试目标：test_core, test_signal, test_hsm, test_overlay, test_render, test_input, test_audio, test_gamelogic, test_glrender, test_audiomix, test_inputext, test_image, test_atlas, test_culling, test_state, test_state_reuse, test_integration（+ glrender 排序正确性等）。
 
-- 契约头：`include/zcsr/*.h`
-- 实现：`modules/{signal,core,hsm,gamelogic,platform,input,inputext,overlay,render,glrender,image,audio,audiomix,culling,atlas}/`
-- glrender 拆分：`modules/glrender/glrender.c`（入口）+ `glrender_core.c` + `glrender_sprite.c` + `glrender_instanced.c` + `glrender_text.c` + `glrender_platform_{glx,egl,wgl}.c` + `glrender_cocoa.m`
-- Android：`android/CMakeLists.txt`, `android/android_main.c`, `android/AndroidManifest.xml`
-- 测试：`tests/*.c`（19 个）
-- 构建：根 `CMakeLists.txt`（glob + CONFIGURE_DEPENDS）+ `android/CMakeLists.txt`（手动列源）
+GPU/音频/窗口测试在 headless 下做运行时检查跳过，不会失败。
 
-## 六、构建命令速查
+### 耦合守卫
+```bash
+bash tools/check_no_cross_includes.sh
+```
+
+---
+
+## 八、构建命令速查
 
 ```bash
 # Windows (VS 18 + Ninja)
@@ -49,8 +153,9 @@ cmake -S . -B build
 cmake --build build --parallel
 ctest --test-dir build -C Debug
 
-# Linux (WSL2, make)
-make -C build/linux-a2 -j4
+# Release (Windows)
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --parallel
 
 # Android (WSL2, NDK r30)
 /home/user01/android-sdk/cmake/3.31.6/bin/cmake --build build/android/out/arm64-v8a --parallel
@@ -58,41 +163,102 @@ make -C build/linux-a2 -j4
 # Box2D 可选 (Windows)
 cmake -S . -B build-box2d -DZCSR_ENABLE_BOX2D=ON
 cmake --build build-box2d --parallel
-
-# 耦合守卫
-bash tools/check_no_cross_includes.sh
 ```
 
-## 七、glrender 性能优化阶段（最新进展，必读）
+---
 
-性能计划：`docs/GLRENDER_PERF_PLAN.md`（v1.3，含落地结果 + Release 基线）。
+## 九、glrender 性能优化闭环（最新进展）
+
+性能计划：`docs/GLRENDER_PERF_PLAN.md`（v1.4）。
 
 ### 已落地（O1-O5 + N1-N3）
 
 | commit | 内容 | 效果 |
 |---|---|---|
-| `a0f1727` | O1 radix ping-pong + count<2 早退（glrender_instanced.c） | D1 排序 best 0.331→0.270ms (-18%) |
-| `a65b714` | O2 instanced 状态外提：framebuffer/viewport/program/VAO 提到 run 循环外；新增 static `zcsr_gl_draw_instances_prepared` | D3 多纹理 128 runs 6.70→1.20ms (-82%) |
-| `a051f87` | O3 VBO orphaning 实验（`#ifdef ZCSR_GL_VBO_ORPHAN`） | **不采用**，保持 SubData |
-| `45721ea` | O5 纹理 hash 索引（256-slot open addressing，glrender_core.c + glrender_internal.h） | A 场景 best -6.6% |
-| `8e7a490` | O4 P4/P5 测量（bench_worst.c 微基准） | 17.2μs/对，3-6% 帧时间，非瓶颈 |
-| `9ed51e6` | N1-N3 正确性修复：N3 发现 instanced_init 失败时未调 instanced_destroy（GL 资源泄漏），已修复；N1/N2 补契约注释 | — |
-| `7c03bf0` / `d87e39a` | perf plan v1.2/v1.3：落地结果 + Release 基线 | — |
+| `a0f1727` | O1 radix ping-pong + count<2 早退 | D1 排序 best 0.331→0.270ms (-18%) |
+| `a65b714` | O2 instanced 状态外提 + static prepared 函数 | D3 多纹理 128 runs 6.70→1.20ms (-82%) |
+| `a051f87` | O3 VBO orphaning 实验（#ifdef） | **不采用**，保持 SubData |
+| `45721ea` | O5 纹理 hash 索引（256-slot open addressing） | A 场景 best -6.6% |
+| `8e7a490` | O4 P4/P5 测量 | 17.2μs/对，3-6% 帧时间，非瓶颈 |
+| `9ed51e6` | N1-N3 正确性修复（N3 发现 GL 资源泄漏 bug） | — |
 
 ### 关键代码现状（写代码前必须 Read 确认）
 
-- `glrender_instanced.c`：`zcsr_gl_radix` 已是 ping-pong（src/dst 交替，4 pass 偶数结束 src==items）；`zcsr_gl_draw_instances_prepared` 是 static 内部函数（假设状态已设置，只做 VBO 上传+纹理绑定+draw）；`zcsr_gl_submit_instance_batch` 已状态外提（只调一次 make_current/framebuffer/viewport/program/VAO）
-- `glrender_core.c`：`zcsr_gl_find_tex` 已改为 hash 查找（`zcsr_tex_index_lookup/insert/remove`），不再 O(128) 线性扫；`zcsr_gl_texture_create` 调 `zcsr_tex_index_insert`，`zcsr_gl_texture_destroy` 调 `zcsr_tex_index_remove`
-- `glrender.c`：`zcsr_gl_create` 失败路径已修复（instanced_init 失败时调 instanced_destroy）
+- `glrender_instanced.c`：`zcsr_gl_radix` 已是 ping-pong；`zcsr_gl_draw_instances_prepared` 是 static（假设状态已设置，只做 VBO 上传+纹理绑定+draw）；`submit_instance_batch` 已状态外提
+- `glrender_core.c`：`zcsr_gl_find_tex` 已是 hash 查找（`zcsr_tex_index_lookup/insert/remove`），不再 O(128) 线性扫
 - `zcsr_gl_instance` = 68 字节（15 float + uint32_t tex + float z），tex/z 是 CPU-only 字段（仅排序用，不进 GPU 顶点属性）
-- `glrender_text.c` = 28 行，5x7 块字形，draw_text 逐 glyph 生成顶点走 sprite 队列
+- `glrender_text.c` = 28 行，5x7 块字形，所有可打印字节画同一实心矩形
 
 ### Release 基线（build-release，Ninja -O2，MSVC）
 
-D1 排序 0.114ms / A 0.487ms / B 0.616ms / D2 0.335ms / D3 0.607ms。CPU 路径比 Debug 快 1.2-2.4x；系统调用不变。所有优化承诺以 Release 为准。
+D1 排序 0.114ms / A 0.487ms / B 0.616ms / D2 0.335ms / D3 0.607ms。CPU 路径比 Debug 快 1.2-2.4x；系统调用不变。
 
-### 当前剩余项
+### 额外方向评估（GPT 分析，暂不实现）
 
-- **P2**：instanced VBO stride（tex/z 12 字节 CPU-only 字段占 18%，是否拆出）
-- **P6**：text 字形缓存（draw_text 无缓存，逐 glyph 计算）
-- P2/P6 任务单由豆包发布给 GPT，GPT 出方案，豆包审核落地验证
+- **VBO stride**（拆出 tex/z）：节省仅 8B/实例=11.76%，打包 CPU 成本可能超收益，暂不实现
+- **text 字形缓存**：当前无字形差异（所有字节同一矩形），缓存无意义，等引入真实点阵字体时再做
+
+---
+
+## 十、未测项汇总（环境限制，非代码缺陷）
+
+- macOS：全部（AudioUnit 后端编译 + 真机）
+- A2：Windows 跨屏 DPI
+- A3：Windows COM 设备切换（环境无音频设备）/ Linux 声卡插拔 / Android 断连
+- A4：Windows 拖拽被拒 / Linux xprop hints
+- A5：Windows Alt+Tab / Linux override_redirect 焦点
+- Box2D demo_physics 运行验证（编译通过，窗口运行待人工双击确认）
+
+---
+
+## 十一、未来方向（未完成）
+
+### C 组 扩展层
+- C3 zcsr_light2d.h（光照，暂停中，等用户和群友研究方案）
+
+### E 组 低优先（按需）
+- E1 iOS 支持
+- E2 多点触控
+- E3 Android 键盘
+
+### 下一阶段评估中（四方向 GPT×DS 交叉验证）
+1. 转向其他模块性能优化（audiomix/input/atlas 等）
+2. glrender 细粒度剖析（分离排序/提交/上传各阶段成本）
+3. 真实点阵字体替换当前实心矩形
+4. 暂停 glrender，转向其他任务
+
+---
+
+## 十二、源码定位
+
+- 契约头：`include/zcsr/*.h`（24 个，唯一 ABI 真相）
+- 实现：`modules/{signal,core,hsm,gamelogic,platform,input,inputext,overlay,render,glrender,image,audio,audiomix,culling,atlas}/`
+- Android：`android/CMakeLists.txt`, `android/android_main.c`, `android/AndroidManifest.xml`
+- 构建：根 `CMakeLists.txt`（glob + CONFIGURE_DEPENDS）+ `android/CMakeLists.txt`（手动列源）
+
+---
+
+## 十三、git 状态速查
+
+```bash
+git log --oneline -15     # 看最近 commit
+git tag -l                # 看 tag
+git status --short        # 工作树是否干净
+```
+
+### 近期 commit 链（旧→新）
+```
+... → 02d429b(demo_physics修复) → 588eb09(平台条件) → 6c50db6(glrender拆分)
+→ 45749a9(几何API) → fe80d65(Box2D集成)
+→ a0f1727(O1) → a65b714(O2) → a051f87(O3) → 45721ea(O5) → 8e7a490(O4)
+→ 9ed51e6(N1-N3) → d87e39a(Release基线) → 8b5e921(perf plan v1.4闭环)
+```
+
+---
+
+## 十四、不要读
+
+- 历史 commit 全文（信 commit message 即可）
+- `docs/archive/`（历史归档，仅史料）
+- `build/`、`build-release/`、`build-box2d/`、`build/android/out/`（构建产物）
+- `*.pdb`、`*.obj` 等编译临时文件
