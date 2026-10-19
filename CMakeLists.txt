@@ -264,6 +264,10 @@ add_test(NAME state_sort COMMAND test_state)
 add_executable(zcsr_glrender_worst_bench integration/bench_worst.c)
 target_link_libraries(zcsr_glrender_worst_bench PRIVATE zcsr_glrender zcsr_platform)
 
+# Text rendering demo (real 8x8 bitmap font verification). Not a ctest.
+add_executable(zcsr_text_demo integration/text_demo.c)
+target_link_libraries(zcsr_text_demo PRIVATE zcsr_glrender zcsr_platform)
+
 # Atlas end-to-end bench (unpacked vs packed). Not a ctest.
 add_executable(zcsr_atlas_bench integration/bench_atlas.c)
 target_link_libraries(zcsr_atlas_bench PRIVATE zcsr_glrender zcsr_atlas zcsr_platform)
