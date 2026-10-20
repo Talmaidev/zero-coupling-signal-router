@@ -52,10 +52,12 @@
    - 修复：调换顺序，input_pump 先于 surface_pump_events
    - 参考：demo_2048.c 已修复（commit bfee234）
 
-2. 字体 "BEST" 在小字号下显示异常（疑似 "DESI"）
-   - 可能原因：8x8 字体在 scale<1.0 时采样精度问题
-   - 需验证：scale=0.8 时的文字渲染
-   - 可运行 zcsr_text_demo 观察小字号渲染
+2. ~~字体 "BEST" 在小字号下显示异常（疑似 "DESI"）~~ ✓ 已修复（commit b88b089，待目视确认）
+   - 根因：scale<1.0 时浮点像素位置导致 GL_NEAREST 采样相位不一致
+   - 修复：仅对 scale<1.0 启用整数像素对齐（round x/y/glyph_size/advance/line_advance）
+   - scale>=1.0 保持原有行为；字体数据/UV/行序/位序均未改动
+   - text_demo 已添加 scale=0.8/0.6/0.5 测试行
+   - 注意：scale=0.5 为 4x4 像素，信息损失是预期的，不保证所有字形可辨
 
 【P1 - 已完成】
 3. ~~窗口功能测试 demo~~ ✓ 已完成（commit 7e9df23，target: zcsr_window_demo）
@@ -71,7 +73,7 @@
 5. 打砖块游戏实现（设计文档 docs/BREAKOUT_DESIGN.md 已就绪，可复用 menu_ui）
 6. 2048 AI 自动玩（expectimax，需 256MB 权重文件）
 7. demo_physics.c 完整运行验收（Box2D 碰撞→信号→音频，需 ZCSR_ENABLE_BOX2D=ON）
-8. 字体小字号 scale<1 渲染验证（P0 残留）
+8. 字体小字号修复目视确认（运行 zcsr_text_demo，观察 scale=0.8/0.6 行）
 
 ================================================================================
 三、关键技术决策记录
