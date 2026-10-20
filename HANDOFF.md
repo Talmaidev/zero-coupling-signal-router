@@ -1,6 +1,6 @@
 # zcsr 零耦合信号路由器 — 项目移交手册
 生成：2026-10-20
-分支：claude/image-agent4-tests（78 commits 未 push，禁止 push）
+分支：claude/image-agent4-tests（82 commits 未 push，禁止 push）
 
 ================================================================================
 一、总进度条
@@ -27,12 +27,13 @@
   ├── culling/atlas/input/hsm 基线 ...... ✓ 均无瓶颈
   └── 文字批处理优化 .................... ✓ 整串1 draw call
 
-游戏/Demo ████████████████░░░░ 85%
+游戏/Demo █████████████████░░ 90%
   ├── 2048 游戏 ......................... ✓ 可玩（bfee234 修复输入）
   ├── Box2D 物理 demo ................... ✓ 碰撞→信号→音频（15af4e0 修复输入）
   ├── 打砖块设计文档 .................... ✓ 设计完成，未实现
   ├── 窗口功能测试 demo ................. ✓ zcsr_window_demo（7e9df23）
-  └── 通用 menu UI 骨架 ................. ✓ menu_ui.h/c + demo（170cbb7）
+  ├── 通用 menu UI 骨架 ................. ✓ menu_ui.h/c + demo（170cbb7）
+  └── 游戏设置面板骨架 .................. ✓ settings_ui.h/c + demo（aa70332）
 
 跨平台验证 ████████████████████ 100%
   ├── Windows ctest ..................... ✓ 19/19
@@ -41,7 +42,7 @@
   ├── Android 真机（Redmi K60 Pro）...... ✓ GLES 3.2 + 文字 PASS
   └── waveOut 回退（FxSound 环境）....... ✓ 已解决
 
-整体进度：约 93%（核心引擎+窗口测试+menu UI 完成，剩字体小字号验证和打砖块实现）
+整体进度：约 95%（核心引擎+窗口测试+menu UI+设置面板完成，剩字体小字号目视确认和打砖块实现）
 
 ================================================================================
 二、已知问题 / 未完成项（新对话必须处理）
@@ -144,7 +145,9 @@ Demo/游戏：
   integration/demo_physics.c     — Box2D 物理 demo（已修复输入，需 ZCSR_ENABLE_BOX2D=ON）
   integration/demo_window.c      — 窗口功能测试 demo（target: zcsr_window_demo）
   integration/demo_menu.c        — menu UI 演示（target: zcsr_menu_demo）
+  integration/demo_settings.c    — 游戏设置面板演示（target: zcsr_settings_demo）
   integration/menu_ui.h/c        — 通用菜单 UI 组件（可复用，零堆分配）
+  integration/settings_ui.h/c    — 通用设置面板组件（下拉/滑块/分隔线，Apply/Cancel/Reset）
   integration/game_core.c/h      — 2048 核心逻辑（位板+预计算表）
   integration/verify_windows.c   — Windows 后端验证
 
