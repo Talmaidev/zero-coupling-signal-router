@@ -55,6 +55,11 @@ int main(void) {
         zcsr_gl_draw_text(r, "line1\nline2\nline3 (newline test)", 40, 280, 2.0f, 1.0f, 1.0f, 0.5f, 1.0f);
         zcsr_gl_draw_text(r, "scale=1 (8px): Hello 123!", 40, 380, 1.0f, 0.7f, 0.7f, 0.7f, 1.0f);
 
+        /* small font tests (scale < 1: integer-pixel aligned) */
+        zcsr_gl_draw_text(r, "scale=0.8 (6px): BEST 0123456789 ABCDEFGH", 40, 410, 0.8f, 0.9f, 0.9f, 1.0f, 1.0f);
+        zcsr_gl_draw_text(r, "scale=0.6 (5px): BEST 0123456789", 40, 432, 0.6f, 0.9f, 0.9f, 1.0f, 1.0f);
+        zcsr_gl_draw_text(r, "scale=0.5 (4px): BEST 0123456789 (info-loss expected)", 40, 452, 0.5f, 0.7f, 0.7f, 0.7f, 1.0f);
+
         zcsr_gl_flush(r);
         zcsr_gl_present(r);
         zcsr_sleep_ms(16);

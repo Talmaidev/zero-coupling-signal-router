@@ -6,6 +6,7 @@
 #include "glrender_internal.h"
 
 #include <stddef.h>
+#include <math.h>
 
 /* 8x8 bitmap font, ASCII 32-126 (95 glyphs). Each glyph = 8 bytes, 1 bit per pixel.
  * LSB = leftmost pixel. Defined here (non-static) so glrender_core.c can build the atlas. */
@@ -109,18 +110,40 @@ const uint8_t zcsr_font8x8[95][8] = {
 
 void zcsr_gl_draw_text(zcsr_gl_renderer* r, const char* utf8, float x, float y, float scale,
                        float cr, float cg, float cb, float ca) {
-    float pen = x;
+    float pen;
+    float glyph_size, advance, line_advance;
     const unsigned char* p;
     size_t first = 0;
     int started = 0;
     if (!r || !utf8 || scale <= 0.0f || !r->font_tex) return;
+
+    /* Small-font pixel alignment: when scale < 1.0, glyph geometry and pen
+     * positions are fractional (e.g. scale=0.8 -> 6.4px glyphs, 7.2px step).
+     * Under GL_NEAREST, each glyph lands on a different sub-pixel phase and
+     * loses different strokes, making text look like wrong characters.
+     * Round all geometry to integer pixels so every glyph shares the same
+     * raster phase. scale >= 1.0 keeps original sub-pixel behavior. */
+    if (scale < 1.0f) {
+        glyph_size   = floorf(8.0f * scale + 0.5f);
+        advance      = floorf(9.0f * scale + 0.5f);
+        line_advance = floorf(9.0f * scale + 0.5f);
+        x = floorf(x + 0.5f);
+        y = floorf(y + 0.5f);
+        if (glyph_size < 1.0f) return;  /* too small to display anything */
+    } else {
+        glyph_size   = 8.0f * scale;
+        advance      = 9.0f * scale;
+        line_advance = 9.0f * scale;
+    }
+    pen = x;
+
     for (p = (const unsigned char*)utf8; *p; ++p) {
         unsigned char ch = *p;
         int idx, col, row;
         float u0, v0, u1, v1;
         if (ch == '\n') {
             pen = x;
-            y += 9.0f * scale;
+            y += line_advance;
             continue;
         }
         if (ch < 32u || ch > 126u) continue;  /* ASCII only; non-ASCII skipped (no tofu) */
@@ -133,9 +156,9 @@ void zcsr_gl_draw_text(zcsr_gl_renderer* r, const char* utf8, float x, float y, 
         u1 = (float)(col + 1) / 16.0f;
         v1 = (float)(row + 1) / 8.0f;
         if (!started) { first = r->vertex_count; started = 1; }
-        zcsr_gl_push_quad_uv(r, (zcsr_rectf){ pen, y, 8.0f * scale, 8.0f * scale }, 0.0f,
+        zcsr_gl_push_quad_uv(r, (zcsr_rectf){ pen, y, glyph_size, glyph_size }, 0.0f,
                              u0, v0, u1, v1, cr, cg, cb, ca, ZCSR_MOD_MULTIPLY, 0.0f);
-        pen += 9.0f * scale;
+        pen += advance;
     }
     if (started) {
         zcsr_gl_record_draw(r, r->font_tex, first, r->vertex_count - first);
