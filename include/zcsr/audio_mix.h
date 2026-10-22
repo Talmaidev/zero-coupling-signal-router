@@ -83,4 +83,28 @@ bool        zcsr_mix_slot_stop(const char* payload);   /* connect to "STOP_SOUND
  * count written into out[] (capped at cap) — lets the caller emit audio_finished(channel). */
 size_t      zcsr_mix_poll_finished(zcsr_mixer*, int* out, size_t cap);
 
+/* ---- Streaming PCM channels (additive) ----
+ * A stream channel accepts raw int16 stereo PCM from the caller (e.g. a music decoder thread)
+ * and mixes it alongside WAV channels. Stream and WAV modes are mutually exclusive per channel. */
+
+/* Reserve a free channel for streaming. Returns channel 0..15, or -1 (none free). */
+int         zcsr_mix_attach_stream(zcsr_mixer*);
+
+/* Feed PCM into a stream channel (non-blocking). Returns actual frames accepted.
+ * pcm is interleaved stereo int16 (frames * 2 samples). */
+size_t      zcsr_mix_feed_stream(zcsr_mixer*, int channel,
+                                 const int16_t* pcm, size_t frames);
+
+bool        zcsr_mix_stream_set_volume(zcsr_mixer*, int channel, float volume);
+bool        zcsr_mix_stream_set_paused(zcsr_mixer*, int channel, bool paused);
+
+/* Frames consumed by the mixer since attach (monotonic, 32-bit; wraps at 2^32). */
+uint64_t    zcsr_mix_stream_consumed_frames(const zcsr_mixer*, int channel);
+
+/* Discard all buffered PCM in a stream channel. */
+bool        zcsr_mix_stream_flush(zcsr_mixer*, int channel);
+
+/* Release a stream channel back to the free pool. */
+bool        zcsr_mix_stream_detach(zcsr_mixer*, int channel);
+
 #endif /* ZCSR_AUDIO_MIX_H */
