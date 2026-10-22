@@ -57,6 +57,7 @@ typedef struct {
 
 /* Batched draw. Target throughput: 200..10000 sprites within frame budget.
  * begin() clears the batch; submit() appends one; flush() draws all in one pass.
+ * flush() does NOT swap buffers — call present() afterwards to display.
  * submit_batch() is the signal-friendly entry (render_submit_batch maps here). */
 void zcsr_gl_begin(zcsr_gl_renderer*);
 void zcsr_gl_submit(zcsr_gl_renderer*, const zcsr_gl_sprite*);
@@ -180,5 +181,32 @@ void zcsr_gl_draw_rect(zcsr_gl_renderer*,
                        float x, float y, float w, float h,
                        float thickness,
                        float r, float g, float b, float a);
+
+/* ---- Texture upload / atlas sprites / circle (additive) ---- */
+
+/* Upload a sub-region of a texture from RGBA data.
+ * src_stride_bytes is the byte stride of each source row (>= w*4).
+ * If src_stride_bytes % 4 != 0, implementation falls back to per-row upload.
+ * Restores GL_UNPACK_ROW_LENGTH to 0 after upload. */
+bool zcsr_gl_texture_upload_region(zcsr_gl_renderer*,
+                                    zcsr_gl_texture,
+                                    int x, int y, int w, int h,
+                                    int src_stride_bytes,
+                                    const uint8_t* rgba);
+
+/* Enqueue a sprite from an atlas texture with explicit UV coordinates.
+ * Enqueue-only; actual draw at flush. MULTIPLY color mode. */
+void zcsr_gl_queue_atlas_sprite(zcsr_gl_renderer*,
+                                 zcsr_gl_texture atlas,
+                                 float dx, float dy, float dw, float dh,
+                                 float u0, float v0, float u1, float v1,
+                                 float r, float g, float b, float a);
+
+/* Enqueue a filled circle. segments clamped to [32, 256].
+ * Enqueue-only; uses white texture, MULTIPLY mode.
+ * Rejects non-finite cx/cy/radius/color. */
+void zcsr_gl_fill_circle(zcsr_gl_renderer*,
+                          float cx, float cy, float radius, int segments,
+                          float r, float g, float b, float a);
 
 #endif /* ZCSR_GL_RENDER_H */

@@ -132,7 +132,6 @@ void zcsr_gl_flush(zcsr_gl_renderer* r) {
         glDrawArrays(GL_TRIANGLES, (GLint)r->draws[i].first, (GLsizei)count);
         i = j + 1;
     }
-    if (r->target == 0) zcsr_gl_swap(r);
     r->vertex_count = 0;
     r->draw_count = 0;
 }
@@ -219,4 +218,91 @@ void zcsr_gl_draw_rect(zcsr_gl_renderer* r,
     zcsr_gl_fill_rect(r, x, y + h - thickness, w, thickness, cr, cg, cb, ca);
     zcsr_gl_fill_rect(r, x, y + thickness, thickness, h - 2.0f * thickness, cr, cg, cb, ca);
     zcsr_gl_fill_rect(r, x + w - thickness, y + thickness, thickness, h - 2.0f * thickness, cr, cg, cb, ca);
+}
+
+/* ===========================================================================================
+ * Texture upload region / atlas sprite / filled circle (additive)
+ * =========================================================================================== */
+
+bool zcsr_gl_texture_upload_region(zcsr_gl_renderer* r, zcsr_gl_texture t,
+                                    int x, int y, int w, int h,
+                                    int src_stride_bytes,
+                                    const uint8_t* rgba) {
+    zcsr_gl_tex_entry* e;
+    long long need_row, end_x, end_y;
+    if (!r || !rgba) return false;
+    if (w <= 0 || h <= 0 || x < 0 || y < 0) return false;
+    if (src_stride_bytes <= 0) return false;
+    need_row = (long long)w * 4LL;
+    if ((long long)src_stride_bytes < need_row) return false;
+    e = zcsr_gl_find_tex(r, t);
+    if (!e) return false;
+    end_x = (long long)x + (long long)w;
+    end_y = (long long)y + (long long)h;
+    if (end_x > (long long)e->w) return false;
+    if (end_y > (long long)e->h) return false;
+    if (!zcsr_gl_make_current(r)) return false;
+    glBindTexture(GL_TEXTURE_2D, t);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    if ((src_stride_bytes % 4) == 0) {
+#if defined(GL_UNPACK_ROW_LENGTH)
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, src_stride_bytes / 4);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h,
+                         GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+#else
+        for (int row = 0; row < h; ++row)
+            glTexSubImage2D(GL_TEXTURE_2D, 0, x, y + row, w, 1,
+                             GL_RGBA, GL_UNSIGNED_BYTE,
+                             rgba + (size_t)row * src_stride_bytes);
+#endif
+    } else {
+        for (int row = 0; row < h; ++row)
+            glTexSubImage2D(GL_TEXTURE_2D, 0, x, y + row, w, 1,
+                             GL_RGBA, GL_UNSIGNED_BYTE,
+                             rgba + (size_t)row * src_stride_bytes);
+    }
+    return true;
+}
+
+void zcsr_gl_queue_atlas_sprite(zcsr_gl_renderer* r, zcsr_gl_texture atlas,
+                                 float dx, float dy, float dw, float dh,
+                                 float u0, float v0, float u1, float v1,
+                                 float cr, float cg, float cb, float ca) {
+    size_t first;
+    if (!r || atlas == 0 || !zcsr_gl_find_tex(r, atlas)) return;
+    if (r->vertex_count + 6u > ZCSR_GL_MAX_VERTICES) return;
+    first = r->vertex_count;
+    zcsr_gl_push_quad_uv(r, (zcsr_rectf){dx, dy, dw, dh}, 0.0f,
+                          u0, v0, u1, v1, cr, cg, cb, ca,
+                          ZCSR_MOD_MULTIPLY, 0.0f);
+    zcsr_gl_record_draw(r, atlas, first, r->vertex_count - first);
+}
+
+void zcsr_gl_fill_circle(zcsr_gl_renderer* r,
+                          float cx, float cy, float radius, int segments,
+                          float cr, float cg, float cb, float ca) {
+    size_t first;
+    int i;
+    if (!r) return;
+    if (!isfinite(cx) || !isfinite(cy) || !isfinite(radius)) return;
+    if (radius <= 0.0f) return;
+    if (!isfinite(cr) || !isfinite(cg) || !isfinite(cb) || !isfinite(ca)) return;
+    if (segments < 32) segments = 32;
+    if (segments > 256) segments = 256;
+    if (r->vertex_count + (size_t)segments * 3u > ZCSR_GL_MAX_VERTICES) return;
+    if (r->draw_count + 1u > ZCSR_GL_MAX_SPRITES) return;
+    first = r->vertex_count;
+    for (i = 0; i < segments; ++i) {
+        float a0 = (float)i * 6.28318530718f / (float)segments;
+        float a1 = (float)(i + 1) * 6.28318530718f / (float)segments;
+        float x0 = cx + cosf(a0) * radius;
+        float y0 = cy + sinf(a0) * radius;
+        float x1 = cx + cosf(a1) * radius;
+        float y1 = cy + sinf(a1) * radius;
+        zcsr_gl_push_vertex(r, cx, cy, 0.5f, 0.5f, cr, cg, cb, ca, ZCSR_MOD_MULTIPLY, 0.0f);
+        zcsr_gl_push_vertex(r, x0, y0, 0.0f, 0.0f, cr, cg, cb, ca, ZCSR_MOD_MULTIPLY, 0.0f);
+        zcsr_gl_push_vertex(r, x1, y1, 1.0f, 1.0f, cr, cg, cb, ca, ZCSR_MOD_MULTIPLY, 0.0f);
+    }
+    zcsr_gl_record_draw(r, r->white_tex, first, r->vertex_count - first);
 }
