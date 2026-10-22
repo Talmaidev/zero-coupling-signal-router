@@ -68,6 +68,8 @@ zcsr_module(inputext)  # Engine-ext Agent 3 — mouse + gamepad (additive to key
 zcsr_module(image)     # Engine-ext Agent — decode→RGBA32 + offline CPU processing (separated from rendering; vendors stb_image)
 zcsr_module(atlas)     # Texture atlas shelf-packing + region table (pure logic, no GL)
 zcsr_module(culling)   # Viewport culling: linear + uniform grid (pure logic, no GL)
+zcsr_module(font)      # TrueType font loader/rasterizer (stb_truetype, no GL dependency)
+zcsr_module(music)     # Streaming music player (OGG/MP3, depends on audiomix)
 # Per-backend system libs are added by the implementer when each backend lands, e.g.:
 #   glrender: opengl32+gdi32 (Win) / GL+X11 (Linux, find_package(OpenGL)) / -framework OpenGL (mac)
 #   audiomix: (Win WASAPI: ole32) / ALSA (Linux: find_package(ALSA), asound) / -framework AudioToolbox,AudioUnit (mac)
@@ -92,6 +94,9 @@ endif()
 # --- glrender: vendored minimal glad loader compiles on every platform ---------------------
 target_sources(zcsr_glrender PRIVATE ${CMAKE_SOURCE_DIR}/third_party/glad/src/glad.c)
 target_include_directories(zcsr_glrender PRIVATE ${CMAKE_SOURCE_DIR}/third_party/glad/include)
+
+# music depends on audiomix (stream channels)
+target_link_libraries(zcsr_music PUBLIC zcsr_audiomix)
 
 if(UNIX AND NOT APPLE)
   find_package(X11 REQUIRED)
@@ -248,6 +253,24 @@ add_executable(test_image tests/test_image.c)
 target_link_libraries(test_image PRIVATE zcsr_image)
 add_test(NAME image COMMAND test_image)
 
+add_executable(test_font tests/test_font.c)
+target_link_libraries(test_font PRIVATE zcsr_font)
+add_test(NAME font COMMAND test_font)
+
+add_executable(test_music_logic tests/test_music_logic.c)
+target_link_libraries(test_music_logic PRIVATE zcsr_music)
+add_test(NAME music_logic COMMAND test_music_logic)
+
+# test_music_codec directly tests third-party decoders (minimp3 + stb_vorbis),
+# does NOT link zcsr_music library. Compiles impl files separately to avoid
+# static symbol collisions (both define get_bits).
+add_executable(test_music_codec
+    tests/test_music_codec.c
+    modules/music/minimp3_impl.c
+    modules/music/vorbis_impl.c)
+target_include_directories(test_music_codec PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
+add_test(NAME music_codec COMMAND test_music_codec WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 add_executable(test_atlas tests/test_atlas.c)
 target_link_libraries(test_atlas PRIVATE zcsr_atlas)
 add_test(NAME atlas COMMAND test_atlas)
@@ -281,6 +304,19 @@ target_link_libraries(zcsr_menu_demo PRIVATE zcsr_glrender zcsr_platform zcsr_in
 add_executable(zcsr_settings_demo integration/demo_settings.c integration/settings_ui.c)
 target_include_directories(zcsr_settings_demo PRIVATE integration)
 target_link_libraries(zcsr_settings_demo PRIVATE zcsr_glrender zcsr_platform zcsr_input)
+
+# Modern game settings panel demo (tabs + mouse + real dropdowns + three window modes). Not a ctest.
+add_executable(zcsr_modern_settings_demo integration/demo_modern_settings.c integration/modern_settings_ui.c)
+target_include_directories(zcsr_modern_settings_demo PRIVATE integration)
+target_link_libraries(zcsr_modern_settings_demo PRIVATE zcsr_glrender zcsr_platform zcsr_input zcsr_inputext)
+
+# Aim trainer (FPS aiming practice tool)
+add_executable(zcsr_aim_trainer integration/demo_aim_trainer.c)
+target_link_libraries(zcsr_aim_trainer PRIVATE zcsr_glrender zcsr_platform zcsr_input zcsr_inputext)
+
+# TrueType font rendering demo
+add_executable(zcsr_font_demo integration/demo_font.c)
+target_link_libraries(zcsr_font_demo PRIVATE zcsr_font zcsr_glrender zcsr_platform zcsr_input)
 
 # Atlas end-to-end bench (unpacked vs packed). Not a ctest.
 add_executable(zcsr_atlas_bench integration/bench_atlas.c)

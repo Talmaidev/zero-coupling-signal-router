@@ -44,6 +44,12 @@ add_library(zcsr_phase0 SHARED
     "${ZCSR_ROOT}/modules/glrender/glrender_platform_egl.c"
     "${ZCSR_ROOT}/modules/glrender/glrender_platform_wgl.c"
     "${ZCSR_ROOT}/modules/audiomix/audiomix.c"
+    "${ZCSR_ROOT}/modules/font/font.c"
+    "${ZCSR_ROOT}/modules/font/stb_truetype_impl.c"
+    "${ZCSR_ROOT}/modules/font/font_atlas.c"
+    "${ZCSR_ROOT}/modules/music/music.c"
+    "${ZCSR_ROOT}/modules/music/vorbis_impl.c"
+    "${ZCSR_ROOT}/modules/music/minimp3_impl.c"
     "${NATIVE_APP_GLUE_DIR}/android_native_app_glue.c"
 )
 
