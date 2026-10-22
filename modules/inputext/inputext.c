@@ -33,6 +33,8 @@ struct zcsr_input_ext {
     HWND mouse_subclass_hwnd;
     int wheel_accum;
     int wheel_remainder;
+    uint8_t mouse_btn_pressed;   /* buttons pressed since last pump (event-driven) */
+    uint8_t mouse_btn_released;  /* buttons released since last pump (event-driven) */
 #endif
 };
 
@@ -647,6 +649,20 @@ static LRESULT CALLBACK zcsr_input_mouse_subclass_proc(
         (zcsr_input_ext*)(uintptr_t)ref_data;
 
     (void)subclass_id;
+    (void)wparam;
+    (void)lparam;
+
+    /* --- mouse button events (event-driven edge detection) --- */
+    if (in && in->mouse_subclass_hwnd == hwnd) {
+        switch (message) {
+            case WM_LBUTTONDOWN: in->mouse_btn_pressed  |= ZCSR_MOUSE_LEFT;  break;
+            case WM_LBUTTONUP:   in->mouse_btn_released |= ZCSR_MOUSE_LEFT;  break;
+            case WM_RBUTTONDOWN: in->mouse_btn_pressed  |= ZCSR_MOUSE_RIGHT; break;
+            case WM_RBUTTONUP:   in->mouse_btn_released |= ZCSR_MOUSE_RIGHT; break;
+            case WM_MBUTTONDOWN: in->mouse_btn_pressed  |= ZCSR_MOUSE_MIDDLE; break;
+            case WM_MBUTTONUP:   in->mouse_btn_released |= ZCSR_MOUSE_MIDDLE; break;
+        }
+    }
 
     if (message == WM_MOUSEWHEEL &&
         in &&
@@ -744,22 +760,23 @@ static void zcsr_pump_mouse(
 
     if (!window) {
         in->mouse_inside = false;
+        in->mouse_btn_pressed = 0;
+        in->mouse_btn_released = 0;
         return;
     }
 
     hwnd = (HWND)zcsr_surface_native_handle(window);
     if (!hwnd) {
         in->mouse_inside = false;
+        in->mouse_btn_pressed = 0;
+        in->mouse_btn_released = 0;
         return;
     }
 
-    if (!zcsr_window_has_focus(hwnd)) {
-        in->mouse_inside = false;
-        return;
-    }
+    bool has_focus = zcsr_window_has_focus(hwnd);
 
-    in->mouse.buttons = zcsr_mouse_buttons();
-
+    /* Always sample mouse position (even without focus) so hover tracking
+     * works when the user clicks the window to focus it. */
     if (!GetClientRect(hwnd, &client)) {
         in->mouse_inside = false;
         return;
@@ -789,17 +806,31 @@ static void zcsr_pump_mouse(
         in->mouse.y = y;
         in->mouse_have_pos = true;
         in->mouse_inside = inside;
-        return;
+    } else {
+        if (inside && in->mouse_inside) {
+            in->mouse.dx = x - in->mouse.x;
+            in->mouse.dy = y - in->mouse.y;
+        }
+        in->mouse.x = x;
+        in->mouse.y = y;
+        in->mouse_inside = inside;
     }
 
-    if (inside && in->mouse_inside) {
-        in->mouse.dx = x - in->mouse.x;
-        in->mouse.dy = y - in->mouse.y;
+    /* Button state: only report when focused, but merge event-driven edges
+     * so a click that focuses the window is not lost. */
+    if (has_focus) {
+        in->mouse.buttons = zcsr_mouse_buttons() | in->mouse_btn_pressed;
+    } else {
+        /* If a press event arrived while unfocused, the window is likely
+         * being clicked to focus — report it so the UI can react. */
+        if (in->mouse_btn_pressed != 0) {
+            in->mouse.buttons = in->mouse_btn_pressed;
+        }
     }
 
-    in->mouse.x = x;
-    in->mouse.y = y;
-    in->mouse_inside = inside;
+    /* Clear edge events after each pump (consumed). */
+    in->mouse_btn_pressed = 0;
+    in->mouse_btn_released = 0;
 }
 
 #else
