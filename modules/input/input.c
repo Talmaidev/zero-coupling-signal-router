@@ -107,7 +107,9 @@ static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
     HWND hwnd = (HWND)zcsr_surface_native_handle(window);
     MSG msg;
     if (!input || !hwnd) return;
-    while (PeekMessageA(&msg, hwnd, 0, 0, PM_REMOVE)) {
+    /* Use NULL hwnd to pump ALL thread messages (not just this window's).
+     * This prevents surface_pump_events from stealing keyboard messages. */
+    while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {
         if (msg.message == WM_CLOSE || msg.message == WM_QUIT) {
             input->close_requested = true;
             zcsr_record_close(window);
