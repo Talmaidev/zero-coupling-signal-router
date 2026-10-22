@@ -13,10 +13,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /* Axis-aligned box in world/pixel coordinates. */
 typedef struct {
     float min_x, min_y;
@@ -67,9 +63,5 @@ size_t zcsr_grid_query(const zcsr_grid_t* grid, const zcsr_aabb_t* boxes, size_t
 
 /* Fraction of the world covered by the view (0..1), to choose a strategy. */
 float zcsr_view_coverage(const zcsr_grid_t* grid, const zcsr_view_t* view);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* ZCSR_CULLING_H */
