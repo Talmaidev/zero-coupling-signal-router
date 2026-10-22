@@ -201,6 +201,7 @@ int main(void) {
         }
 
         zcsr_gl_flush(renderer);
+        zcsr_gl_present(renderer);
     }
 
     /* ---- cleanup ---- */
