@@ -31,6 +31,12 @@ struct zcsr_surface {
     long  fs_exstyle;
     int   fs_x, fs_y, fs_w, fs_h;
     int   fs_display;
+    /* windowed-mode geometry snapshot for windowed <-> borderless swaps.
+     * Borderless is always full-screen; windowed restores to this snapshot. */
+    bool  win_valid;
+    int   win_x, win_y, win_w, win_h;
+    bool  drag_region_enabled;
+    int   drag_x, drag_y, drag_w, drag_h;  /* client-area drag region for borderless */
 #elif defined(__linux__)
     void* display;
     unsigned long window;
@@ -451,6 +457,20 @@ static zcsr_surface* zcsr_surface_find_by_hwnd(HWND hwnd) {
 }
 
 static LRESULT CALLBACK zcsr_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_NCHITTEST) {
+        zcsr_surface* s = zcsr_surface_find_by_hwnd(hwnd);
+        if (s && s->drag_region_enabled && s->mode != ZCSR_WINDOW_FULLSCREEN) {
+            POINT pt;
+            pt.x = (int)(short)LOWORD(lp);
+            pt.y = (int)(short)HIWORD(lp);
+            ScreenToClient(hwnd, &pt);
+            if (pt.x >= s->drag_x && pt.x < s->drag_x + s->drag_w &&
+                pt.y >= s->drag_y && pt.y < s->drag_y + s->drag_h) {
+                return HTCAPTION;
+            }
+        }
+        return DefWindowProcA(hwnd, msg, wp, lp);
+    }
     if (msg == WM_CLOSE) {
         ShowWindow(hwnd, SW_HIDE);
         return 0;
@@ -537,13 +557,34 @@ zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
                            0, 0, GetModuleHandleA(0), 0);
     if (!hwnd) return 0;
     SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
-    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     surface = zcsr_surface_acquire();
     if (!surface) {
         DestroyWindow(hwnd);
         return 0;
     }
     surface->hwnd = hwnd;
+    surface->mode = ZCSR_WINDOW_BORDERLESS; /* CreateWindowEx uses WS_POPUP + WS_EX_LAYERED overlay */
+    /* Stash the requested bounds as the windowed-mode geometry; borderless
+     * is always full-screen, so expand to the monitor now. */
+    surface->win_valid = true;
+    surface->win_x = bounds.x; surface->win_y = bounds.y;
+    surface->win_w = bounds.w; surface->win_h = bounds.h;
+    {
+        MONITORINFO mi;
+        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        memset(&mi, 0, sizeof(mi));
+        mi.cbSize = sizeof(mi);
+        if (GetMonitorInfoA(mon, &mi)) {
+            bounds.x = mi.rcMonitor.left;
+            bounds.y = mi.rcMonitor.top;
+            bounds.w = mi.rcMonitor.right - mi.rcMonitor.left;
+            bounds.h = mi.rcMonitor.bottom - mi.rcMonitor.top;
+        }
+    }
+    /* HWND_TOPMOST required so WS_EX_TOPMOST actually places the window
+     * above the taskbar; CreateWindowEx alone is not sufficient. */
+    SetWindowPos(hwnd, HWND_TOPMOST, bounds.x, bounds.y, bounds.w, bounds.h,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
     surface->dpi_scale = zcsr_surface_get_dpi_scale(surface);
     if (!isfinite(surface->dpi_scale) || surface->dpi_scale <= 0.0f) {
         surface->dpi_scale = 1.0f;
@@ -720,6 +761,10 @@ bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
     (void)s; (void)w; (void)h;
     return false;
 }
+bool zcsr_surface_set_drag_region(zcsr_surface* s, int x, int y, int w, int h) {
+    (void)s; (void)x; (void)y; (void)w; (void)h;
+    return false;
+}
 bool zcsr_surface_move_to_display(zcsr_surface* s, int display_id) {
     (void)s; (void)display_id;
     return false;
@@ -751,6 +796,9 @@ bool zcsr_surface_set_mode(zcsr_surface* s, zcsr_window_mode mode) {
 }
 bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
     (void)s; (void)w; (void)h; return false;
+}
+bool zcsr_surface_set_drag_region(zcsr_surface* s, int x, int y, int w, int h) {
+    (void)s; (void)x; (void)y; (void)w; (void)h; return false;
 }
 bool zcsr_surface_move_to_display(zcsr_surface* s, int display_id) {
     (void)s; (void)display_id; return false;
@@ -947,9 +995,12 @@ static const LONG ZCSR_WIN_EX_NORMAL = 0;
 static const LONG ZCSR_WIN_EX_OVERLAY =
     WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
 
-static void zcsr_win_apply_geometry(HWND hwnd, int x, int y, int w, int h) {
-    SetWindowPos(hwnd, NULL, x, y, w, h,
-                 SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_NOZORDER);
+static void zcsr_win_apply_geometry(HWND hwnd, int x, int y, int w, int h, bool topmost) {
+    /* WS_EX_TOPMOST requires SetWindowPos with HWND_TOPMOST to take effect;
+     * SWP_NOZORDER would leave the window below the taskbar. */
+    HWND insert_after = topmost ? HWND_TOPMOST : HWND_TOP;
+    SetWindowPos(hwnd, insert_after, x, y, w, h,
+                 SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE);
 }
 
 bool zcsr_surface_set_mode(zcsr_surface* s, zcsr_window_mode mode) {
@@ -997,8 +1048,6 @@ bool zcsr_surface_set_mode(zcsr_surface* s, zcsr_window_mode mode) {
 
     /* Leaving fullscreen (or switching between the two windowed modes). */
     if (s->mode == ZCSR_WINDOW_FULLSCREEN && s->fs_valid) {
-        int target_display = s->fs_display;
-        RECT mon_rc;
         s->fs_valid = false;
         s->mode = mode; /* target mode decided by caller */
         style = (mode == ZCSR_WINDOW_WINDOWED)
@@ -1009,32 +1058,68 @@ bool zcsr_surface_set_mode(zcsr_surface* s, zcsr_window_mode mode) {
                       : ZCSR_WIN_EX_OVERLAY;
         SetWindowLongA(hwnd, GWL_STYLE, style);
         SetWindowLongA(hwnd, GWL_EXSTYLE, exstyle);
-        /* If the original display is gone, restore onto the primary monitor. */
-        if (!zcsr_win_id_to_monitor(target_display, &mon_rc)) {
-            MONITORINFO primary;
-            memset(&primary, 0, sizeof(primary));
-            primary.cbSize = sizeof(primary);
-            if (GetMonitorInfoA(NULL, &primary)) {
-                s->fs_x = primary.rcMonitor.left;
-                s->fs_y = primary.rcMonitor.top;
+        if (mode == ZCSR_WINDOW_BORDERLESS) {
+            /* Borderless is always full-screen: use the monitor rect. */
+            MONITORINFO mi;
+            HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            memset(&mi, 0, sizeof(mi));
+            mi.cbSize = sizeof(mi);
+            if (GetMonitorInfoA(mon, &mi)) {
+                zcsr_win_apply_geometry(hwnd,
+                    mi.rcMonitor.left, mi.rcMonitor.top,
+                    mi.rcMonitor.right - mi.rcMonitor.left,
+                    mi.rcMonitor.bottom - mi.rcMonitor.top, true);
+            } else {
+                zcsr_win_apply_geometry(hwnd, s->fs_x, s->fs_y, s->fs_w, s->fs_h, true);
             }
+        } else {
+            /* Windowed: restore saved windowed geometry (fallback to fs snapshot). */
+            int rx = s->win_valid ? s->win_x : s->fs_x;
+            int ry = s->win_valid ? s->win_y : s->fs_y;
+            int rw = s->win_valid ? s->win_w : s->fs_w;
+            int rh = s->win_valid ? s->win_h : s->fs_h;
+            zcsr_win_apply_geometry(hwnd, rx, ry, rw, rh, false);
         }
-        zcsr_win_apply_geometry(hwnd, s->fs_x, s->fs_y, s->fs_w, s->fs_h);
         return true;
     }
 
-    /* Plain windowed <-> borderless switch (no fullscreen involved). */
-    s->mode = mode;
-    if (mode == ZCSR_WINDOW_WINDOWED) {
-        SetWindowLongA(hwnd, GWL_STYLE, ZCSR_WIN_STYLE_WINDOWED);
-        SetWindowLongA(hwnd, GWL_EXSTYLE, ZCSR_WIN_EX_NORMAL);
-    } else {
+    /* Plain windowed <-> borderless switch (no fullscreen involved).
+     * Borderless is always full-screen; windowed restores the saved geometry. */
+    if (mode == ZCSR_WINDOW_BORDERLESS) {
+        /* Save current windowed geometry before expanding to full-screen. */
+        RECT cur;
+        GetWindowRect(hwnd, &cur);
+        s->win_valid = true;
+        s->win_x = cur.left; s->win_y = cur.top;
+        s->win_w = cur.right - cur.left; s->win_h = cur.bottom - cur.top;
+        /* Expand to monitor full-screen. */
+        MONITORINFO mi;
+        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        memset(&mi, 0, sizeof(mi));
+        mi.cbSize = sizeof(mi);
+        int fx = 0, fy = 0, fw = 1280, fh = 720;
+        if (GetMonitorInfoA(mon, &mi)) {
+            fx = mi.rcMonitor.left; fy = mi.rcMonitor.top;
+            fw = mi.rcMonitor.right - mi.rcMonitor.left;
+            fh = mi.rcMonitor.bottom - mi.rcMonitor.top;
+        }
+        s->mode = mode;
         SetWindowLongA(hwnd, GWL_STYLE, ZCSR_WIN_STYLE_BORDERLESS);
         SetWindowLongA(hwnd, GWL_EXSTYLE, ZCSR_WIN_EX_OVERLAY);
+        SetWindowPos(hwnd, HWND_TOPMOST, fx, fy, fw, fh,
+                     SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    } else {
+        /* Restore saved windowed geometry (or default to centered 1280x720). */
+        int rx = s->win_valid ? s->win_x : 100;
+        int ry = s->win_valid ? s->win_y : 100;
+        int rw = s->win_valid ? s->win_w : 1280;
+        int rh = s->win_valid ? s->win_h : 720;
+        s->mode = mode;
+        SetWindowLongA(hwnd, GWL_STYLE, ZCSR_WIN_STYLE_WINDOWED);
+        SetWindowLongA(hwnd, GWL_EXSTYLE, ZCSR_WIN_EX_NORMAL);
+        SetWindowPos(hwnd, HWND_NOTOPMOST, rx, ry, rw, rh,
+                     SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
-    SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
-                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE |
-                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
     return true;
 }
 
@@ -1062,6 +1147,20 @@ bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
                       SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOZORDER)) {
         return false;
     }
+    return true;
+}
+
+bool zcsr_surface_set_drag_region(zcsr_surface* s, int x, int y, int w, int h) {
+    if (!s || !s->in_use || !s->hwnd) return false;
+    if (w <= 0 || h <= 0) {
+        s->drag_region_enabled = false;
+        return true;
+    }
+    s->drag_x = x;
+    s->drag_y = y;
+    s->drag_w = w;
+    s->drag_h = h;
+    s->drag_region_enabled = true;
     return true;
 }
 
@@ -1368,6 +1467,11 @@ bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
     XResizeWindow(dpy, (Window)s->window, (unsigned)w, (unsigned)h);
     XFlush(dpy);
     return true;
+}
+
+bool zcsr_surface_set_drag_region(zcsr_surface* s, int x, int y, int w, int h) {
+    (void)s; (void)x; (void)y; (void)w; (void)h;
+    return false;
 }
 
 bool zcsr_surface_move_to_display(zcsr_surface* s, int display_id) {
@@ -1683,6 +1787,9 @@ bool zcsr_surface_set_mode(zcsr_surface* s, zcsr_window_mode mode) {
 bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
     (void)s; (void)w; (void)h; return false;
 }
+bool zcsr_surface_set_drag_region(zcsr_surface* s, int x, int y, int w, int h) {
+    (void)s; (void)x; (void)y; (void)w; (void)h; return false;
+}
 bool zcsr_surface_move_to_display(zcsr_surface* s, int display_id) {
     (void)s; (void)display_id; return false;
 }
@@ -1692,4 +1799,107 @@ void zcsr_surface_get_client_size(const zcsr_surface* s, int* w, int* h) {
 float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
     (void)s; return 1.0f;
 }
+#endif
+
+/* ===========================================================================================
+ * Cursor control API (additive)
+ * =========================================================================================== */
+
+#if defined(_WIN32)
+
+static HCURSOR g_custom_cursor = NULL;
+static bool g_cursor_visible = true;
+
+bool zcsr_surface_set_cursor_visible(zcsr_surface* s, bool visible) {
+    (void)s;
+    g_cursor_visible = visible;
+    if (visible) {
+        while (ShowCursor(TRUE) < 0) { /* spin until display count >= 0 */ }
+    } else {
+        while (ShowCursor(FALSE) >= 0) { /* spin until display count < 0 */ }
+    }
+    return true;
+}
+
+bool zcsr_surface_set_cursor_bitmap(zcsr_surface* s,
+                                    const unsigned char* rgba, int w, int h,
+                                    int hot_x, int hot_y) {
+    HDC hdc, mask_dc, color_dc;
+    HBITMAP color_bmp, mask_bmp, old_color, old_mask;
+    ICONINFO ii;
+    HCURSOR new_cursor;
+    int x, y;
+    (void)s;
+    if (!rgba || w <= 0 || h <= 0 || w > 256 || h > 256) {
+        zcsr_surface_reset_cursor(s);
+        return false;
+    }
+    hdc = GetDC(NULL);
+    color_dc = CreateCompatibleDC(hdc);
+    mask_dc = CreateCompatibleDC(hdc);
+    color_bmp = CreateCompatibleBitmap(hdc, w, h);
+    mask_bmp = CreateBitmap(w, h, 1, 1, NULL);
+    old_color = (HBITMAP)SelectObject(color_dc, color_bmp);
+    old_mask = (HBITMAP)SelectObject(mask_dc, mask_bmp);
+    for (y = 0; y < h; ++y) {
+        for (x = 0; x < w; ++x) {
+            int idx = (y * w + x) * 4;
+            unsigned char r = rgba[idx + 0];
+            unsigned char g = rgba[idx + 1];
+            unsigned char b = rgba[idx + 2];
+            unsigned char a = rgba[idx + 3];
+            SetPixelV(color_dc, x, y, RGB(r, g, b));
+            SetPixelV(mask_dc, x, y, a > 128 ? RGB(255,255,255) : RGB(0,0,0));
+        }
+    }
+    SelectObject(color_dc, old_color);
+    SelectObject(mask_dc, old_mask);
+    ii.fIcon = FALSE;
+    ii.xHotspot = (DWORD)hot_x;
+    ii.yHotspot = (DWORD)hot_y;
+    ii.hbmMask = mask_bmp;
+    ii.hbmColor = color_bmp;
+    new_cursor = CreateIconIndirect(&ii);
+    DeleteDC(color_dc);
+    DeleteDC(mask_dc);
+    DeleteObject(color_bmp);
+    DeleteObject(mask_bmp);
+    ReleaseDC(NULL, hdc);
+    if (!new_cursor) return false;
+    if (g_custom_cursor) DestroyCursor(g_custom_cursor);
+    g_custom_cursor = new_cursor;
+    SetCursor(g_custom_cursor);
+    return true;
+}
+
+bool zcsr_surface_reset_cursor(zcsr_surface* s) {
+    (void)s;
+    if (g_custom_cursor) {
+        DestroyCursor(g_custom_cursor);
+        g_custom_cursor = NULL;
+    }
+    SetCursor(LoadCursor(NULL, IDC_ARROW));
+    if (!g_cursor_visible) {
+        g_cursor_visible = true;
+        while (ShowCursor(TRUE) < 0) { }
+    }
+    return true;
+}
+
+#elif defined(__ANDROID__)
+
+/* Android has no mouse cursor in most configurations — return false. */
+bool zcsr_surface_set_cursor_visible(zcsr_surface* s, bool visible) { (void)s; (void)visible; return false; }
+bool zcsr_surface_set_cursor_bitmap(zcsr_surface* s, const unsigned char* rgba, int w, int h,
+                                    int hot_x, int hot_y) { (void)s; (void)rgba; (void)w; (void)h; (void)hot_x; (void)hot_y; return false; }
+bool zcsr_surface_reset_cursor(zcsr_surface* s) { (void)s; return false; }
+
+#else
+
+/* Linux X11 / macOS stub — return false (first release no RGBA cursor support). */
+bool zcsr_surface_set_cursor_visible(zcsr_surface* s, bool visible) { (void)s; (void)visible; return false; }
+bool zcsr_surface_set_cursor_bitmap(zcsr_surface* s, const unsigned char* rgba, int w, int h,
+                                    int hot_x, int hot_y) { (void)s; (void)rgba; (void)w; (void)h; (void)hot_x; (void)hot_y; return false; }
+bool zcsr_surface_reset_cursor(zcsr_surface* s) { (void)s; return false; }
+
 #endif
