@@ -87,6 +87,12 @@ bool zcsr_surface_set_mode(zcsr_surface* surface, zcsr_window_mode mode);
  * Returns false for non-positive sizes, invalid surface, or while fullscreen. */
 bool zcsr_surface_set_client_size(zcsr_surface* surface, int w, int h);
 
+/* Set a draggable region in client-area coordinates for borderless windows.
+ * When the user clicks and drags within this region, the window moves as if
+ * the title bar was dragged. Pass x=y=w=h=0 to disable. Only meaningful on
+ * Windows borderless mode; other platforms ignore and return false. */
+bool zcsr_surface_set_drag_region(zcsr_surface* surface, int x, int y, int w, int h);
+
 /* Move the window onto the display whose stable id is `display_id`. Returns
  * false before touching the window for an invalid/disconnected id. While
  * fullscreen, the window stays fullscreen on the target display and the
@@ -175,5 +181,20 @@ void zcsr_surface_set_focus_callback(
  */
 void zcsr_platform_android_dispatch_focus(zcsr_focus_event event);
 #endif
+
+/* ---- Cursor control (additive) ----
+ * Show/hide the system cursor, set a custom RGBA cursor bitmap, or reset to default.
+ * Returns true on success, false on platforms without cursor support (Linux/Android/macOS first release). */
+
+bool zcsr_surface_set_cursor_visible(zcsr_surface* surface, bool visible);
+
+/* Set a custom cursor from RGBA8 pixel data. hot_x/hot_y is the click hotspot.
+ * Pass NULL pixels to clear the custom cursor (same as reset). */
+bool zcsr_surface_set_cursor_bitmap(zcsr_surface* surface,
+                                    const unsigned char* rgba, int w, int h,
+                                    int hot_x, int hot_y);
+
+/* Restore the platform default cursor. */
+bool zcsr_surface_reset_cursor(zcsr_surface* surface);
 
 #endif /* ZCSR_PLATFORM_H */
