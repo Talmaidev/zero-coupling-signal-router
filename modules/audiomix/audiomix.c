@@ -172,6 +172,15 @@ typedef struct {
     float volume;     /* public-facing, set from API */
     int32_t volume_q8; /* Q8 fixed-point (0..256), precomputed in apply_cmd for render hot path */
     bool loop;
+    /* ---- streaming PCM fields (additive) ---- */
+    _Atomic bool is_stream;
+    _Atomic bool stream_reserved;
+    _Atomic bool stream_paused;
+    _Atomic unsigned int stream_volume_q8;
+    int16_t pcm_ring[4096 * 2];          /* 4096 frames * 2 channels */
+    _Atomic unsigned int stream_write;   /* monotonic write count (frames) */
+    _Atomic unsigned int stream_read;    /* monotonic read count (frames) */
+    _Atomic unsigned int stream_consumed; /* frames consumed by mixer (monotonic) */
 } zcsr_mix_channel;
 
 typedef struct {
@@ -2809,11 +2818,28 @@ static void zcsr_mix_render_period(zcsr_mixer* m) {
         int left = 0;
         int right = 0;
         for (int c = 0; c < ZCSR_MIX_CHANNELS; ++c) {
-            zcsr_mix_channel* ch;
+            zcsr_mix_channel* ch = &m->channels[c];
+            /* ---- streaming PCM channels ---- */
+            if (atomic_load_explicit(&ch->is_stream, memory_order_acquire)) {
+                unsigned int w, r, avail, idx;
+                int vol;
+                if (atomic_load_explicit(&ch->stream_paused, memory_order_acquire)) continue;
+                w = atomic_load_explicit(&ch->stream_write, memory_order_acquire);
+                r = atomic_load_explicit(&ch->stream_read, memory_order_relaxed);
+                avail = w - r;
+                if (avail == 0) continue;  /* underrun: silence */
+                idx = (r % 4096u) * 2u;
+                vol = (int)atomic_load_explicit(&ch->stream_volume_q8, memory_order_acquire);
+                left += (ch->pcm_ring[idx] * vol) >> 8;
+                right += (ch->pcm_ring[idx + 1] * vol) >> 8;
+                atomic_store_explicit(&ch->stream_read, r + 1, memory_order_release);
+                atomic_fetch_add_explicit(&ch->stream_consumed, 1u, memory_order_relaxed);
+                continue;
+            }
+            /* ---- WAV channels ---- */
             zcsr_mix_sound* s;
             uint32_t sample;
             if (states[c] != ZCSR_MIX_CH_ACTIVE) continue;
-            ch = &m->channels[c];
             if (ch->sound < 0 || ch->sound >= ZCSR_MIX_MAX_SOUNDS) continue;
             s = &m->sounds[ch->sound];
             if (!s->used || s->frames == 0) {
@@ -3366,4 +3392,106 @@ size_t zcsr_mix_poll_finished(zcsr_mixer* m, int* out, size_t cap) {
         atomic_store_explicit(&m->finished_head, (head + 1U) % ZCSR_MIX_FINISHED_CAP, memory_order_release);
     }
     return n;
+}
+
+/* ===========================================================================================
+ * Streaming PCM channel API (additive)
+ * =========================================================================================== */
+
+int zcsr_mix_attach_stream(zcsr_mixer* m) {
+    int c;
+    if (!m) return -1;
+    for (c = 0; c < ZCSR_MIX_CHANNELS; ++c) {
+        zcsr_mix_channel* ch = &m->channels[c];
+        int expected = ZCSR_MIX_CH_FREE;
+        if (atomic_load_explicit(&ch->is_stream, memory_order_acquire)) continue;
+        if (!atomic_compare_exchange_strong_explicit(&ch->state, &expected, ZCSR_MIX_CH_RESERVED,
+                                                      memory_order_acq_rel, memory_order_acquire))
+            continue;
+        atomic_store_explicit(&ch->is_stream, true, memory_order_release);
+        atomic_store_explicit(&ch->stream_reserved, true, memory_order_release);
+        atomic_store_explicit(&ch->stream_paused, false, memory_order_release);
+        atomic_store_explicit(&ch->stream_volume_q8, 256u, memory_order_release);
+        atomic_store_explicit(&ch->stream_write, 0u, memory_order_release);
+        atomic_store_explicit(&ch->stream_read, 0u, memory_order_release);
+        atomic_store_explicit(&ch->stream_consumed, 0u, memory_order_release);
+        atomic_store_explicit(&ch->state, ZCSR_MIX_CH_ACTIVE, memory_order_release);
+        return c;
+    }
+    return -1;
+}
+
+size_t zcsr_mix_feed_stream(zcsr_mixer* m, int channel,
+                             const int16_t* pcm, size_t frames) {
+    zcsr_mix_channel* ch;
+    unsigned int w, r, space, n, i;
+    if (!m || channel < 0 || channel >= ZCSR_MIX_CHANNELS || !pcm) return 0;
+    ch = &m->channels[channel];
+    if (!atomic_load_explicit(&ch->is_stream, memory_order_acquire)) return 0;
+    if (!atomic_load_explicit(&ch->stream_reserved, memory_order_acquire)) return 0;
+    w = atomic_load_explicit(&ch->stream_write, memory_order_relaxed);
+    r = atomic_load_explicit(&ch->stream_read, memory_order_acquire);
+    space = 4096u - (w - r);
+    n = (unsigned int)(frames < space ? frames : space);
+    for (i = 0; i < n; ++i) {
+        unsigned idx = ((w + i) % 4096u) * 2u;
+        ch->pcm_ring[idx + 0] = pcm[i * 2 + 0];
+        ch->pcm_ring[idx + 1] = pcm[i * 2 + 1];
+    }
+    atomic_store_explicit(&ch->stream_write, w + n, memory_order_release);
+    return n;
+}
+
+bool zcsr_mix_stream_set_volume(zcsr_mixer* m, int channel, float volume) {
+    zcsr_mix_channel* ch;
+    if (!m || channel < 0 || channel >= ZCSR_MIX_CHANNELS) return false;
+    ch = &m->channels[channel];
+    if (!atomic_load_explicit(&ch->is_stream, memory_order_acquire)) return false;
+    if (volume < 0.0f) volume = 0.0f;
+    if (volume > 1.0f) volume = 1.0f;
+    atomic_store_explicit(&ch->stream_volume_q8,
+                           (unsigned int)(int)(volume * 256.0f + 0.5f),
+                           memory_order_release);
+    return true;
+}
+
+bool zcsr_mix_stream_set_paused(zcsr_mixer* m, int channel, bool paused) {
+    zcsr_mix_channel* ch;
+    if (!m || channel < 0 || channel >= ZCSR_MIX_CHANNELS) return false;
+    ch = &m->channels[channel];
+    if (!atomic_load_explicit(&ch->is_stream, memory_order_acquire)) return false;
+    atomic_store_explicit(&ch->stream_paused, paused, memory_order_release);
+    return true;
+}
+
+uint64_t zcsr_mix_stream_consumed_frames(const zcsr_mixer* m, int channel) {
+    const zcsr_mix_channel* ch;
+    if (!m || channel < 0 || channel >= ZCSR_MIX_CHANNELS) return 0;
+    ch = &m->channels[channel];
+    if (!atomic_load_explicit(&ch->is_stream, memory_order_acquire)) return 0;
+    return (uint64_t)atomic_load_explicit(&ch->stream_consumed, memory_order_acquire);
+}
+
+bool zcsr_mix_stream_flush(zcsr_mixer* m, int channel) {
+    zcsr_mix_channel* ch;
+    unsigned int w;
+    if (!m || channel < 0 || channel >= ZCSR_MIX_CHANNELS) return false;
+    ch = &m->channels[channel];
+    if (!atomic_load_explicit(&ch->is_stream, memory_order_acquire)) return false;
+    w = atomic_load_explicit(&ch->stream_write, memory_order_acquire);
+    atomic_store_explicit(&ch->stream_read, w, memory_order_release);
+    return true;
+}
+
+bool zcsr_mix_stream_detach(zcsr_mixer* m, int channel) {
+    zcsr_mix_channel* ch;
+    if (!m || channel < 0 || channel >= ZCSR_MIX_CHANNELS) return false;
+    ch = &m->channels[channel];
+    if (!atomic_load_explicit(&ch->is_stream, memory_order_acquire)) return false;
+    atomic_store_explicit(&ch->is_stream, false, memory_order_release);
+    atomic_store_explicit(&ch->stream_reserved, false, memory_order_release);
+    atomic_store_explicit(&ch->stream_paused, false, memory_order_release);
+    atomic_store_explicit(&ch->state, ZCSR_MIX_CH_FREE, memory_order_release);
+    ch->sound = -1;
+    return true;
 }
