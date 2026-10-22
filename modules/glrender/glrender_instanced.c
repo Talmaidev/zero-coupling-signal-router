@@ -303,7 +303,6 @@ void zcsr_gl_submit_instance_batch(zcsr_gl_renderer* r, zcsr_gl_instance* instan
             zcsr_gl_draw_instances_prepared(r, tex, instances + start, len);
     }
     glBindVertexArray(0);
-    if (r->target == 0) zcsr_gl_swap(r);
 }
 
 /* ===========================================================================================
@@ -372,5 +371,4 @@ void zcsr_gl_submit_state(zcsr_gl_renderer* r, zcsr_gl_instance* instances, size
         while (i < count && instances[i].tex == tex) ++i;
         if (tex) zcsr_gl_draw_instances(r, tex, instances + start, i - start);
     }
-    if (r->target == 0) zcsr_gl_swap(r);
 }
