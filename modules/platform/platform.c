@@ -1,6 +1,7 @@
 /* Agent 5 — Platform abstraction. Win32 / X11 / Cocoa, gated on ZCSR_PLATFORM (zcsr/platform.h).
  * No OpenGL/DirectX/Vulkan. */
 #include "zcsr/platform.h"
+#include "platform_internal.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -13,51 +14,12 @@
 #include <android/native_window.h>
 #endif
 
-struct zcsr_surface {
-    bool in_use;
-    float dpi_scale;
-    zcsr_dpi_changed_fn dpi_cb;
-    void* dpi_user;
-    int min_w, min_h, max_w, max_h; /* 0 = no limit; client-area pixels */
-    zcsr_focus_fn focus_cb;
-    void* focus_user;
-#if defined(__ANDROID__)
-    void* native_window;
-#elif defined(_WIN32)
-    void* hwnd;
-    zcsr_window_mode mode;
-    bool  fs_valid;            /* fullscreen restore snapshot present */
-    long  fs_style;
-    long  fs_exstyle;
-    int   fs_x, fs_y, fs_w, fs_h;
-    int   fs_display;
-    /* windowed-mode geometry snapshot for windowed <-> borderless swaps.
-     * Borderless is always full-screen; windowed restores to this snapshot. */
-    bool  win_valid;
-    int   win_x, win_y, win_w, win_h;
-    bool  drag_region_enabled;
-    int   drag_x, drag_y, drag_w, drag_h;  /* client-area drag region for borderless */
-#elif defined(__linux__)
-    void* display;
-    unsigned long window;
-    zcsr_window_mode mode;
-    bool  fs_valid;
-    int   fs_x, fs_y, fs_w, fs_h;
-    int   fs_display;
-    unsigned long xsettings_owner;
-    unsigned long xsettings_settings_atom;
-    unsigned long xsettings_selection_atom;
-#elif defined(__APPLE__)
-    void* ns_window;
-#else
-    void* handle;
-#endif
-};
+/* zcsr_surface struct, pool, acquire/release, dpi update live in
+ * platform_internal.h (shared with per-backend files like platform_wayland.c). */
 
-enum { ZCSR_SURFACE_POOL = 4 };
-static zcsr_surface zcsr_surfaces[ZCSR_SURFACE_POOL];
+zcsr_surface zcsr_surfaces[ZCSR_SURFACE_POOL];
 
-static zcsr_surface* zcsr_surface_acquire(void) {
+zcsr_surface* zcsr_surface_acquire(void) {
     for (size_t i = 0; i < ZCSR_SURFACE_POOL; ++i) {
         if (!zcsr_surfaces[i].in_use) {
             zcsr_surfaces[i].in_use = true;
@@ -67,13 +29,13 @@ static zcsr_surface* zcsr_surface_acquire(void) {
     return 0;
 }
 
-static void zcsr_surface_release(zcsr_surface* s) {
+void zcsr_surface_release(zcsr_surface* s) {
     if (!s) return;
     *s = (zcsr_surface){ 0 };
     s->dpi_scale = 1.0f;
 }
 
-static void zcsr_surface_update_dpi_scale(
+void zcsr_surface_update_dpi_scale(
     zcsr_surface* s,
     float new_scale
 ) {
@@ -199,7 +161,7 @@ void zcsr_platform_android_dispatch_focus(zcsr_focus_event event) {
         }
     }
 }
-#elif defined(__linux__)
+#elif defined(__linux__) && !defined(ZCSR_LINUX_BACKEND_WAYLAND)
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -1230,7 +1192,7 @@ float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
     return 1.0f;
 }
 
-#elif defined(__linux__)
+#elif defined(__linux__) && !defined(ZCSR_LINUX_BACKEND_WAYLAND)
 /* ============================ Linux / X11 ============================== */
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>

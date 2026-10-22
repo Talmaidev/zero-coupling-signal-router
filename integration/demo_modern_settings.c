@@ -342,6 +342,7 @@ static void init_items(void) {
 /* ================================================================== */
 
 /* ---- high-resolution timing for startup diagnostics ---- */
+#if defined(_WIN32)
 #include <windows.h>
 static LARGE_INTEGER t_freq;
 static double t_mark_ms(LARGE_INTEGER* start) {
@@ -351,6 +352,18 @@ static double t_mark_ms(LARGE_INTEGER* start) {
     *start = now;
     return ms;
 }
+#else
+#include <time.h>
+typedef struct timespec t_mark_t;
+static double t_mark_ms(t_mark_t* start) {
+    t_mark_t now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double ms = (double)(now.tv_sec - start->tv_sec) * 1000.0
+              + (double)(now.tv_nsec - start->tv_nsec) / 1e6;
+    *start = now;
+    return ms;
+}
+#endif
 
 int main(void) {
     static unsigned char renderer_buf[8 * 1024 * 1024];
@@ -358,10 +371,16 @@ int main(void) {
     static unsigned char inputext_buf[8 * 1024];
     static unsigned char settings_buf[8192];
 
+#if defined(_WIN32)
     QueryPerformanceFrequency(&t_freq);
     LARGE_INTEGER t_total, t_step;
     QueryPerformanceCounter(&t_total);
     t_step = t_total;
+#else
+    t_mark_t t_total, t_step;
+    clock_gettime(CLOCK_MONOTONIC, &t_total);
+    t_step = t_total;
+#endif
 
     printf("=== zcsr Modern Settings Demo ===\n");
 
@@ -436,8 +455,13 @@ int main(void) {
 
     bool running = true;
     int frame_count = 0;
+#if defined(_WIN32)
     LARGE_INTEGER t_first_frame;
     QueryPerformanceCounter(&t_first_frame);
+#else
+    t_mark_t t_first_frame;
+    clock_gettime(CLOCK_MONOTONIC, &t_first_frame);
+#endif
     while (running) {
         /* CRITICAL: input_pump must come BEFORE surface_pump_events */
         zcsr_input_pump(g_input, g_surface);
