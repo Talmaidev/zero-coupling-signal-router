@@ -132,6 +132,7 @@ int main(void) {
     zcsr_gl_submit(renderer, &sprite);
     zcsr_gl_draw_text(renderer, "ZCSR", 4.0f, 4.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f);
     zcsr_gl_flush(renderer);
+    zcsr_gl_present(renderer);
     zcsr_gl_texture_destroy(renderer, tex);
     zcsr_gl_destroy(renderer);
     zcsr_surface_destroy(surface);
