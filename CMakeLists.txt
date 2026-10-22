@@ -69,6 +69,9 @@ zcsr_module(image)     # Engine-ext Agent — decode→RGBA32 + offline CPU proc
 zcsr_module(atlas)     # Texture atlas shelf-packing + region table (pure logic, no GL)
 zcsr_module(culling)   # Viewport culling: linear + uniform grid (pure logic, no GL)
 zcsr_module(font)      # TrueType font loader/rasterizer (stb_truetype, no GL dependency)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(zcsr_font PUBLIC m)  # stb_truetype uses sqrt/floor/ceil/fmod/pow
+endif()
 zcsr_module(music)     # Streaming music player (OGG/MP3, depends on audiomix)
 # Per-backend system libs are added by the implementer when each backend lands, e.g.:
 #   glrender: opengl32+gdi32 (Win) / GL+X11 (Linux, find_package(OpenGL)) / -framework OpenGL (mac)
@@ -97,22 +100,66 @@ target_include_directories(zcsr_glrender PRIVATE ${CMAKE_SOURCE_DIR}/third_party
 
 # music depends on audiomix (stream channels)
 target_link_libraries(zcsr_music PUBLIC zcsr_audiomix)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(zcsr_music PUBLIC m)  # stb_vorbis uses log/exp/pow/sin/cos
+endif()
 
 if(UNIX AND NOT APPLE)
-  find_package(X11 REQUIRED)
-  target_link_libraries(zcsr_platform PUBLIC ${X11_LIBRARIES})
-  target_include_directories(zcsr_platform PRIVATE ${X11_INCLUDE_DIR})
-  # Optional multi-monitor backends for A1. Both are optional; if absent the
-  # platform module compiles a single-screen fallback without breaking the build.
-  if(X11_Xrandr_FOUND)
-    target_compile_definitions(zcsr_platform PRIVATE ZCSR_HAVE_XRANDR)
-    target_link_libraries(zcsr_platform PUBLIC ${X11_Xrandr_LIB})
+  # Linux backend selection: x11 (default, legacy) or wayland (opt-in).
+  # During the migration (commits 1-4) both backends are available; commit 5
+  # switches the default to wayland and removes X11.
+  set(ZCSR_LINUX_BACKEND "x11" CACHE STRING "Linux window backend: x11 or wayland")
+  set_property(CACHE ZCSR_LINUX_BACKEND PROPERTY STRINGS x11 wayland)
+
+  if(ZCSR_LINUX_BACKEND STREQUAL "x11")
+    find_package(X11 REQUIRED)
+    target_link_libraries(zcsr_platform PUBLIC ${X11_LIBRARIES})
+    target_include_directories(zcsr_platform PRIVATE ${X11_INCLUDE_DIR})
+    # Optional multi-monitor backends for A1. Both are optional; if absent the
+    # platform module compiles a single-screen fallback without breaking the build.
+    if(X11_Xrandr_FOUND)
+      target_compile_definitions(zcsr_platform PRIVATE ZCSR_HAVE_XRANDR)
+      target_link_libraries(zcsr_platform PUBLIC ${X11_Xrandr_LIB})
+    endif()
+    if(X11_Xinerama_FOUND)
+      target_compile_definitions(zcsr_platform PRIVATE ZCSR_HAVE_XINERAMA)
+      target_link_libraries(zcsr_platform PUBLIC ${X11_Xinerama_LIB})
+    endif()
+  elseif(ZCSR_LINUX_BACKEND STREQUAL "wayland")
+    # Wayland backend: wayland-client + wayland-scanner generated xdg-shell protocol.
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(WAYLAND_CLIENT REQUIRED wayland-client)
+    find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
+    find_file(XDG_SHELL_XML NAMES xdg-shell.xml
+        PATHS /usr/share/wayland-protocols/stable/xdg-shell
+        REQUIRED)
+    # Generate xdg-shell client protocol header + private code.
+    add_custom_command(
+        OUTPUT ${CMAKE_BINARY_DIR}/gen/xdg-shell-client-protocol.h
+               ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/gen
+        COMMAND ${WAYLAND_SCANNER} client-header
+                ${XDG_SHELL_XML} ${CMAKE_BINARY_DIR}/gen/xdg-shell-client-protocol.h
+        COMMAND ${WAYLAND_SCANNER} private-code
+                ${XDG_SHELL_XML} ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c
+        DEPENDS ${XDG_SHELL_XML}
+        VERBATIM)
+    target_sources(zcsr_platform PRIVATE
+        modules/platform/platform_wayland.c
+        ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c)
+    target_include_directories(zcsr_platform PRIVATE
+        ${CMAKE_BINARY_DIR}/gen
+        ${WAYLAND_CLIENT_INCLUDE_DIRS})
+    target_compile_definitions(zcsr_platform PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
+    target_link_libraries(zcsr_platform PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
+  else()
+    message(FATAL_ERROR "Unknown ZCSR_LINUX_BACKEND: ${ZCSR_LINUX_BACKEND}")
   endif()
-  if(X11_Xinerama_FOUND)
-    target_compile_definitions(zcsr_platform PRIVATE ZCSR_HAVE_XINERAMA)
-    target_link_libraries(zcsr_platform PUBLIC ${X11_Xinerama_LIB})
-  endif()
+
   target_link_libraries(zcsr_platform PUBLIC m)  # isfinite/fabsf/strtod for A2 DPI parsing
+  # NOTE: overlay/input/render/inputext/glrender still use X11 during migration.
+  # They will be switched to Wayland in commits 2-4.
+  find_package(X11 REQUIRED)
   target_link_libraries(zcsr_overlay PUBLIC ${X11_LIBRARIES})
   target_include_directories(zcsr_overlay PRIVATE ${X11_INCLUDE_DIR})
   target_link_libraries(zcsr_input PUBLIC ${X11_LIBRARIES})  # input pumps X11 key/close events
@@ -269,6 +316,9 @@ add_executable(test_music_codec
     modules/music/minimp3_impl.c
     modules/music/vorbis_impl.c)
 target_include_directories(test_music_codec PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(test_music_codec PRIVATE m)  # stb_vorbis uses log/exp/pow/sin/cos
+endif()
 add_test(NAME music_codec COMMAND test_music_codec WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 add_executable(test_atlas tests/test_atlas.c)
