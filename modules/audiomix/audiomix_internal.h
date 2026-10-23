@@ -17,6 +17,54 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <time.h>
+
+typedef aaudio_result_t (*zcsr_aaudio_create_builder_fn)(AAudioStreamBuilder**);
+typedef void (*zcsr_aaudio_builder_direction_fn)(AAudioStreamBuilder*, aaudio_direction_t);
+typedef void (*zcsr_aaudio_builder_format_fn)(AAudioStreamBuilder*, aaudio_format_t);
+typedef void (*zcsr_aaudio_builder_int_fn)(AAudioStreamBuilder*, int32_t);
+typedef void (*zcsr_aaudio_builder_performance_fn)(AAudioStreamBuilder*, aaudio_performance_mode_t);
+typedef void (*zcsr_aaudio_builder_sharing_fn)(AAudioStreamBuilder*, aaudio_sharing_mode_t);
+typedef void (*zcsr_aaudio_data_callback_set_fn)(
+    AAudioStreamBuilder*, AAudioStream_dataCallback, void*);
+typedef void (*zcsr_aaudio_error_callback_set_fn)(
+    AAudioStreamBuilder*, AAudioStream_errorCallback, void*);
+typedef aaudio_result_t (*zcsr_aaudio_open_stream_fn)(AAudioStreamBuilder*, AAudioStream**);
+typedef void (*zcsr_aaudio_delete_builder_fn)(AAudioStreamBuilder*);
+typedef aaudio_result_t (*zcsr_aaudio_stream_action_fn)(AAudioStream*);
+typedef aaudio_result_t (*zcsr_aaudio_close_stream_fn)(AAudioStream*);
+typedef union {
+    void* obj;
+    zcsr_aaudio_create_builder_fn create_builder;
+    zcsr_aaudio_builder_direction_fn set_direction;
+    zcsr_aaudio_builder_format_fn set_format;
+    zcsr_aaudio_builder_int_fn set_channel_count;
+    zcsr_aaudio_builder_int_fn set_sample_rate;
+    zcsr_aaudio_builder_performance_fn set_performance_mode;
+    zcsr_aaudio_builder_sharing_fn set_sharing_mode;
+    zcsr_aaudio_data_callback_set_fn set_data_callback;
+    zcsr_aaudio_error_callback_set_fn set_error_callback;
+    zcsr_aaudio_open_stream_fn open_stream;
+    zcsr_aaudio_delete_builder_fn delete_builder;
+    zcsr_aaudio_stream_action_fn request_start;
+    zcsr_aaudio_stream_action_fn request_stop;
+    zcsr_aaudio_close_stream_fn close_stream;
+} zcsr_aaudio_sym;
+typedef struct {
+    zcsr_aaudio_create_builder_fn create_builder;
+    zcsr_aaudio_builder_direction_fn set_direction;
+    zcsr_aaudio_builder_format_fn set_format;
+    zcsr_aaudio_builder_int_fn set_channel_count;
+    zcsr_aaudio_builder_int_fn set_sample_rate;
+    zcsr_aaudio_builder_performance_fn set_performance_mode;
+    zcsr_aaudio_builder_sharing_fn set_sharing_mode;
+    zcsr_aaudio_data_callback_set_fn set_data_callback;
+    zcsr_aaudio_error_callback_set_fn set_error_callback;
+    zcsr_aaudio_open_stream_fn open_stream;
+    zcsr_aaudio_delete_builder_fn delete_builder;
+    zcsr_aaudio_stream_action_fn request_start;
+    zcsr_aaudio_stream_action_fn request_stop;
+    zcsr_aaudio_close_stream_fn close_stream;
+} zcsr_aaudio_api;
 #elif defined(__APPLE__)
 #include <AudioToolbox/AudioToolbox.h>
 #include <AudioUnit/AudioUnit.h>
@@ -58,7 +106,7 @@ typedef struct {
     void* lib;
     AAudioStream* stream;
     zcsr_mixer* owner;
-    void* api;             /* zcsr_aaudio_api */
+    zcsr_aaudio_api api;
     bool stream_started;
 #elif defined(__linux__) && !defined(__ANDROID__)
     /* PipeWire backend stores its full state in an internal struct. */
