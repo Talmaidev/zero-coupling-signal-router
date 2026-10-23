@@ -90,54 +90,7 @@ void zcsr_overlay_set_buttons(zcsr_overlay* o, const zcsr_button* b, int c) {
     if (o->hover_index >= c) o->hover_index = -1;
 }
 
-#if defined(__linux__)
-#include <X11/Xlib.h>
-
-static void zcsr_overlay_draw_x11(zcsr_overlay* o, Display* display, Window window) {
-    XWindowAttributes attrs;
-    GC gc;
-
-    if (!display) return;
-    if (!XGetWindowAttributes(display, window, &attrs)) return;
-
-    gc = XCreateGC(display, window, 0, 0);
-    if (!gc) return;
-
-    XSetForeground(display, gc, 0x202020u);
-    XFillRectangle(display, window, gc, 0, 0, (unsigned int)attrs.width, (unsigned int)attrs.height);
-    XSetForeground(display, gc, 0xF5F5F5u);
-    XDrawString(display, window, gc, 12, 24, o->text, (int)zcsr_overlay_text_len(o->text));
-
-    if (o->bitmap) {
-        int max_w = o->bitmap_w > 64 ? 64 : o->bitmap_w;
-        int max_h = o->bitmap_h > 64 ? 64 : o->bitmap_h;
-        for (int y = 0; y < max_h; ++y) {
-            for (int x = 0; x < max_w; ++x) {
-                const unsigned char* px = o->bitmap + ((y * o->bitmap_w + x) * 4);
-                if (px[3] == 0) continue;
-                XSetForeground(display, gc, ((unsigned long)px[0] << 16) | ((unsigned long)px[1] << 8) | px[2]);
-                XDrawPoint(display, window, gc, 12 + x, 36 + y);
-            }
-        }
-    }
-
-    for (int i = 0; i < o->button_count; ++i) {
-        zcsr_button* button = &o->buttons[i];
-        XSetForeground(display, gc, i == o->hover_index ? 0x5FAF92u : 0x3F7F6Au);
-        XFillRectangle(display, window, gc, button->bounds.x, button->bounds.y,
-                       (unsigned int)button->bounds.w, (unsigned int)button->bounds.h);
-        XSetForeground(display, gc, 0xFFFFFFu);
-        if (button->label) {
-            XDrawString(display, window, gc, button->bounds.x + 6, button->bounds.y + 18,
-                        button->label, (int)zcsr_overlay_text_len(button->label));
-        }
-    }
-
-    XFlush(display);
-    XFreeGC(display, gc);
-}
-
-#elif defined(_WIN32)
+#if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -192,16 +145,13 @@ void zcsr_overlay_render(zcsr_overlay* o) {
     if (!o || !o->in_use || !o->surface) return;
     handle = zcsr_surface_native_handle(o->surface);
     if (!handle) return;
-#if defined(__linux__)
-    void* display = zcsr_surface_native_display(o->surface);
-    zcsr_overlay_draw_x11(o, (Display*)display, (Window)(uintptr_t)handle);
-#elif defined(_WIN32)
+#if defined(_WIN32)
     zcsr_overlay_draw_win32(o, (HWND)handle);
 #elif defined(__APPLE__)
     zcsr_cocoa_overlay_draw(handle, o->text, o->bitmap, o->bitmap_w, o->bitmap_h,
                             o->buttons, o->button_count, o->hover_index);
 #else
-    (void)handle;
+    (void)handle;  /* Linux/Wayland: overlay not implemented in v1 */
 #endif
 }
 

@@ -13,7 +13,7 @@
  *   platform_destroy — eglMakeCurrent(NULL) → destroy context/surface → wl_egl_window_destroy
  *                    → eglTerminate (reverse order)
  */
-#if defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_LINUX_BACKEND_WAYLAND)
+#if defined(__linux__) && !defined(__ANDROID__)
 
 #include "glrender_internal.h"
 
@@ -147,4 +147,4 @@ void zcsr_gl_platform_set_vsync(zcsr_gl_renderer* r, bool on) {
         eglSwapInterval(r->egl_display, on ? 1 : 0);
 }
 
-#endif /* defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_LINUX_BACKEND_WAYLAND) */
+#endif /* defined(__linux__) && !defined(__ANDROID__) */
