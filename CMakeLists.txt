@@ -105,125 +105,69 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(UNIX AND NOT APPLE)
-  # Linux backend selection: x11 (default, legacy) or wayland (opt-in).
-  # During the migration (commits 1-4) both backends are available; commit 5
-  # switches the default to wayland and removes X11.
-  set(ZCSR_LINUX_BACKEND "x11" CACHE STRING "Linux window backend: x11 or wayland")
-  set_property(CACHE ZCSR_LINUX_BACKEND PROPERTY STRINGS x11 wayland)
+  # Linux: Wayland window backend + EGL + PipeWire audio (post-migration default).
+  # X11/GLX/ALSA/evdev legacy backends removed in commit 5.
 
-  if(ZCSR_LINUX_BACKEND STREQUAL "x11")
-    find_package(X11 REQUIRED)
-    target_link_libraries(zcsr_platform PUBLIC ${X11_LIBRARIES})
-    target_include_directories(zcsr_platform PRIVATE ${X11_INCLUDE_DIR})
-    # Optional multi-monitor backends for A1. Both are optional; if absent the
-    # platform module compiles a single-screen fallback without breaking the build.
-    if(X11_Xrandr_FOUND)
-      target_compile_definitions(zcsr_platform PRIVATE ZCSR_HAVE_XRANDR)
-      target_link_libraries(zcsr_platform PUBLIC ${X11_Xrandr_LIB})
-    endif()
-    if(X11_Xinerama_FOUND)
-      target_compile_definitions(zcsr_platform PRIVATE ZCSR_HAVE_XINERAMA)
-      target_link_libraries(zcsr_platform PUBLIC ${X11_Xinerama_LIB})
-    endif()
-  elseif(ZCSR_LINUX_BACKEND STREQUAL "wayland")
-    # Wayland backend: wayland-client + wayland-scanner generated xdg-shell protocol.
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(WAYLAND_CLIENT REQUIRED wayland-client)
-    find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
-    find_file(XDG_SHELL_XML NAMES xdg-shell.xml
-        PATHS /usr/share/wayland-protocols/stable/xdg-shell
-        REQUIRED)
-    # Generate xdg-shell client protocol header + private code.
-    add_custom_command(
-        OUTPUT ${CMAKE_BINARY_DIR}/gen/xdg-shell-client-protocol.h
-               ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/gen
-        COMMAND ${WAYLAND_SCANNER} client-header
-                ${XDG_SHELL_XML} ${CMAKE_BINARY_DIR}/gen/xdg-shell-client-protocol.h
-        COMMAND ${WAYLAND_SCANNER} private-code
-                ${XDG_SHELL_XML} ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c
-        DEPENDS ${XDG_SHELL_XML}
-        VERBATIM)
-    target_sources(zcsr_platform PRIVATE
-        modules/platform/platform_wayland.c
-        ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c)
-    target_include_directories(zcsr_platform PRIVATE
-        ${CMAKE_BINARY_DIR}/gen
-        ${WAYLAND_CLIENT_INCLUDE_DIRS})
-    target_compile_definitions(zcsr_platform PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
-    target_link_libraries(zcsr_platform PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
-  else()
-    message(FATAL_ERROR "Unknown ZCSR_LINUX_BACKEND: ${ZCSR_LINUX_BACKEND}")
-  endif()
+  # ---- Wayland client + xdg-shell protocol generation ----
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(WAYLAND_CLIENT REQUIRED wayland-client)
+  find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
+  find_file(XDG_SHELL_XML NAMES xdg-shell.xml
+      PATHS /usr/share/wayland-protocols/stable/xdg-shell
+      REQUIRED)
+  add_custom_command(
+      OUTPUT ${CMAKE_BINARY_DIR}/gen/xdg-shell-client-protocol.h
+             ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/gen
+      COMMAND ${WAYLAND_SCANNER} client-header
+              ${XDG_SHELL_XML} ${CMAKE_BINARY_DIR}/gen/xdg-shell-client-protocol.h
+      COMMAND ${WAYLAND_SCANNER} private-code
+              ${XDG_SHELL_XML} ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c
+      DEPENDS ${XDG_SHELL_XML}
+      VERBATIM)
+  target_sources(zcsr_platform PRIVATE
+      modules/platform/platform_wayland.c
+      ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c)
+  target_include_directories(zcsr_platform PRIVATE
+      ${CMAKE_BINARY_DIR}/gen
+      ${WAYLAND_CLIENT_INCLUDE_DIRS})
+  target_compile_definitions(zcsr_platform PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
+  target_link_libraries(zcsr_platform PUBLIC ${WAYLAND_CLIENT_LIBRARIES} m)
 
-  # Linux audio backend selection: alsa (default, dynamic dlopen) or pipewire (opt-in).
-  # During migration (commits 1-4) both are available; commit 5 switches default
-  # to pipewire and removes ALSA.
-  set(ZCSR_AUDIO_BACKEND "alsa" CACHE STRING "Linux audio backend: alsa or pipewire")
-  set_property(CACHE ZCSR_AUDIO_BACKEND PROPERTY STRINGS alsa pipewire)
+  # ---- PipeWire audio ----
+  pkg_check_modules(PIPEWIRE REQUIRED libpipewire-0.3)
+  pkg_check_modules(SPA REQUIRED libspa-0.2)
+  target_compile_definitions(zcsr_audiomix PRIVATE ZCSR_AUDIO_BACKEND_PIPEWIRE)
+  target_include_directories(zcsr_audiomix PRIVATE
+      ${PIPEWIRE_INCLUDE_DIRS}
+      ${SPA_INCLUDE_DIRS})
+  target_link_libraries(zcsr_audiomix PUBLIC
+      ${PIPEWIRE_LIBRARIES}
+      ${SPA_LIBRARIES})
 
-  if(ZCSR_AUDIO_BACKEND STREQUAL "pipewire")
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(PIPEWIRE REQUIRED libpipewire-0.3)
-    pkg_check_modules(SPA REQUIRED libspa-0.2)
-    target_compile_definitions(zcsr_audiomix PRIVATE ZCSR_AUDIO_BACKEND_PIPEWIRE)
-    target_include_directories(zcsr_audiomix PRIVATE
-        ${PIPEWIRE_INCLUDE_DIRS}
-        ${SPA_INCLUDE_DIRS})
-    target_link_libraries(zcsr_audiomix PUBLIC
-        ${PIPEWIRE_LIBRARIES}
-        ${SPA_LIBRARIES})
-  elseif(NOT ZCSR_AUDIO_BACKEND STREQUAL "alsa")
-    message(FATAL_ERROR "Unknown ZCSR_AUDIO_BACKEND: ${ZCSR_AUDIO_BACKEND}")
-  endif()
+  # ---- input / inputext: Wayland wl_keyboard / wl_pointer ----
+  target_compile_definitions(zcsr_input PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
+  target_compile_definitions(zcsr_inputext PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
+  target_include_directories(zcsr_input PRIVATE ${CMAKE_BINARY_DIR}/gen ${WAYLAND_CLIENT_INCLUDE_DIRS})
+  target_include_directories(zcsr_inputext PRIVATE ${CMAKE_BINARY_DIR}/gen ${WAYLAND_CLIENT_INCLUDE_DIRS})
+  target_link_libraries(zcsr_input PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
+  target_link_libraries(zcsr_inputext PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
 
-  target_link_libraries(zcsr_platform PUBLIC m)  # isfinite/fabsf/strtod for A2 DPI parsing
-  if(ZCSR_LINUX_BACKEND STREQUAL "wayland")
-    # Wayland mode: input/inputext use wl_keyboard/wl_pointer via wayland-client.
-    target_compile_definitions(zcsr_input PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
-    target_compile_definitions(zcsr_inputext PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
-    target_include_directories(zcsr_input PRIVATE ${CMAKE_BINARY_DIR}/gen ${WAYLAND_CLIENT_INCLUDE_DIRS})
-    target_include_directories(zcsr_inputext PRIVATE ${CMAKE_BINARY_DIR}/gen ${WAYLAND_CLIENT_INCLUDE_DIRS})
-    target_link_libraries(zcsr_input PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
-    target_link_libraries(zcsr_inputext PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
-    # overlay/render still X11 in v1 (will migrate later or remain X11 via XWayland).
-    find_package(X11 REQUIRED)
-    target_link_libraries(zcsr_overlay PUBLIC ${X11_LIBRARIES})
-    target_include_directories(zcsr_overlay PRIVATE ${X11_INCLUDE_DIR})
-    target_link_libraries(zcsr_render PUBLIC ${X11_LIBRARIES})
-    target_include_directories(zcsr_render PRIVATE ${X11_INCLUDE_DIR})
-  else()
-    find_package(X11 REQUIRED)
-    target_link_libraries(zcsr_overlay PUBLIC ${X11_LIBRARIES})
-    target_include_directories(zcsr_overlay PRIVATE ${X11_INCLUDE_DIR})
-    target_link_libraries(zcsr_input PUBLIC ${X11_LIBRARIES})  # input pumps X11 key/close events
-    target_include_directories(zcsr_input PRIVATE ${X11_INCLUDE_DIR})
-    target_link_libraries(zcsr_render PUBLIC ${X11_LIBRARIES})
-    target_include_directories(zcsr_render PRIVATE ${X11_INCLUDE_DIR})
-    target_link_libraries(zcsr_inputext PUBLIC ${X11_LIBRARIES})
-    target_include_directories(zcsr_inputext PRIVATE ${X11_INCLUDE_DIR})
-  endif()
-  # glrender: X11/GLX or Wayland/EGL based on ZCSR_LINUX_BACKEND.
-  if(ZCSR_LINUX_BACKEND STREQUAL "wayland")
-    pkg_check_modules(WAYLAND_EGL REQUIRED wayland-egl)
-    pkg_check_modules(EGL REQUIRED egl)
-    find_package(OpenGL REQUIRED)  # OpenGL::OpenGL = libOpenGL.so (GLVND, no X11 dep)
-    target_compile_definitions(zcsr_glrender PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
-    target_include_directories(zcsr_glrender PRIVATE
-        ${CMAKE_BINARY_DIR}/gen
-        ${WAYLAND_CLIENT_INCLUDE_DIRS}
-        ${WAYLAND_EGL_INCLUDE_DIRS}
-        ${EGL_INCLUDE_DIRS})
-    target_link_libraries(zcsr_glrender PUBLIC
-        ${WAYLAND_CLIENT_LIBRARIES}
-        ${WAYLAND_EGL_LIBRARIES}
-        ${EGL_LIBRARIES}
-        OpenGL::OpenGL m)
-  else()
-    find_package(OpenGL REQUIRED)
-    target_link_libraries(zcsr_glrender PUBLIC ${X11_LIBRARIES} OpenGL::GL m)
-    target_include_directories(zcsr_glrender PRIVATE ${X11_INCLUDE_DIR})
-  endif()
+  # ---- glrender: EGL on Wayland ----
+  pkg_check_modules(WAYLAND_EGL REQUIRED wayland-egl)
+  pkg_check_modules(EGL REQUIRED egl)
+  find_package(OpenGL REQUIRED)  # OpenGL::OpenGL = libOpenGL.so (GLVND, no X11 dep)
+  target_compile_definitions(zcsr_glrender PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
+  target_include_directories(zcsr_glrender PRIVATE
+      ${CMAKE_BINARY_DIR}/gen
+      ${WAYLAND_CLIENT_INCLUDE_DIRS}
+      ${WAYLAND_EGL_INCLUDE_DIRS}
+      ${EGL_INCLUDE_DIRS})
+  target_link_libraries(zcsr_glrender PUBLIC
+      ${WAYLAND_CLIENT_LIBRARIES}
+      ${WAYLAND_EGL_LIBRARIES}
+      ${EGL_LIBRARIES}
+      OpenGL::OpenGL m)
 elseif(WIN32)
   # GL 1.1 entry points (textures, glDrawArrays, ...) live in opengl32; the WGL/DC calls
   # (ChoosePixelFormat / SetPixelFormat / SwapBuffers / GetDC / ReleaseDC) live in gdi32. The

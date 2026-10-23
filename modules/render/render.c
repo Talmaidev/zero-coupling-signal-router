@@ -232,29 +232,7 @@ void zcsr_sprite_batch_submit(zcsr_sprite_batch* s, const zcsr_sprite* sp) {
     s->sprites[s->count++] = *sp;
 }
 
-#if defined(__linux__)
-#include <X11/Xlib.h>
-
-static void zcsr_sprite_batch_flush_x11(zcsr_sprite_batch* s, Display* display, Window window) {
-    GC gc;
-    if (!s || !display || !window) return;
-    gc = XCreateGC(display, window, 0, 0);
-    if (!gc) return;
-    for (size_t i = 0; i < s->count; ++i) {
-        const zcsr_sprite* sprite = &s->sprites[i];
-        const uint8_t* px = sprite->tex->rgba;
-        int x = (int)sprite->dst.x;
-        int y = (int)sprite->dst.y;
-        unsigned int w = sprite->dst.w > 0.0f ? (unsigned int)sprite->dst.w : (unsigned int)sprite->tex->width;
-        unsigned int h = sprite->dst.h > 0.0f ? (unsigned int)sprite->dst.h : (unsigned int)sprite->tex->height;
-        XSetForeground(display, gc, ((unsigned long)px[0] << 16) | ((unsigned long)px[1] << 8) | px[2]);
-        XFillRectangle(display, window, gc, x, y, w, h);
-    }
-    XFlush(display);
-    XFreeGC(display, gc);
-}
-
-#elif defined(_WIN32)
+#if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -307,14 +285,12 @@ void zcsr_sprite_batch_flush(zcsr_sprite_batch* s) {
         s->count = 0;
         return;
     }
-#if defined(__linux__)
-    zcsr_sprite_batch_flush_x11(s, (Display*)zcsr_surface_native_display(s->target), (Window)(uintptr_t)handle);
-#elif defined(_WIN32)
+#if defined(_WIN32)
     zcsr_sprite_batch_flush_win32(s, (HWND)handle);
 #elif defined(__APPLE__)
     zcsr_sprite_batch_flush_cocoa(s, handle);
 #else
-    (void)handle;
+    (void)handle;  /* Linux/Wayland: software render not implemented in v1 */
 #endif
     s->count = 0;
 }

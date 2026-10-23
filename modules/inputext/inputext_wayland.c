@@ -7,7 +7,7 @@
  *
  * Zero-heap: all state in static storage or caller buffer.
  */
-#if defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_LINUX_BACKEND_WAYLAND)
+#if defined(__linux__) && !defined(__ANDROID__)
 
 #include "inputext_internal.h"
 
@@ -187,4 +187,4 @@ void zcsr_close_gamepads(zcsr_input_ext* in) {
 
 void zcsr_pump_gamepads(zcsr_input_ext* in) { (void)in; }
 
-#endif /* defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_LINUX_BACKEND_WAYLAND) */
+#endif /* defined(__linux__) && !defined(__ANDROID__) */

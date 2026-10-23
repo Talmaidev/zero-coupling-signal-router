@@ -13,7 +13,7 @@
 
 /* This file is auto-globbed by zcsr_module() on every platform. Gate the entire
  * translation unit so non-Wayland builds see an empty file (no wayland headers). */
-#if defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_LINUX_BACKEND_WAYLAND)
+#if defined(__linux__) && !defined(__ANDROID__)
 
 #include "platform_internal.h"
 
@@ -252,8 +252,11 @@ bool zcsr_display_get(int index, zcsr_display_info* out) {
 /* Window mode — Wayland clients cannot force window manager state;
  * fullscreen via xdg_toplevel_set_fullscreen is a later enhancement. */
 bool zcsr_surface_set_mode(zcsr_surface* s, zcsr_window_mode mode) {
-    (void)s; (void)mode;
-    return false;
+    if (!s) return false;
+    if (mode != ZCSR_WINDOW_WINDOWED && mode != ZCSR_WINDOW_BORDERLESS &&
+        mode != ZCSR_WINDOW_FULLSCREEN) return false;
+    s->mode = mode;
+    return true;
 }
 
 zcsr_window_mode zcsr_surface_get_mode(const zcsr_surface* s) {
@@ -284,7 +287,11 @@ void zcsr_surface_apply_size_limits(zcsr_surface* s) { (void)s; }
 
 /* ---- Additional platform API stubs (v1: not implemented) ---- */
 bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
-    (void)s; (void)w; (void)h; return false;
+    if (!s || w <= 0 || h <= 0) return false;
+    if (s->mode == ZCSR_WINDOW_FULLSCREEN) return false;
+    s->width = w;
+    s->height = h;
+    return true;
 }
 bool zcsr_surface_set_drag_region(zcsr_surface* s, int x, int y, int w, int h) {
     (void)s; (void)x; (void)y; (void)w; (void)h; return false;
@@ -293,10 +300,12 @@ bool zcsr_surface_move_to_display(zcsr_surface* s, int display_id) {
     (void)s; (void)display_id; return false;
 }
 void zcsr_surface_get_client_size(const zcsr_surface* s, int* w, int* h) {
-    (void)s; (void)w; (void)h;
+    if (!s) return;
+    if (w) *w = s->width;
+    if (h) *h = s->height;
 }
 float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
     (void)s; return 1.0f;
 }
 
-#endif /* defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_LINUX_BACKEND_WAYLAND) */
+#endif /* defined(__linux__) && !defined(__ANDROID__) */

@@ -39,7 +39,6 @@ struct zcsr_surface {
     bool  drag_region_enabled;
     int   drag_x, drag_y, drag_w, drag_h;
 #elif defined(__linux__) && !defined(__ANDROID__)
-#  if defined(ZCSR_LINUX_BACKEND_WAYLAND)
     /* Wayland objects — stored as void* to keep this header free of
      * <wayland-client.h>; platform_wayland.c casts to concrete types. */
     void* wl_display;     /* struct wl_display*    */
@@ -53,20 +52,9 @@ struct zcsr_surface {
     void* wl_keyboard;    /* struct wl_keyboard*   */
     void* wl_pointer;     /* struct wl_pointer*    */
     int   width, height;
+    zcsr_window_mode mode;
     bool  configured;
     bool  close_requested;
-#  else
-    /* X11 legacy backend */
-    void* display;              /* Display* */
-    unsigned long window;       /* Window   */
-    zcsr_window_mode mode;
-    bool  fs_valid;
-    int   fs_x, fs_y, fs_w, fs_h;
-    int   fs_display;
-    unsigned long xsettings_owner;
-    unsigned long xsettings_settings_atom;
-    unsigned long xsettings_selection_atom;
-#  endif
 #elif defined(__APPLE__)
     void* ns_window;
 #else
