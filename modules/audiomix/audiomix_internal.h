@@ -39,29 +39,9 @@
 #elif defined(__linux__) && !defined(__ANDROID__)
 #include <pthread.h>
 #include <time.h>
-#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
-
-/* ALSA dynamic-loader types. */
-typedef struct _snd_pcm snd_pcm_t;
-typedef long snd_pcm_sframes_t;
-typedef int (*zcsr_snd_pcm_open_fn)(snd_pcm_t**, const char*, int, int);
-typedef int (*zcsr_snd_pcm_set_params_fn)(snd_pcm_t*, int, int, unsigned int, unsigned int, int, unsigned int);
-typedef snd_pcm_sframes_t (*zcsr_snd_pcm_writei_fn)(snd_pcm_t*, const void*, unsigned long);
-typedef int (*zcsr_snd_pcm_prepare_fn)(snd_pcm_t*);
-typedef int (*zcsr_snd_pcm_close_fn)(snd_pcm_t*);
-typedef void (*zcsr_snd_config_update_free_global_fn)(void);
-typedef union {
-    void* obj;
-    zcsr_snd_pcm_open_fn open_fn;
-    zcsr_snd_pcm_set_params_fn set_params;
-    zcsr_snd_pcm_writei_fn writei;
-    zcsr_snd_pcm_prepare_fn prepare;
-    zcsr_snd_pcm_close_fn close;
-    zcsr_snd_config_update_free_global_fn config_free_global;
-} zcsr_alsa_sym;
 #endif
 
 struct zcsr_mixer;
@@ -81,20 +61,10 @@ typedef struct {
     void* api;             /* zcsr_aaudio_api */
     bool stream_started;
 #elif defined(__linux__) && !defined(__ANDROID__)
-#  if defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
     /* PipeWire backend stores its full state in an internal struct. */
     void* pipewire_data;     /* zcsr_pw_backend* (defined in audiomix_pipewire.c) */
     int32_t* mix_scratch;    /* int32 accumulation buffer, PERIOD_FRAMES*2 */
     zcsr_mixer* owner;
-#  else
-    /* ALSA dynamic-loader backend. */
-    void* lib;
-    snd_pcm_t* pcm;
-    zcsr_snd_pcm_writei_fn writei;
-    zcsr_snd_pcm_prepare_fn prepare;
-    zcsr_snd_pcm_close_fn close;
-    zcsr_mixer* owner;
-#  endif
 #elif defined(_WIN32)
     IMMDeviceEnumerator* enumerator;
     IAudioClient* audio_client;

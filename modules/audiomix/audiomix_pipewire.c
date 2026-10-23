@@ -17,7 +17,7 @@
  *                   pw_context_disconnect/destroy → pw_thread_loop_stop/destroy
  *   backend_write — lock thread loop, write into SPSC ring, signal process
  */
-#if defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
+#if defined(__linux__) && !defined(__ANDROID__)
 
 #include "audiomix_internal.h"
 
@@ -327,4 +327,4 @@ void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned fr
     pw_thread_loop_unlock(pw->loop);
 }
 
-#endif /* defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_AUDIO_BACKEND_PIPEWIRE) */
+#endif /* defined(__linux__) && !defined(__ANDROID__) */

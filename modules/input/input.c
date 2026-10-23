@@ -138,58 +138,7 @@ static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
     (void)input;
     (void)window;
 }
-#elif defined(__linux__) && !defined(ZCSR_LINUX_BACKEND_WAYLAND)
-#include <time.h>
-#include <X11/Xlib.h>
-
-uint64_t zcsr_clock_now_ns(void) {
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
-    return ((uint64_t)ts.tv_sec * 1000000000ull) + (uint64_t)ts.tv_nsec;
-}
-
-static zcsr_keycode zcsr_map_key(unsigned int keycode) {
-    return (keycode <= 0xffffu) ? (zcsr_keycode)keycode : 0;
-}
-
-static void zcsr_input_platform_init(zcsr_input* input, zcsr_surface* window) {
-    Display* display = (Display*)zcsr_surface_native_display(window);
-    Window xwindow = (Window)(uintptr_t)zcsr_surface_native_handle(window);
-    XWindowAttributes attrs;
-    long mask;
-    if (!input || !display || !xwindow || input->pump_initialized) return;
-    if (!XGetWindowAttributes(display, xwindow, &attrs)) return;
-    mask = attrs.your_event_mask | KeyPressMask | KeyReleaseMask | StructureNotifyMask | ExposureMask;
-    XSelectInput(display, xwindow, mask);
-    input->pump_initialized = true;
-}
-
-static Bool zcsr_input_xevent_matches(Display* display, XEvent* event, XPointer arg) {
-    Window xwindow = (Window)(uintptr_t)arg;
-    (void)display;
-    return event && event->xany.window == xwindow &&
-           (event->type == KeyPress || event->type == KeyRelease || event->type == DestroyNotify);
-}
-
-static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
-    Display* display = (Display*)zcsr_surface_native_display(window);
-    Window xwindow = (Window)(uintptr_t)zcsr_surface_native_handle(window);
-    if (!input || !display || !xwindow) return;
-    for (;;) {
-        XEvent event;
-        if (!XCheckIfEvent(display, &event, zcsr_input_xevent_matches, (XPointer)(uintptr_t)xwindow)) break;
-        if (event.type == KeyPress) {
-            zcsr_input_record_key(input, zcsr_map_key(event.xkey.keycode), ZCSR_KEY_DOWN);
-        } else if (event.type == KeyRelease) {
-            zcsr_input_record_key(input, zcsr_map_key(event.xkey.keycode), ZCSR_KEY_UP);
-        } else if (event.type == DestroyNotify) {
-            input->close_requested = true;
-            zcsr_record_close(window);
-        }
-    }
-}
-
-#elif defined(__linux__) && defined(ZCSR_LINUX_BACKEND_WAYLAND)
+#elif defined(__linux__)
 #include <time.h>
 #include <wayland-client.h>
 #include <string.h>
