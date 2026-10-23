@@ -52,8 +52,6 @@ static bool zcsr_rect_contains(zcsr_rect r, int x, int y) {
     return x >= r.x && y >= r.y && x < (r.x + r.w) && y < (r.y + r.h);
 }
 
-static size_t zcsr_overlay_text_len(const char* text);
-
 zcsr_overlay* zcsr_overlay_create(zcsr_surface* s) {
     zcsr_overlay* overlay = zcsr_overlay_acquire();
     if (!overlay) return 0;
@@ -94,6 +92,13 @@ void zcsr_overlay_set_buttons(zcsr_overlay* o, const zcsr_button* b, int c) {
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+static size_t zcsr_overlay_text_len(const char* text) {
+    size_t n = 0;
+    if (!text) return 0;
+    while (text[n] != '\0') ++n;
+    return n;
+}
+
 static void zcsr_overlay_draw_win32(zcsr_overlay* o, HWND hwnd) {
     HDC dc = GetDC(hwnd);
     RECT rect;
@@ -132,13 +137,6 @@ static void zcsr_overlay_draw_win32(zcsr_overlay* o, HWND hwnd) {
     ReleaseDC(hwnd, dc);
 }
 #endif
-
-static size_t zcsr_overlay_text_len(const char* text) {
-    size_t n = 0;
-    if (!text) return 0;
-    while (text[n] != '\0') ++n;
-    return n;
-}
 
 void zcsr_overlay_render(zcsr_overlay* o) {
     void* handle;
