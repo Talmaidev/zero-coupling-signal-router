@@ -72,3 +72,13 @@ The program plays a 440 Hz tone and waits 30 seconds. During that time, switch
 the default output device in System Settings or plug/unplug headphones to
 observe LOST / CHANGED / RECOVERED events. This is a manual integration test,
 not an automated ctest.
+
+## License
+
+This project is licensed under the **GNU Affero General Public License v3.0** (AGPLv3).
+
+- You may freely use, modify, and distribute this code.
+- Any derivative work (including network/SaaS use) must be open-sourced under the same AGPLv3 license.
+- You may not incorporate this code into a closed-source proprietary product.
+
+See `LICENSE` for the full license text.
