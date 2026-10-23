@@ -4,7 +4,7 @@ Auto-generated from the contract headers in `include/zcsr/` (the single source o
 Every module includes only these contract headers, never another module's source. Each
 `zcsr_foo` is an **opaque handle** + C prototypes = the stable ABI. Regenerate after contract changes.
 
-Contract header count: 22. Module count: 15. Test target count: 17.
+Contract header count: 27. Module count: 17. Test target count: 22.
 
 
 ## Foundation (signal router)
@@ -59,7 +59,7 @@ Agent 3 — Hierarchical State Machine. No global state, no heap. Transitions vi
 
 ### `zcsr/platform.h`
 
-Agent 5 — Platform abstraction. Win32 / X11 / Cocoa, auto-selected at compile time. NO OpenGL/DirectX/Vulkan. Exactly one backend is selected by the compile-time gates. Implementer: modules/platform.
+Agent 5 — Platform abstraction. Win32 / Wayland / Cocoa, auto-selected at compile time. NO OpenGL/DirectX/Vulkan. Exactly one backend is selected by the compile-time gates. Implementer: modules/platform (split per-backend: platform_common.c, platform_win32.c, platform_wayland.c, platform_android.c, platform_cocoa.m).
 
 | Function | Notes |
 |---|---|
@@ -71,7 +71,7 @@ Agent 5 — Platform abstraction. Win32 / X11 / Cocoa, auto-selected at compile 
 
 ### `zcsr/overlay.h`
 
-Agent 4 — Native overlay window. Borderless, transparent, always-on-top. Renders ONLY: text, one bitmap image, up to 3 buttons. GDI/X11/Cocoa only. Target <1ms/frame. Implementer: modules/overlay.
+Agent 4 — Native overlay window. Borderless, transparent, always-on-top. Renders ONLY: text, one bitmap image, up to 3 buttons. GDI/Cocoa (Linux/Wayland stub in v1). Target <1ms/frame. Implementer: modules/overlay.
 
 | Function | Notes |
 |---|---|

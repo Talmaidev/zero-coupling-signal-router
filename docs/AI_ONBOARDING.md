@@ -56,14 +56,20 @@ C11 跨平台 2D 游戏引擎。零耦合模块设计，契约头驱动，无运
 ## 四、当前进度快照
 
 ### 已完成
-- Windows / Linux 主线，ctest 19/19
+- Windows / Linux 主线，ctest 22/22
 - Android Phase 0 + Phase 1（1A–1E），真机验证，tag `android-phase1`
 - A 组平台边缘情况（A6/A1/A2/A4/A5/A3），tag `platform-edge`
 - B 组 macOS AudioUnit 后端，tag `b-group`（代码完整，macOS 未编译验证）
 - glrender Step 1-3：平台条件一致性 → 拆分为 10 文件 → 基础几何 API → Box2D 可选集成
 - **glrender 性能优化闭环（P1-P6 全部处理）**：O1 radix ping-pong、O2 状态外提、O3 orphaning 实验(不采用)、O4 P4/P5 测量(非瓶颈)、O5 纹理 hash 索引；N1-N3 正确性修复；Release 基线建立
 - **方向3 真实点阵字体**：8x8 ASCII 32-126 bitmap font（font8x8_basic Public Domain），替换实心矩形占位；font atlas 纹理 + push_quad_uv 每字符 1 quad；core_init 失败路径资源泄漏修复；Windows text_demo + Android 1C.3 真机双端验证 PASS（GLES 3.2，font_tex 句柄3）
-- 文档整理：docs/ 精简为 API_REFERENCE + 本手册 + GLRENDER_PERF_PLAN，历史归档 docs/archive/
+- **TTF 字体模块**：font + font_atlas + glrender 扩展，stb_truetype vendored
+- **Music 流式播放**：OGG/MP3 + audiomix stream 扩展，stb_vorbis + minimp3 vendored
+- **光标控制 API**：隐藏/自定义/恢复
+- **glrender 画圆 API**：fill_circle
+- **Linux 栈对齐（v1.0）**：删除 X11/GLX/ALSA/evdev 旧栈，默认 Wayland+EGL+PipeWire，6 提交迁移完成
+- **platform.c 按后端拆分**：platform_common.c + platform_win32.c + platform_wayland.c + platform_android.c + platform_cocoa.m
+- 文档整理：docs/ 精简为 API_REFERENCE + 本手册 + GLRENDER_PERF_PLAN + ARCHITECTURE + TESTING，历史归档 docs/archive/
 
 ### 未做 / 暂停
 - 光照（light2d）——暂停中，等用户和群友研究完方案
@@ -74,9 +80,11 @@ C11 跨平台 2D 游戏引擎。零耦合模块设计，契约头驱动，无运
 - 方向4（转向其他）：待评估
 
 ### 关键数据
-- 契约头：`include/zcsr/*.h` 共 24 个
+- 契约头：`include/zcsr/*.h` 共 27 个
+- 模块：17 个
 - 已有 tag：`android-phase1`、`platform-edge`、`b-group`
-- 测试基线：Windows 19/19，Linux 编译通过，Android NDK 编译通过，耦合守卫 PASS
+- 测试基线：Windows 22/22，Linux Wayland+PipeWire 22/22，Android NDK 编译通过，耦合守卫 PASS
+- Linux 默认后端：Wayland 窗口 + EGL 渲染 + PipeWire 音频（X11/ALSA/GLX 已删除）
 
 ---
 
@@ -92,7 +100,7 @@ C11 跨平台 2D 游戏引擎。零耦合模块设计，契约头驱动，无运
 | `glrender_sprite.c` | push_quad/submit/flush/submit_batch/atlas/fill_rect/draw_line/draw_rect | 205 |
 | `glrender_instanced.c` | instanced program/init/draw + **O1 radix ping-pong** + **O2 状态外提(prepared 函数)** + O3 #ifdef 实验开关 | 341 |
 | `glrender_text.c` | 8x8 bitmap font draw_text（ASCII 32-126，font8x8_basic PD，font atlas + push_quad_uv） | ~130 |
-| `glrender_platform_glx.c` | Linux GLX | 118 |
+| `glrender_platform_egl_wayland.c` | Linux Wayland EGL | ~150 |
 | `glrender_platform_egl.c` | Android EGL | 126 |
 | `glrender_platform_wgl.c` | Windows WGL | 125 |
 | `glrender_cocoa.m` | macOS NSOpenGL（未动） | 78 |
