@@ -9,6 +9,10 @@
  * Accumulation: int32 scratch buffer with clamp to int16 range (avoids int16
  * overflow when multiple channels sum).
  *
+ * Zero-heap: all zcsr-owned state is embedded in zcsr_mix_backend.pw (fixed
+ * storage). PipeWire objects (loop/context/core/stream) are created/destroyed
+ * via PipeWire API — those are system-library managed, not zcsr heap.
+ *
  * Lifecycle:
  *   backend_open  — pw_init → pw_thread_loop_new/start → pw_context_new →
  *                   pw_context_connect → pw_stream_new → add_listener →
@@ -27,35 +31,6 @@
 
 #include <errno.h>
 #include <string.h>
-
-/* ------------------------------------------------------------------ */
-/* Internal backend state (stored in zcsr_mix_backend.pipewire_data)  */
-/* ------------------------------------------------------------------ */
-
-typedef struct {
-    struct pw_thread_loop* loop;
-    struct pw_context* context;
-    struct pw_core* core;
-    struct pw_stream* stream;
-    struct spa_hook stream_listener;
-
-    /* SPSC ring: mixer thread writes, PipeWire process thread reads. */
-    struct spa_ringbuffer ring;
-    int32_t* ring_data;          /* bytes = ring_size * sizeof(int32_t) */
-    uint32_t ring_size;          /* in int32_t samples (frames * 2) */
-
-    /* int32 accumulation scratch (one period, stereo). */
-    int32_t* mix_scratch;
-
-    bool stream_connected;
-    bool core_connected;
-} zcsr_pw_backend;
-
-/* Ring size: 4 periods of stereo int32 samples. */
-enum {
-    ZCSR_PW_RING_FRAMES = ZCSR_MIX_PERIOD_FRAMES * 4,
-    ZCSR_PW_RING_SAMPLES = ZCSR_PW_RING_FRAMES * 2,
-};
 
 /* ------------------------------------------------------------------ */
 /* PipeWire stream callbacks                                          */
@@ -113,9 +88,10 @@ static void zcsr_pw_on_stream_process(void* data) {
         filled = size * 2 * sizeof(int32_t);
 
     if (filled > 0) {
+        uint32_t ring_bytes = ZCSR_PW_RING_SAMPLES * sizeof(int32_t);
         spa_ringbuffer_read_data(&pw->ring, pw->ring_data,
-            pw->ring_size * sizeof(int32_t),
-            rindex % (pw->ring_size * sizeof(int32_t)),
+            ring_bytes,
+            rindex % ring_bytes,
             dst, filled);
         rindex += filled;
     }
@@ -162,18 +138,8 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
 
     if (!b) return;
 
-    pw = (zcsr_pw_backend*)calloc(1, sizeof(zcsr_pw_backend));
-    if (!pw) return;
-
-    pw->ring_size = ZCSR_PW_RING_SAMPLES;
-    pw->ring_data = (int32_t*)calloc(pw->ring_size, sizeof(int32_t));
-    pw->mix_scratch = (int32_t*)calloc(ZCSR_MIX_PERIOD_FRAMES * 2, sizeof(int32_t));
-    if (!pw->ring_data || !pw->mix_scratch) {
-        free(pw->ring_data);
-        free(pw->mix_scratch);
-        free(pw);
-        return;
-    }
+    pw = &b->pw;
+    memset(pw, 0, sizeof(*pw));
     spa_ringbuffer_init(&pw->ring);
 
     pw_init(NULL, NULL);
@@ -224,8 +190,6 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
 
     pw_thread_loop_unlock(pw->loop);
 
-    b->pipewire_data = pw;
-    b->mix_scratch = pw->mix_scratch;
     b->opened = true;
     return;
 
@@ -241,16 +205,15 @@ fail_context:
 fail_thread:
     pw_thread_loop_destroy(pw->loop);
 fail_loop:
-    free(pw->ring_data);
-    free(pw->mix_scratch);
-    free(pw);
+    memset(pw, 0, sizeof(*pw));
 }
 
 void zcsr_mix_backend_close(zcsr_mix_backend* b) {
     zcsr_pw_backend* pw;
-    if (!b || !b->pipewire_data) return;
+    if (!b) return;
 
-    pw = (zcsr_pw_backend*)b->pipewire_data;
+    pw = &b->pw;
+    if (!pw->loop) return;
 
     pw_thread_loop_lock(pw->loop);
     if (pw->stream) {
@@ -272,12 +235,7 @@ void zcsr_mix_backend_close(zcsr_mix_backend* b) {
     pw_thread_loop_stop(pw->loop);
     pw_thread_loop_destroy(pw->loop);
 
-    free(pw->ring_data);
-    free(pw->mix_scratch);
-    free(pw);
-
-    b->pipewire_data = NULL;
-    b->mix_scratch = NULL;
+    memset(pw, 0, sizeof(*pw));
     b->opened = false;
 }
 
@@ -285,14 +243,16 @@ void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned fr
     zcsr_pw_backend* pw;
     uint32_t windex, filled, available, i;
     int32_t* scratch;
+    uint32_t ring_bytes;
 
-    if (!b || !b->opened || !b->pipewire_data || !pcm) {
+    if (!b || !b->opened || !pcm) {
         zcsr_mix_sleep_period();
         return;
     }
 
-    pw = (zcsr_pw_backend*)b->pipewire_data;
+    pw = &b->pw;
     scratch = pw->mix_scratch;
+    ring_bytes = ZCSR_PW_RING_SAMPLES * sizeof(int32_t);
 
     /* Convert int16 -> int32 with saturation (input is already clamped,
      * but guard against malformed data). */
@@ -308,16 +268,15 @@ void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned fr
     spa_ringbuffer_get_write_index(&pw->ring, &windex);
     {
         uint32_t rindex;
-        uint32_t ring_bytes = pw->ring_size * sizeof(int32_t);
         spa_ringbuffer_get_read_index(&pw->ring, &rindex);
         filled = windex - rindex;          /* bytes already in ring */
-        available = ring_bytes - filled;   /* bytes free */
+        available = ring_bytes - filled;    /* bytes free */
     }
 
     if (available >= frames * 2 * sizeof(int32_t)) {
         spa_ringbuffer_write_data(&pw->ring, pw->ring_data,
-            pw->ring_size * sizeof(int32_t),
-            windex % (pw->ring_size * sizeof(int32_t)),
+            ring_bytes,
+            windex % ring_bytes,
             scratch, frames * 2 * sizeof(int32_t));
         windex += frames * 2 * sizeof(int32_t);
         spa_ringbuffer_write_update(&pw->ring, windex);
