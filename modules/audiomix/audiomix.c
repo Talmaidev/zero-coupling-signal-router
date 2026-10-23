@@ -4,6 +4,7 @@
  * still runs its logic path so headless CI can validate threading/state.
  */
 #include "zcsr/audio_mix.h"
+#include "audiomix_internal.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -41,30 +42,6 @@ DEFINE_GUID(IID_IMMNotificationClient, 0x7991EEC9, 0x7E89, 0x4D85, 0x83, 0x90, 0
 #else
 #include <pthread.h>
 #include <time.h>
-#endif
-
-#if defined(__linux__) && !defined(__ANDROID__)
-#include <dlfcn.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <unistd.h>
-typedef struct _snd_pcm snd_pcm_t;
-typedef long snd_pcm_sframes_t;
-typedef int (*zcsr_snd_pcm_open_fn)(snd_pcm_t**, const char*, int, int);
-typedef int (*zcsr_snd_pcm_set_params_fn)(snd_pcm_t*, int, int, unsigned int, unsigned int, int, unsigned int);
-typedef snd_pcm_sframes_t (*zcsr_snd_pcm_writei_fn)(snd_pcm_t*, const void*, unsigned long);
-typedef int (*zcsr_snd_pcm_prepare_fn)(snd_pcm_t*);
-typedef int (*zcsr_snd_pcm_close_fn)(snd_pcm_t*);
-typedef void (*zcsr_snd_config_update_free_global_fn)(void);
-typedef union {
-    void* obj;
-    zcsr_snd_pcm_open_fn open_fn;
-    zcsr_snd_pcm_set_params_fn set_params;
-    zcsr_snd_pcm_writei_fn writei;
-    zcsr_snd_pcm_prepare_fn prepare;
-    zcsr_snd_pcm_close_fn close;
-    zcsr_snd_config_update_free_global_fn config_free_global;
-} zcsr_alsa_sym;
 #endif
 
 #if defined(__ANDROID__)
@@ -125,8 +102,6 @@ enum {
     ZCSR_MIX_ID_CAP = 64,
     ZCSR_MIX_CMD_CAP = 128,
     ZCSR_MIX_FINISHED_CAP = 128,
-    ZCSR_MIX_RATE = 44100,
-    ZCSR_MIX_PERIOD_FRAMES = 512,
     ZCSR_MIX_SAMPLE_FRAMES = ZCSR_MIX_RATE * 20
 };
 
@@ -191,50 +166,6 @@ typedef struct {
     bool loop;
     char id[ZCSR_MIX_ID_CAP];
 } zcsr_mix_cmd;
-
-typedef struct {
-#if defined(__ANDROID__)
-    void* lib;
-    AAudioStream* stream;
-    zcsr_mixer* owner;
-    zcsr_aaudio_api api;
-    bool stream_started;
-#elif defined(__linux__) && !defined(__ANDROID__)
-    void* lib;
-    snd_pcm_t* pcm;
-    zcsr_snd_pcm_writei_fn writei;
-    zcsr_snd_pcm_prepare_fn prepare;
-    zcsr_snd_pcm_close_fn close;
-    zcsr_mixer* owner;
-#elif defined(_WIN32)
-    IMMDeviceEnumerator* enumerator;
-    IAudioClient* audio_client;
-    IAudioRenderClient* render_client;
-    HANDLE event;
-    UINT32 buffer_frame_count;
-    bool com_initialized;
-    DWORD retry_after_tick;
-    unsigned timeout_count;
-
-    /* waveOut fallback (used when WASAPI Activate fails, e.g. FxSound virtual driver) */
-    HWAVEOUT wave_out;
-    WAVEHDR wave_hdr;
-    HANDLE wave_event;
-    bool use_waveout;
-    int16_t* wave_buffer;
-    unsigned wave_buffer_frames;
-
-    /* Preserved across backend_open/backend_close structure resets. */
-    zcsr_mixer* owner;
-#elif defined(__APPLE__)
-    AudioComponentInstance output_unit;
-    zcsr_mixer* owner;
-    bool output_unit_initialized;
-    bool output_unit_started;
-    bool default_output_listener_registered;
-#endif
-    bool opened;
-} zcsr_mix_backend;
 
 struct zcsr_mixer {
     bool in_use;
@@ -318,7 +249,7 @@ static bool zcsr_mix_eq(const char* a, const char* b) {
     return a && b && strcmp(a, b) == 0;
 }
 
-static void zcsr_mix_sleep_period(void) {
+void zcsr_mix_sleep_period(void) {
 #if defined(_WIN32)
     Sleep(12);
 #else
@@ -955,7 +886,7 @@ fail:
     return false;
 }
 
-static void zcsr_mix_backend_close(zcsr_mix_backend* b) {
+void zcsr_mix_backend_close(zcsr_mix_backend* b) {
     if (!b) return;
     if (b->stream && b->stream_started && b->api.request_stop)
         (void)b->api.request_stop(b->stream);
@@ -966,12 +897,12 @@ static void zcsr_mix_backend_close(zcsr_mix_backend* b) {
     *b = (zcsr_mix_backend){ 0 };
 }
 
-static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
+void zcsr_mix_backend_open(zcsr_mix_backend* b) {
     /* AAudio stream is opened by zcsr_mix_start before the mixer thread is created. */
     (void)b;
 }
 
-static void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned frames) {
+void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned frames) {
     zcsr_mixer* m;
     unsigned done = 0;
     if (!b || !pcm || !(m = b->owner)) return;
@@ -1003,7 +934,7 @@ static void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsi
     }
 }
 
-#elif defined(__linux__) && !defined(__ANDROID__)
+#elif defined(__linux__) && !defined(__ANDROID__) && !defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
 static void* zcsr_mix_sym(void* lib, const char* name) {
     return lib ? dlsym(lib, name) : 0;
 }
@@ -1014,7 +945,7 @@ static zcsr_alsa_sym zcsr_mix_alsa_sym(void* lib, const char* name) {
     return s;
 }
 
-static void zcsr_mix_backend_close(zcsr_mix_backend* b) {
+void zcsr_mix_backend_close(zcsr_mix_backend* b) {
     zcsr_snd_config_update_free_global_fn config_free_global;
     zcsr_mixer* owner;
 
@@ -1045,7 +976,7 @@ static void zcsr_mix_backend_close(zcsr_mix_backend* b) {
     b->owner = owner;
 }
 
-static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
+void zcsr_mix_backend_open(zcsr_mix_backend* b) {
     zcsr_snd_pcm_open_fn open_fn;
     zcsr_snd_pcm_set_params_fn set_params;
     if (!b) return;
@@ -1065,7 +996,7 @@ static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
     b->opened = true;
 }
 
-static void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned frames) {
+void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned frames) {
     if (!b || !b->opened || !pcm) {
         zcsr_mix_sleep_period();
         return;
@@ -1719,7 +1650,7 @@ static HRESULT STDMETHODCALLTYPE zcsr_mix_notification_on_property_value_changed
     return S_OK;
 }
 
-static void zcsr_mix_backend_close(zcsr_mix_backend* b) {
+void zcsr_mix_backend_close(zcsr_mix_backend* b) {
     zcsr_mixer* owner;
 
     if (!b) return;
@@ -1796,7 +1727,7 @@ static void zcsr_mix_backend_close(zcsr_mix_backend* b) {
     b->owner = owner;
 }
 
-static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
+void zcsr_mix_backend_open(zcsr_mix_backend* b) {
     HRESULT hr;
     HRESULT id_hr;
     IMMDevice* device = NULL;
@@ -2022,7 +1953,7 @@ fail:
     b->retry_after_tick = GetTickCount() + (DWORD)1000;
 }
 
-static void zcsr_mix_backend_write(
+void zcsr_mix_backend_write(
     zcsr_mix_backend* b,
     const int16_t* pcm,
     unsigned frames ) {
@@ -2380,7 +2311,7 @@ static OSStatus zcsr_mix_macos_default_output_changed(
 
 #elif defined(__APPLE__)
 
-static void zcsr_mix_backend_close(zcsr_mix_backend* b) {
+void zcsr_mix_backend_close(zcsr_mix_backend* b) {
     zcsr_mixer* owner;
 
     if (!b) return;
@@ -2473,7 +2404,7 @@ static void zcsr_mix_backend_close(zcsr_mix_backend* b) {
     b->owner = owner;
 }
 
-static void zcsr_mix_backend_open(zcsr_mix_backend* b) {
+void zcsr_mix_backend_open(zcsr_mix_backend* b) {
     zcsr_mixer* owner;
     AudioComponentDescription description;
     AudioComponent component;
@@ -2592,7 +2523,7 @@ fail:
     b->opened = false;
 }
 
-static void zcsr_mix_backend_write(
+void zcsr_mix_backend_write(
     zcsr_mix_backend* b,
     const int16_t* pcm,
     unsigned frames) {
@@ -2657,11 +2588,11 @@ static void zcsr_mix_backend_write(
     }
 }
 
-#else
+#elif !defined(__linux__)
 
-static void zcsr_mix_backend_close(zcsr_mix_backend* b) { if (b) *b = (zcsr_mix_backend){ 0 }; }
-static void zcsr_mix_backend_open(zcsr_mix_backend* b) { if (b) b->opened = false; }
-static void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned frames) {
+void zcsr_mix_backend_close(zcsr_mix_backend* b) { if (b) *b = (zcsr_mix_backend){ 0 }; }
+void zcsr_mix_backend_open(zcsr_mix_backend* b) { if (b) b->opened = false; }
+void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned frames) {
     (void)b; (void)pcm; (void)frames; zcsr_mix_sleep_period();
 }
 #endif
@@ -2716,9 +2647,13 @@ static bool zcsr_mix_backend_close_ex(zcsr_mixer* m) {
            m->backend.stream == NULL &&
            m->backend.lib == NULL;
 #elif defined(__linux__) && !defined(__ANDROID__)
+#  if defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
+    return !m->backend.opened && m->backend.pipewire_data == NULL;
+#  else
     return !m->backend.opened &&
            m->backend.pcm == NULL &&
            m->backend.lib == NULL;
+#  endif
 #elif defined(_WIN32)
     return !m->backend.opened &&
            m->backend.enumerator == NULL &&
