@@ -70,5 +70,10 @@ extern zcsr_surface zcsr_surfaces[ZCSR_SURFACE_POOL];
 zcsr_surface* zcsr_surface_acquire(void);
 void           zcsr_surface_release(zcsr_surface* s);
 void           zcsr_surface_update_dpi_scale(zcsr_surface* s, float new_scale);
+void           zcsr_surface_dispatch_focus(zcsr_surface* s, zcsr_focus_event event);
+
+/* Display helpers shared by backends. */
+void                 zcsr_display_set_name(zcsr_display_info* out, const char* name);
+zcsr_display_info    zcsr_unknown_display(int id);
 
 #endif /* ZCSR_PLATFORM_INTERNAL_H */

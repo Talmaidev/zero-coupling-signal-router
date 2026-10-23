@@ -1,6 +1,7 @@
 /* platform_android.c — Android platform backend. */
 #if defined(__ANDROID__)
 #include "platform_internal.h"
+#include <math.h>
 #include <android/native_window.h>
 
 zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {

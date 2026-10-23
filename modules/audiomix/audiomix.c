@@ -45,55 +45,7 @@ DEFINE_GUID(IID_IMMNotificationClient, 0x7991EEC9, 0x7E89, 0x4D85, 0x83, 0x90, 0
 #endif
 
 #if defined(__ANDROID__)
-typedef aaudio_result_t (*zcsr_aaudio_create_builder_fn)(AAudioStreamBuilder**);
-typedef void (*zcsr_aaudio_builder_direction_fn)(AAudioStreamBuilder*, aaudio_direction_t);
-typedef void (*zcsr_aaudio_builder_format_fn)(AAudioStreamBuilder*, aaudio_format_t);
-typedef void (*zcsr_aaudio_builder_int_fn)(AAudioStreamBuilder*, int32_t);
-typedef void (*zcsr_aaudio_builder_performance_fn)(AAudioStreamBuilder*, aaudio_performance_mode_t);
-typedef void (*zcsr_aaudio_builder_sharing_fn)(AAudioStreamBuilder*, aaudio_sharing_mode_t);
-typedef void (*zcsr_aaudio_data_callback_set_fn)(
-    AAudioStreamBuilder*, AAudioStream_dataCallback, void*);
-/* Optional symbol: missing this setter must not prevent stream creation. */
-typedef void (*zcsr_aaudio_error_callback_set_fn)(
-    AAudioStreamBuilder*, AAudioStream_errorCallback, void*);
-typedef aaudio_result_t (*zcsr_aaudio_open_stream_fn)(AAudioStreamBuilder*, AAudioStream**);
-typedef void (*zcsr_aaudio_delete_builder_fn)(AAudioStreamBuilder*);
-typedef aaudio_result_t (*zcsr_aaudio_stream_action_fn)(AAudioStream*);
-typedef aaudio_result_t (*zcsr_aaudio_close_stream_fn)(AAudioStream*);
-typedef union {
-    void* obj;
-    zcsr_aaudio_create_builder_fn create_builder;
-    zcsr_aaudio_builder_direction_fn set_direction;
-    zcsr_aaudio_builder_format_fn set_format;
-    zcsr_aaudio_builder_int_fn set_channel_count;
-    zcsr_aaudio_builder_int_fn set_sample_rate;
-    zcsr_aaudio_builder_performance_fn set_performance_mode;
-    zcsr_aaudio_builder_sharing_fn set_sharing_mode;
-    zcsr_aaudio_data_callback_set_fn set_data_callback;
-    zcsr_aaudio_error_callback_set_fn set_error_callback;
-    zcsr_aaudio_open_stream_fn open_stream;
-    zcsr_aaudio_delete_builder_fn delete_builder;
-    zcsr_aaudio_stream_action_fn request_start;
-    zcsr_aaudio_stream_action_fn request_stop;
-    zcsr_aaudio_close_stream_fn close_stream;
-} zcsr_aaudio_sym;
-typedef struct {
-    zcsr_aaudio_create_builder_fn create_builder;
-    zcsr_aaudio_builder_direction_fn set_direction;
-    zcsr_aaudio_builder_format_fn set_format;
-    zcsr_aaudio_builder_int_fn set_channel_count;
-    zcsr_aaudio_builder_int_fn set_sample_rate;
-    zcsr_aaudio_builder_performance_fn set_performance_mode;
-    zcsr_aaudio_builder_sharing_fn set_sharing_mode;
-    zcsr_aaudio_data_callback_set_fn set_data_callback;
-    /* Optional; NULL means this platform/runtime lacks error notifications. */
-    zcsr_aaudio_error_callback_set_fn set_error_callback;
-    zcsr_aaudio_open_stream_fn open_stream;
-    zcsr_aaudio_delete_builder_fn delete_builder;
-    zcsr_aaudio_stream_action_fn request_start;
-    zcsr_aaudio_stream_action_fn request_stop;
-    zcsr_aaudio_close_stream_fn close_stream;
-} zcsr_aaudio_api;
+/* AAudio types are defined in audiomix_internal.h */
 #endif
 
 enum {

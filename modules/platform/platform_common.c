@@ -126,17 +126,9 @@ void          zcsr_surface_destroy(zcsr_surface* s)                    { zcsr_su
 void*         zcsr_surface_native_handle(const zcsr_surface* s)        { (void)s; return 0; }
 void*         zcsr_surface_native_display(const zcsr_surface* s)       { (void)s; return 0; }
 void          zcsr_surface_pump_events(zcsr_surface* s)                { (void)s; }
+bool          zcsr_surface_attach_native(zcsr_surface* s, void* nw)   { (void)s; (void)nw; return false; }
+void          zcsr_surface_detach_native(zcsr_surface* s)              { (void)s; }
 #endif
-
-bool zcsr_surface_attach_native(zcsr_surface* s, void* native_window) {
-    (void)s;
-    (void)native_window;
-    return false;
-}
-
-void zcsr_surface_detach_native(zcsr_surface* s) {
-    (void)s;
-}
 
 /* ===================================================================== */
 /* A1 — display enumeration and window management                         */
@@ -162,7 +154,7 @@ void zcsr_display_set_name(zcsr_display_info* out, const char* name) {
 
 /* A conservative "unknown single display" fallback. Width/height/refresh are
  * 0 (unknown), dpi is 1.0; never fabricate a resolution or refresh rate. */
-static zcsr_display_info zcsr_unknown_display(int id) {
+zcsr_display_info zcsr_unknown_display(int id) {
     zcsr_display_info info;
     memset(&info, 0, sizeof(info));
     info.id = id;
