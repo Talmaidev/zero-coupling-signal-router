@@ -30,7 +30,7 @@ and the change is reviewed explicitly.
 | 2     | `modules/signal`  | signal/slot (`void signal(string)` / `bool slot(string)`); compile-time table, no heap |
 | 3     | `modules/hsm`     | hierarchical state machine; transitions via signals; persists to state buffer |
 | 4     | `modules/overlay` | native overlay: text + 1 bitmap + 3 buttons; <1ms/frame         |
-| 5     | `modules/platform`| Win32 / X11 / Cocoa, auto-selected at compile time; no GL/DX/Vulkan |
+| 5     | `modules/platform`| Win32 / Wayland / Cocoa, auto-selected at compile time; no GL/DX/Vulkan |
 | 6     | `integration/`    | wiring, demo, benchmark, validation (architecture/review owned) |
 
 Additional game-core modules live under `modules/input`, `modules/audio`, `modules/render`,
