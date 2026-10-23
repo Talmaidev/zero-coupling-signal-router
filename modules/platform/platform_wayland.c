@@ -205,10 +205,6 @@ void* zcsr_surface_native_display(const zcsr_surface* s) {
     return s ? (void*)s->wl_display : NULL;   /* wl_display* */
 }
 
-bool zcsr_window_close_requested(zcsr_surface* s) {
-    return s && s->close_requested;
-}
-
 /* ================================================================== */
 /* width / height accessors (used by glrender EGL backend)           */
 /* ================================================================== */
@@ -269,5 +265,22 @@ bool zcsr_surface_reset_cursor(zcsr_surface* s) {
 /* Size limits — not enforced in v1 (xdg_toplevel set_min_size/set_max_size
  * is available but requires storing the limits; apply is a no-op stub). */
 void zcsr_surface_apply_size_limits(zcsr_surface* s) { (void)s; }
+
+/* ---- Additional platform API stubs (v1: not implemented) ---- */
+bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
+    (void)s; (void)w; (void)h; return false;
+}
+bool zcsr_surface_set_drag_region(zcsr_surface* s, int x, int y, int w, int h) {
+    (void)s; (void)x; (void)y; (void)w; (void)h; return false;
+}
+bool zcsr_surface_move_to_display(zcsr_surface* s, int display_id) {
+    (void)s; (void)display_id; return false;
+}
+void zcsr_surface_get_client_size(const zcsr_surface* s, int* w, int* h) {
+    (void)s; (void)w; (void)h;
+}
+float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
+    (void)s; return 1.0f;
+}
 
 #endif /* defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_LINUX_BACKEND_WAYLAND) */

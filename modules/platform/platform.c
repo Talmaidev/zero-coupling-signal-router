@@ -620,7 +620,7 @@ void zcsr_surface_pump_events(zcsr_surface* s) {
     if (s && s->in_use && s->ns_window) zcsr_cocoa_window_pump(s->ns_window);
 }
 
-#else
+#elif !defined(__linux__)
 zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) { (void)title; (void)bounds; return 0; }
 void          zcsr_surface_destroy(zcsr_surface* s)                    { zcsr_surface_release(s); }
 void*         zcsr_surface_native_handle(const zcsr_surface* s)        { (void)s; return 0; }
@@ -1856,9 +1856,9 @@ bool zcsr_surface_set_cursor_bitmap(zcsr_surface* s, const unsigned char* rgba, 
                                     int hot_x, int hot_y) { (void)s; (void)rgba; (void)w; (void)h; (void)hot_x; (void)hot_y; return false; }
 bool zcsr_surface_reset_cursor(zcsr_surface* s) { (void)s; return false; }
 
-#else
+#elif !defined(__linux__)
 
-/* Linux X11 / macOS stub — return false (first release no RGBA cursor support). */
+/* macOS stub — return false (first release no RGBA cursor support). */
 bool zcsr_surface_set_cursor_visible(zcsr_surface* s, bool visible) { (void)s; (void)visible; return false; }
 bool zcsr_surface_set_cursor_bitmap(zcsr_surface* s, const unsigned char* rgba, int w, int h,
                                     int hot_x, int hot_y) { (void)s; (void)rgba; (void)w; (void)h; (void)hot_x; (void)hot_y; return false; }
