@@ -168,9 +168,25 @@ if(UNIX AND NOT APPLE)
   target_include_directories(zcsr_render PRIVATE ${X11_INCLUDE_DIR})
   target_link_libraries(zcsr_inputext PUBLIC ${X11_LIBRARIES})
   target_include_directories(zcsr_inputext PRIVATE ${X11_INCLUDE_DIR})
-  find_package(OpenGL REQUIRED)
-  target_link_libraries(zcsr_glrender PUBLIC ${X11_LIBRARIES} OpenGL::GL m)
-  target_include_directories(zcsr_glrender PRIVATE ${X11_INCLUDE_DIR})
+  # glrender: X11/GLX or Wayland/EGL based on ZCSR_LINUX_BACKEND.
+  if(ZCSR_LINUX_BACKEND STREQUAL "wayland")
+    pkg_check_modules(WAYLAND_EGL REQUIRED wayland-egl)
+    pkg_check_modules(EGL REQUIRED egl)
+    target_compile_definitions(zcsr_glrender PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
+    target_include_directories(zcsr_glrender PRIVATE
+        ${CMAKE_BINARY_DIR}/gen
+        ${WAYLAND_CLIENT_INCLUDE_DIRS}
+        ${WAYLAND_EGL_INCLUDE_DIRS}
+        ${EGL_INCLUDE_DIRS})
+    target_link_libraries(zcsr_glrender PUBLIC
+        ${WAYLAND_CLIENT_LIBRARIES}
+        ${WAYLAND_EGL_LIBRARIES}
+        ${EGL_LIBRARIES} m)
+  else()
+    find_package(OpenGL REQUIRED)
+    target_link_libraries(zcsr_glrender PUBLIC ${X11_LIBRARIES} OpenGL::GL m)
+    target_include_directories(zcsr_glrender PRIVATE ${X11_INCLUDE_DIR})
+  endif()
 elseif(WIN32)
   # GL 1.1 entry points (textures, glDrawArrays, ...) live in opengl32; the WGL/DC calls
   # (ChoosePixelFormat / SetPixelFormat / SwapBuffers / GetDC / ReleaseDC) live in gdi32. The
