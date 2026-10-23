@@ -67,7 +67,7 @@ void zcsr_surface_set_dpi_callback(
 /* Forward declaration for platform-specific size-limit application.
  * Defined in the _WIN32 and __linux__ (non-Android) blocks below. */
 #if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
-static void zcsr_surface_apply_size_limits(zcsr_surface* s);
+void zcsr_surface_apply_size_limits(zcsr_surface* s);
 #endif
 
 bool zcsr_surface_set_size_limits(
@@ -366,7 +366,7 @@ static void zcsr_linux_apply_size_hints(zcsr_surface* s) {
     XFree(hints);
 }
 
-static void zcsr_surface_apply_size_limits(zcsr_surface* s) {
+void zcsr_surface_apply_size_limits(zcsr_surface* s) {
     if (!s || !s->display || !s->window) return;
     zcsr_linux_apply_size_hints(s);
 }
@@ -376,7 +376,7 @@ static void zcsr_surface_apply_size_limits(zcsr_surface* s) {
 #include <windows.h>
 #include <stddef.h>
 
-static void zcsr_surface_apply_size_limits(zcsr_surface* s) {
+void zcsr_surface_apply_size_limits(zcsr_surface* s) {
     if (!s || !s->hwnd) return;
     /* Force the system to re-query WM_GETMINMAXINFO with new limits. */
     SetWindowPos((HWND)s->hwnd, NULL, 0, 0, 0, 0,
@@ -672,7 +672,7 @@ void zcsr_surface_detach_native(zcsr_surface* s) {
 #include <string.h>
 
 /* Copy at most cap-1 bytes, always NUL-terminated. */
-static void zcsr_copy_name(char* dst, size_t cap, const char* src) {
+void zcsr_copy_name(char* dst, size_t cap, const char* src) {
     size_t i = 0;
     if (src) {
         for (; i + 1 < cap && src[i] != '\0'; ++i) {
@@ -1735,7 +1735,7 @@ float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
     return 1.0f;
 }
 
-#else
+#elif !defined(__linux__)
 /* ====================== Unknown platform stubs ===================== */
 int zcsr_display_count(void) { return 1; }
 bool zcsr_display_get(int index, zcsr_display_info* out) {

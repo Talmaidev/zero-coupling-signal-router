@@ -268,6 +268,6 @@ bool zcsr_surface_reset_cursor(zcsr_surface* s) {
 
 /* Size limits — not enforced in v1 (xdg_toplevel set_min_size/set_max_size
  * is available but requires storing the limits; apply is a no-op stub). */
-static void zcsr_surface_apply_size_limits(zcsr_surface* s) { (void)s; }
+void zcsr_surface_apply_size_limits(zcsr_surface* s) { (void)s; }
 
 #endif /* defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_LINUX_BACKEND_WAYLAND) */

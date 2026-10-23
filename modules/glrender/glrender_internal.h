@@ -20,9 +20,15 @@
 #  include <GLES3/gl3.h>
 #elif defined(__linux__) && !defined(__ANDROID__)
 #  include "glad/glad.h"   /* pulls in GL/gl.h first ... */
-#  include <GL/glx.h>      /* ... which glx.h builds on */
-#  include <X11/Xlib.h>
-#  include <X11/Xutil.h>
+#  if defined(ZCSR_LINUX_BACKEND_WAYLAND)
+#    include <EGL/egl.h>
+#    include <EGL/eglext.h>
+#    include <wayland-egl.h>
+#  else
+#    include <GL/glx.h>      /* ... which glx.h builds on */
+#    include <X11/Xlib.h>
+#    include <X11/Xutil.h>
+#  endif
 #elif defined(_WIN32)
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
@@ -114,9 +120,16 @@ struct zcsr_gl_renderer {
     EGLContext ctx;
     bool egl_initialized;
 #elif defined(__linux__) && !defined(__ANDROID__)
+#  if defined(ZCSR_LINUX_BACKEND_WAYLAND)
+    EGLDisplay egl_display;
+    EGLSurface egl_surface;
+    EGLContext egl_context;
+    struct wl_egl_window* egl_window;
+#  else
     Display*   display;
     Window     window;
     GLXContext ctx;
+#  endif
 #elif defined(_WIN32)
     HWND  hwnd;
     HDC   hdc;
