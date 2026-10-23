@@ -30,8 +30,12 @@ typedef struct { int x, y, w, h; } zcsr_rect;
 typedef struct zcsr_surface zcsr_surface; /* opaque native top-level surface */
 
 /* Desktop: create the native surface. Android: create a logical handle and attach the
- * system-provided ANativeWindow separately. Returns NULL on failure. */
+ * system-provided ANativeWindow separately. Returns NULL on failure.
+ *
+ * Threading: surface create/destroy is currently only supported from the engine
+ * main thread. These functions are not thread-safe. */
 zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds);
+/* Threading: see zcsr_surface_create. Main thread only; not thread-safe. */
 void          zcsr_surface_destroy(zcsr_surface*);
 void*         zcsr_surface_native_handle(const zcsr_surface*); /* HWND / X11 Window / NSWindow* / ANativeWindow* */
 /* Backend-owned drawing connection, so renderers (overlay) REUSE it instead of opening their
