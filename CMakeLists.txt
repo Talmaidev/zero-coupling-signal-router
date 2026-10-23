@@ -156,6 +156,27 @@ if(UNIX AND NOT APPLE)
     message(FATAL_ERROR "Unknown ZCSR_LINUX_BACKEND: ${ZCSR_LINUX_BACKEND}")
   endif()
 
+  # Linux audio backend selection: alsa (default, dynamic dlopen) or pipewire (opt-in).
+  # During migration (commits 1-4) both are available; commit 5 switches default
+  # to pipewire and removes ALSA.
+  set(ZCSR_AUDIO_BACKEND "alsa" CACHE STRING "Linux audio backend: alsa or pipewire")
+  set_property(CACHE ZCSR_AUDIO_BACKEND PROPERTY STRINGS alsa pipewire)
+
+  if(ZCSR_AUDIO_BACKEND STREQUAL "pipewire")
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(PIPEWIRE REQUIRED libpipewire-0.3)
+    pkg_check_modules(SPA REQUIRED libspa-0.2)
+    target_compile_definitions(zcsr_audiomix PRIVATE ZCSR_AUDIO_BACKEND_PIPEWIRE)
+    target_include_directories(zcsr_audiomix PRIVATE
+        ${PIPEWIRE_INCLUDE_DIRS}
+        ${SPA_INCLUDE_DIRS})
+    target_link_libraries(zcsr_audiomix PUBLIC
+        ${PIPEWIRE_LIBRARIES}
+        ${SPA_LIBRARIES})
+  elseif(NOT ZCSR_AUDIO_BACKEND STREQUAL "alsa")
+    message(FATAL_ERROR "Unknown ZCSR_AUDIO_BACKEND: ${ZCSR_AUDIO_BACKEND}")
+  endif()
+
   target_link_libraries(zcsr_platform PUBLIC m)  # isfinite/fabsf/strtod for A2 DPI parsing
   # NOTE: overlay/input/render/inputext/glrender still use X11 during migration.
   # They will be switched to Wayland in commits 2-4.
@@ -172,6 +193,7 @@ if(UNIX AND NOT APPLE)
   if(ZCSR_LINUX_BACKEND STREQUAL "wayland")
     pkg_check_modules(WAYLAND_EGL REQUIRED wayland-egl)
     pkg_check_modules(EGL REQUIRED egl)
+    find_package(OpenGL REQUIRED)  # OpenGL::OpenGL = libOpenGL.so (GLVND, no X11 dep)
     target_compile_definitions(zcsr_glrender PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
     target_include_directories(zcsr_glrender PRIVATE
         ${CMAKE_BINARY_DIR}/gen
@@ -181,7 +203,8 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(zcsr_glrender PUBLIC
         ${WAYLAND_CLIENT_LIBRARIES}
         ${WAYLAND_EGL_LIBRARIES}
-        ${EGL_LIBRARIES} m)
+        ${EGL_LIBRARIES}
+        OpenGL::OpenGL m)
   else()
     find_package(OpenGL REQUIRED)
     target_link_libraries(zcsr_glrender PUBLIC ${X11_LIBRARIES} OpenGL::GL m)
