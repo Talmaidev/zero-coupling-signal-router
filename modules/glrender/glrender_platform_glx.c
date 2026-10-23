@@ -1,7 +1,7 @@
 /* glrender_platform_glx.c — Linux / GLX backend (OpenGL 3.3 Core via X11).
  * Entire file is guarded so non-Linux builds produce an empty translation unit.
  */
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(__linux__) && !defined(__ANDROID__) && !defined(ZCSR_LINUX_BACKEND_WAYLAND)
 
 #include "glrender_internal.h"
 
