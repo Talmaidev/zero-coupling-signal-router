@@ -59,8 +59,7 @@ bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface) {
             goto fail_init;
     }
 
-    w = zcsr_surface_width(surface);
-    h = zcsr_surface_height(surface);
+    zcsr_surface_get_client_size(surface, &w, &h);
     r->egl_window = wl_egl_window_create(wl_surf, w > 0 ? w : 800, h > 0 ? h : 600);
     if (!r->egl_window) goto fail_init;
 
@@ -128,8 +127,7 @@ bool zcsr_gl_make_current(zcsr_gl_renderer* r) {
 void zcsr_gl_update_size(zcsr_gl_renderer* r) {
     int w, h;
     if (!r || !r->surface) return;
-    w = zcsr_surface_width(r->surface);
-    h = zcsr_surface_height(r->surface);
+    zcsr_surface_get_client_size(r->surface, &w, &h);
     if ((w != r->width || h != r->height) && r->egl_window && w > 0 && h > 0) {
         wl_egl_window_resize(r->egl_window, w, h, 0, 0);
         r->width = w;
