@@ -90,6 +90,30 @@ typedef struct {
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <pipewire/pipewire.h>
+#include <spa/utils/ringbuffer.h>
+
+enum {
+    ZCSR_PW_RING_FRAMES = 2048,   /* 4 periods of 512 frames */
+    ZCSR_PW_RING_SAMPLES = 4096,  /* stereo int32 samples */
+};
+
+/* PipeWire backend state — embedded in zcsr_mix_backend (zero heap). */
+typedef struct {
+    struct pw_thread_loop* loop;
+    struct pw_context* context;
+    struct pw_core* core;
+    struct pw_stream* stream;
+    struct spa_hook stream_listener;
+
+    /* SPSC ring: mixer thread writes, PipeWire process thread reads. */
+    struct spa_ringbuffer ring;
+    int32_t ring_data[ZCSR_PW_RING_SAMPLES];
+    int32_t mix_scratch[1024];  /* PERIOD_FRAMES(512) * 2 channels */
+
+    bool stream_connected;
+    bool core_connected;
+} zcsr_pw_backend;
 #endif
 
 struct zcsr_mixer;
@@ -109,9 +133,8 @@ typedef struct {
     zcsr_aaudio_api api;
     bool stream_started;
 #elif defined(__linux__) && !defined(__ANDROID__)
-    /* PipeWire backend stores its full state in an internal struct. */
-    void* pipewire_data;     /* zcsr_pw_backend* (defined in audiomix_pipewire.c) */
-    int32_t* mix_scratch;    /* int32 accumulation buffer, PERIOD_FRAMES*2 */
+    /* PipeWire backend state embedded directly (zero heap). */
+    zcsr_pw_backend pw;
     zcsr_mixer* owner;
 #elif defined(_WIN32)
     IMMDeviceEnumerator* enumerator;

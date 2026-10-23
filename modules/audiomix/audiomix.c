@@ -2494,7 +2494,7 @@ static bool zcsr_mix_backend_close_ex(zcsr_mixer* m) {
            m->backend.lib == NULL;
 #elif defined(__linux__) && !defined(__ANDROID__)
 #  if defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
-    return !m->backend.opened && m->backend.pipewire_data == NULL;
+    return !m->backend.opened && m->backend.pw.loop == NULL;
 #  else
     return !m->backend.opened &&
            m->backend.pcm == NULL &&
