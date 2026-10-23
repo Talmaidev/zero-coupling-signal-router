@@ -3,6 +3,7 @@
  * native backend headers. State and queues live entirely in the caller buffer.
  */
 #include "zcsr/input_ext.h"
+#include "inputext_internal.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -15,34 +16,11 @@
 #include <xinput.h>
 #endif
 
-struct zcsr_input_ext {
-    zcsr_mouse_state mouse;
-    zcsr_pad_state pads[ZCSR_PAD_MAX];
-    zcsr_surface* surface;
-    bool initialized;
-#if defined(__ANDROID__)
-    zcsr_touch_state touch;
-    zcsr_touch_state touch_pending;
-    int32_t touch_pointer_id;
-    int32_t pad_device_id[ZCSR_PAD_MAX];
-#elif defined(__linux__) && !defined(__ANDROID__)
-    int gamepad_fd[ZCSR_PAD_MAX];
-#elif defined(_WIN32)
-    bool mouse_have_pos;
-    bool mouse_inside;
-    HWND mouse_subclass_hwnd;
-    int wheel_accum;
-    int wheel_remainder;
-    uint8_t mouse_btn_pressed;   /* buttons pressed since last pump (event-driven) */
-    uint8_t mouse_btn_released;  /* buttons released since last pump (event-driven) */
-#endif
-};
-
 #if defined(__ANDROID__)
 #include <android/input.h>
 #include <math.h>
 
-static void zcsr_scan_gamepads(zcsr_input_ext* in) {
+void zcsr_scan_gamepads(zcsr_input_ext* in) {
     int i;
     if (!in) return;
     in->touch_pointer_id = -1;
@@ -52,7 +30,7 @@ static void zcsr_scan_gamepads(zcsr_input_ext* in) {
     }
 }
 
-static void zcsr_close_gamepads(zcsr_input_ext* in) {
+void zcsr_close_gamepads(zcsr_input_ext* in) {
     int i;
     if (!in) return;
     for (i = 0; i < ZCSR_PAD_MAX; ++i) {
@@ -61,9 +39,9 @@ static void zcsr_close_gamepads(zcsr_input_ext* in) {
     }
 }
 
-static void zcsr_select_mouse_events(zcsr_surface* window) { (void)window; }
+void zcsr_select_mouse_events(zcsr_surface* window) { (void)window; }
 
-static void zcsr_pump_mouse(zcsr_input_ext* in, zcsr_surface* window) {
+void zcsr_pump_mouse(zcsr_input_ext* in, zcsr_surface* window) {
     (void)window;
     if (!in) return;
     in->mouse.dx = 0;
@@ -71,7 +49,7 @@ static void zcsr_pump_mouse(zcsr_input_ext* in, zcsr_surface* window) {
     in->mouse.wheel = 0;
 }
 
-static void zcsr_pump_gamepads(zcsr_input_ext* in) { (void)in; }
+void zcsr_pump_gamepads(zcsr_input_ext* in) { (void)in; }
 
 static int zcsr_android_pad_slot(zcsr_input_ext* in, int32_t device_id) {
     int i, free_slot = -1;
@@ -235,7 +213,7 @@ void zcsr_input_ext_android_reset(zcsr_input_ext* in) {
     }
 }
 
-#elif defined(__linux__) && !defined(__ANDROID__)
+#elif defined(__linux__) && !defined(__ANDROID__) && !defined(ZCSR_LINUX_BACKEND_WAYLAND)
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/input.h>
@@ -304,7 +282,7 @@ static bool zcsr_try_open_pad(zcsr_input_ext* in, int slot, int index) {
     return true;
 }
 
-static void zcsr_scan_gamepads(zcsr_input_ext* in) {
+void zcsr_scan_gamepads(zcsr_input_ext* in) {
     int slot = 0;
     if (!in) return;
     for (int i = 0; i < ZCSR_PAD_MAX; ++i) in->gamepad_fd[i] = -1;
@@ -313,7 +291,7 @@ static void zcsr_scan_gamepads(zcsr_input_ext* in) {
     }
 }
 
-static void zcsr_close_gamepads(zcsr_input_ext* in) {
+void zcsr_close_gamepads(zcsr_input_ext* in) {
     if (!in) return;
     for (int i = 0; i < ZCSR_PAD_MAX; ++i) {
         if (in->gamepad_fd[i] >= 0) close(in->gamepad_fd[i]);
@@ -354,7 +332,7 @@ static void zcsr_apply_key(zcsr_pad_state* pad, unsigned code, int value) {
     else if (code == BTN_THUMBR) zcsr_set_button(pad, ZCSR_PAD_RSTICK, down);
 }
 
-static void zcsr_pump_gamepads(zcsr_input_ext* in) {
+void zcsr_pump_gamepads(zcsr_input_ext* in) {
     if (!in) return;
     for (int i = 0; i < ZCSR_PAD_MAX; ++i) {
         int fd = in->gamepad_fd[i];
@@ -377,7 +355,7 @@ static void zcsr_pump_gamepads(zcsr_input_ext* in) {
     }
 }
 
-static void zcsr_select_mouse_events(zcsr_surface* window) {
+void zcsr_select_mouse_events(zcsr_surface* window) {
     Display* display = (Display*)zcsr_surface_native_display(window);
     Window xwindow = (Window)(uintptr_t)zcsr_surface_native_handle(window);
     XWindowAttributes attrs;
@@ -388,7 +366,7 @@ static void zcsr_select_mouse_events(zcsr_surface* window) {
     XSelectInput(display, xwindow, mask);
 }
 
-static void zcsr_pump_mouse(zcsr_input_ext* in, zcsr_surface* window) {
+void zcsr_pump_mouse(zcsr_input_ext* in, zcsr_surface* window) {
     Display* display = (Display*)zcsr_surface_native_display(window);
     Window xwindow = (Window)(uintptr_t)zcsr_surface_native_handle(window);
     XEvent ev;
@@ -470,7 +448,7 @@ static void zcsr_set_button(
     }
 }
 
-static void zcsr_scan_gamepads(zcsr_input_ext* in) {
+void zcsr_scan_gamepads(zcsr_input_ext* in) {
     DWORD i;
 
     if (!in) return;
@@ -491,7 +469,7 @@ static void zcsr_scan_gamepads(zcsr_input_ext* in) {
     }
 }
 
-static void zcsr_close_gamepads(zcsr_input_ext* in) {
+void zcsr_close_gamepads(zcsr_input_ext* in) {
     DWORD i;
 
     if (!in) return;
@@ -501,7 +479,7 @@ static void zcsr_close_gamepads(zcsr_input_ext* in) {
     }
 }
 
-static void zcsr_pump_gamepads(zcsr_input_ext* in) {
+void zcsr_pump_gamepads(zcsr_input_ext* in) {
     DWORD i;
 
     if (!in) return;
@@ -693,7 +671,7 @@ static LRESULT CALLBACK zcsr_input_mouse_subclass_proc(
     return DefSubclassProc(hwnd, message, wparam, lparam);
 }
 
-static void zcsr_select_mouse_events(
+void zcsr_select_mouse_events(
     zcsr_input_ext* in,
     zcsr_surface* window ) {
     HWND hwnd = NULL;
@@ -736,7 +714,7 @@ static void zcsr_select_mouse_events(
     }
 }
 
-static void zcsr_pump_mouse(
+void zcsr_pump_mouse(
     zcsr_input_ext* in,
     zcsr_surface* window ) {
     HWND hwnd;
@@ -833,13 +811,13 @@ static void zcsr_pump_mouse(
     in->mouse_btn_released = 0;
 }
 
-#else
+#elif !defined(__linux__)
 
-static void zcsr_scan_gamepads(zcsr_input_ext* in) { (void)in; }
-static void zcsr_close_gamepads(zcsr_input_ext* in) { (void)in; }
-static void zcsr_select_mouse_events(zcsr_surface* window) { (void)window; }
-static void zcsr_pump_gamepads(zcsr_input_ext* in) { (void)in; }
-static void zcsr_pump_mouse(zcsr_input_ext* in, zcsr_surface* window) {
+void zcsr_scan_gamepads(zcsr_input_ext* in) { (void)in; }
+void zcsr_close_gamepads(zcsr_input_ext* in) { (void)in; }
+void zcsr_select_mouse_events(zcsr_surface* window) { (void)window; }
+void zcsr_pump_gamepads(zcsr_input_ext* in) { (void)in; }
+void zcsr_pump_mouse(zcsr_input_ext* in, zcsr_surface* window) {
     if (in) {
         in->mouse.dx = 0;
         in->mouse.dy = 0;

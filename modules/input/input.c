@@ -138,7 +138,7 @@ static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
     (void)input;
     (void)window;
 }
-#elif defined(__linux__)
+#elif defined(__linux__) && !defined(ZCSR_LINUX_BACKEND_WAYLAND)
 #include <time.h>
 #include <X11/Xlib.h>
 
@@ -189,6 +189,89 @@ static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
     }
 }
 
+#elif defined(__linux__) && defined(ZCSR_LINUX_BACKEND_WAYLAND)
+#include <time.h>
+#include <wayland-client.h>
+#include <string.h>
+#include <unistd.h>
+
+/* Internal accessors defined in platform_wayland.c (declared extern here
+ * to avoid cross-module header include — zero-coupling guard). */
+extern void* zcsr_platform_wayland_seat(const zcsr_surface* s);
+extern bool  zcsr_platform_wayland_take_close(zcsr_surface* s);
+
+uint64_t zcsr_clock_now_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return ((uint64_t)ts.tv_sec * 1000000000ull) + (uint64_t)ts.tv_nsec;
+}
+
+/* evdev keycode -> zcsr_keycode: X11 keycode = evdev + 8, and the X11 backend
+ * uses keycode directly as zcsr_keycode, so match that for Linux consistency. */
+static zcsr_keycode zcsr_map_key(uint32_t evdev_key) {
+    uint32_t x11_keycode = evdev_key + 8u;
+    return (x11_keycode <= 0xffffu) ? (zcsr_keycode)x11_keycode : 0;
+}
+
+/* ---- wl_keyboard listeners ---- */
+static void kb_keymap(void* data, struct wl_keyboard* kb, uint32_t fmt, int32_t fd, uint32_t size) {
+    (void)data; (void)kb; (void)fmt; (void)size;
+    if (fd >= 0) close(fd);
+}
+static void kb_enter(void* data, struct wl_keyboard* kb, uint32_t serial,
+                     struct wl_surface* surf, struct wl_array* keys) {
+    (void)data; (void)kb; (void)serial; (void)surf; (void)keys;
+}
+static void kb_leave(void* data, struct wl_keyboard* kb, uint32_t serial, struct wl_surface* surf) {
+    zcsr_input* input = data;
+    (void)kb; (void)serial; (void)surf;
+    if (input) memset(input->key_down, 0, sizeof(input->key_down));
+}
+static void kb_key(void* data, struct wl_keyboard* kb, uint32_t serial,
+                   uint32_t time, uint32_t key, uint32_t state) {
+    zcsr_input* input = data;
+    (void)kb; (void)serial; (void)time;
+    if (!input) return;
+    zcsr_input_record_key(input, zcsr_map_key(key),
+                          state == WL_KEYBOARD_KEY_STATE_PRESSED ? ZCSR_KEY_DOWN : ZCSR_KEY_UP);
+}
+static void kb_modifiers(void* data, struct wl_keyboard* kb, uint32_t serial,
+                         uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group) {
+    (void)data; (void)kb; (void)serial; (void)depressed; (void)latched; (void)locked; (void)group;
+}
+static void kb_repeat_info(void* data, struct wl_keyboard* kb, int32_t rate, int32_t delay) {
+    (void)data; (void)kb; (void)rate; (void)delay;
+}
+static const struct wl_keyboard_listener kb_listener = {
+    .keymap = kb_keymap, .enter = kb_enter, .leave = kb_leave,
+    .key = kb_key, .modifiers = kb_modifiers, .repeat_info = kb_repeat_info,
+};
+
+static struct wl_keyboard* g_wl_keyboard = NULL;
+
+static void zcsr_input_platform_init(zcsr_input* input, zcsr_surface* window) {
+    struct wl_seat* seat;
+    if (!input || !window || input->pump_initialized) return;
+    seat = (struct wl_seat*)zcsr_platform_wayland_seat(window);
+    if (!seat) return;
+    g_wl_keyboard = wl_seat_get_keyboard(seat);
+    if (g_wl_keyboard) {
+        wl_keyboard_add_listener(g_wl_keyboard, &kb_listener, input);
+        input->pump_initialized = true;
+    }
+}
+
+static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
+    /* Wayland events are dispatched by zcsr_surface_pump_events (platform module).
+     * Keyboard events arrive via wl_keyboard listener callbacks above.
+     * Here we only propagate the close flag from xdg_toplevel::close. */
+    if (!input || !window) return;
+    if (zcsr_platform_wayland_take_close(window)) {
+        input->close_requested = true;
+        zcsr_record_close(window);
+    }
+}
+
 #elif defined(__APPLE__)
 #include <mach/mach_time.h>
 #include "input_cocoa.h" /* same-module C-ABI shim over Cocoa NSEvent key pumping */
@@ -223,7 +306,7 @@ static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
     }
 }
 
-#else
+#elif !defined(__linux__)
 uint64_t zcsr_clock_now_ns(void) {
     return 0;
 }
