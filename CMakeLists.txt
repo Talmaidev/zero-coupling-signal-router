@@ -178,17 +178,31 @@ if(UNIX AND NOT APPLE)
   endif()
 
   target_link_libraries(zcsr_platform PUBLIC m)  # isfinite/fabsf/strtod for A2 DPI parsing
-  # NOTE: overlay/input/render/inputext/glrender still use X11 during migration.
-  # They will be switched to Wayland in commits 2-4.
-  find_package(X11 REQUIRED)
-  target_link_libraries(zcsr_overlay PUBLIC ${X11_LIBRARIES})
-  target_include_directories(zcsr_overlay PRIVATE ${X11_INCLUDE_DIR})
-  target_link_libraries(zcsr_input PUBLIC ${X11_LIBRARIES})  # input pumps X11 key/close events
-  target_include_directories(zcsr_input PRIVATE ${X11_INCLUDE_DIR})
-  target_link_libraries(zcsr_render PUBLIC ${X11_LIBRARIES})
-  target_include_directories(zcsr_render PRIVATE ${X11_INCLUDE_DIR})
-  target_link_libraries(zcsr_inputext PUBLIC ${X11_LIBRARIES})
-  target_include_directories(zcsr_inputext PRIVATE ${X11_INCLUDE_DIR})
+  if(ZCSR_LINUX_BACKEND STREQUAL "wayland")
+    # Wayland mode: input/inputext use wl_keyboard/wl_pointer via wayland-client.
+    target_compile_definitions(zcsr_input PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
+    target_compile_definitions(zcsr_inputext PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
+    target_include_directories(zcsr_input PRIVATE ${CMAKE_BINARY_DIR}/gen ${WAYLAND_CLIENT_INCLUDE_DIRS})
+    target_include_directories(zcsr_inputext PRIVATE ${CMAKE_BINARY_DIR}/gen ${WAYLAND_CLIENT_INCLUDE_DIRS})
+    target_link_libraries(zcsr_input PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
+    target_link_libraries(zcsr_inputext PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
+    # overlay/render still X11 in v1 (will migrate later or remain X11 via XWayland).
+    find_package(X11 REQUIRED)
+    target_link_libraries(zcsr_overlay PUBLIC ${X11_LIBRARIES})
+    target_include_directories(zcsr_overlay PRIVATE ${X11_INCLUDE_DIR})
+    target_link_libraries(zcsr_render PUBLIC ${X11_LIBRARIES})
+    target_include_directories(zcsr_render PRIVATE ${X11_INCLUDE_DIR})
+  else()
+    find_package(X11 REQUIRED)
+    target_link_libraries(zcsr_overlay PUBLIC ${X11_LIBRARIES})
+    target_include_directories(zcsr_overlay PRIVATE ${X11_INCLUDE_DIR})
+    target_link_libraries(zcsr_input PUBLIC ${X11_LIBRARIES})  # input pumps X11 key/close events
+    target_include_directories(zcsr_input PRIVATE ${X11_INCLUDE_DIR})
+    target_link_libraries(zcsr_render PUBLIC ${X11_LIBRARIES})
+    target_include_directories(zcsr_render PRIVATE ${X11_INCLUDE_DIR})
+    target_link_libraries(zcsr_inputext PUBLIC ${X11_LIBRARIES})
+    target_include_directories(zcsr_inputext PRIVATE ${X11_INCLUDE_DIR})
+  endif()
   # glrender: X11/GLX or Wayland/EGL based on ZCSR_LINUX_BACKEND.
   if(ZCSR_LINUX_BACKEND STREQUAL "wayland")
     pkg_check_modules(WAYLAND_EGL REQUIRED wayland-egl)

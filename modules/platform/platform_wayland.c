@@ -206,6 +206,22 @@ void* zcsr_surface_native_display(const zcsr_surface* s) {
 }
 
 /* ================================================================== */
+/* Internal accessors for input / inputext modules (zero-coupling:    */
+/* declared extern in those TUs, no cross-module header include).     */
+/* ================================================================== */
+void* zcsr_platform_wayland_seat(const zcsr_surface* s) {
+    return s ? s->wl_seat : NULL;
+}
+
+bool zcsr_platform_wayland_take_close(zcsr_surface* s) {
+    bool requested;
+    if (!s) return false;
+    requested = s->close_requested;
+    s->close_requested = false;
+    return requested;
+}
+
+/* ================================================================== */
 /* width / height accessors (used by glrender EGL backend)           */
 /* ================================================================== */
 int zcsr_surface_width(const zcsr_surface* s)  { return s ? s->width : 0; }
