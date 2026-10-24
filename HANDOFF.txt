@@ -1,0 +1,74 @@
+# ZCSR Handoff — Next AI Quick Start
+
+## Project Root
+`C:\Users\chen\Documents\GitHub\zero-coupling-signal-router`
+
+## Git Setup (MANDATORY before any git command)
+Git is NOT in PATH. Use GitHub Desktop's bundled git:
+```powershell
+$gitDir = "C:\Users\chen\AppData\Local\GitHubDesktop\app-3.6.7\resources\app\git\cmd"
+$env:GIT_CONFIG_SYSTEM = "$gitDir\etc\gitconfig"   # enables credential manager
+$git = "$gitDir\git.exe"
+```
+- Remote: `https://github.com/Talmaidev/zero-coupling-signal-router` (public)
+- Push token: `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` (Talmaidev)
+- Push URL format: `https://Talmaidev:<token>@github.com/Talmaidev/zero-coupling-signal-router.git`
+- Push reliably fails with default credential manager (Connection reset). Always use the token URL.
+
+## Current State (as of 2026-10-24)
+- Branch: `linux-wayland-pipewire`
+- Latest commit: `bc38cf2` (AGPLv3 license)
+- PR #1: `linux-wayland-pipewire → main` — already open on GitHub
+- Main HEAD: `a930823` (NOT merged yet)
+- License: AGPLv3 (copyleft, network-use trigger, derivative works must stay open)
+
+## Build Commands
+
+### Windows MSVC
+```powershell
+$vcvars = "C:\Program Files\Microsoft Visual Studio\18\Professional\VC\Auxiliary\Build\vcvars64.bat"
+cmd /c "`"$vcvars`" && cd /d C:\Users\chen\Documents\GitHub\zero-coupling-signal-router && cmake -S . -B build-msvc -G Ninja -DZCSR_ENABLE_BOX2D=OFF && cmake --build build-msvc -j"
+ctest --test-dir build-msvc --output-on-failure
+```
+
+### Linux WSL2 (Ubuntu-24.04)
+```bash
+wsl -d Ubuntu-24.04 -- bash -c 'cd /mnt/c/Users/chen/Documents/GitHub/zero-coupling-signal-router && export PATH="/home/user01/android-sdk/cmake/3.22.1/bin:$PATH" && cmake -S . -B build-default -G Ninja -DZCSR_ENABLE_BOX2D=OFF && cmake --build build-default -j$(nproc)'
+# ctest:
+export WAYLAND_DISPLAY=wayland-0
+ctest --test-dir build-default --output-on-failure
+```
+
+### Android NDK
+- NDK path: `/home/user01/android-sdk/ndk/30.0.16248370` (inside WSL)
+- Toolchain file: `build_deps/android-ndk-toolchain.cmake` (in repo)
+
+## Test Status
+- Windows MSVC: 22/22 ctest PASS
+- Linux Wayland+PipeWire: 22/22 ctest PASS
+- Zero-heap check: `nm build-default/libzcsr_audiomix.a | grep -E " U (malloc|calloc|realloc|free)"` → empty PASS
+
+## Key Architecture
+- 27 contract headers in `include/zcsr/` (only thing modules may cross-include)
+- 17 modules in `modules/`
+- Zero heap: no malloc/free in zcsr source (system libs excluded)
+- Zero coupling: `tools/check_no_cross_includes.sh` enforces
+- Platform backends: Win32/WGL/WASAPI, Wayland/EGL/PipeWire, Android/EGL/AAudio, Cocoa/NSOpenGL/AudioUnit
+- Thread model: main thread + dedicated workers (audio/decode/PipeWire control), NO thread pool
+- Surface pool: 4 slots, main-thread-only, not thread-safe
+
+## What Was Done Last
+1. Zero-heap fix: `audiomix_pipewire.c` — calloc/free removed, `zcsr_pw_backend` embedded in `zcsr_mix_backend.pw` (fixed arrays)
+2. Thread docs: `ARCHITECTURE.md` Thread Model section + `platform.h` threading notes
+3. AGPLv3 LICENSE added (root) + README License section
+
+## Temp Scripts
+- `build_linux.sh`, `build_android.sh`, `test_linux.sh` — DELETED (do not recreate unless needed; use inline commands above)
+- `build_deps/` — Box2D source (vendored, MIT)
+
+## Known Gotchas
+- WSL bash output via PowerShell is unreliable (gets swallowed). Write build output to a file in the repo dir, then Read it back.
+- `cmake --build build-msvc` must run inside vcvars64 environment (cmd /c chain).
+- `$LASTEXITCODE` from git push is always 1 even on success (stderr output). Check `git log` or "Everything up-to-date" message instead.
+- Do NOT push to main directly. Work on feature branch, PR merges.
+- Box2D is OFF by default (`-DZCSR_ENABLE_BOX2D=OFF`).
