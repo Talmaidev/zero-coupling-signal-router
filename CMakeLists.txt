@@ -327,6 +327,15 @@ add_executable(test_culling tests/test_culling.c)
 target_link_libraries(test_culling PRIVATE zcsr_culling)
 add_test(NAME culling COMMAND test_culling)
 
+# Light2D v1 math contract (pure CPU: camera projection + segment-vs-prism).
+# camera.c compiles in directly — the module has no lib target yet (it is
+# currently baked into the executables that use it).
+add_executable(test_light2d_math
+    tests/test_light2d_math.c
+    modules/camera/camera.c)
+target_link_libraries(test_light2d_math PRIVATE zcsr_contracts)
+add_test(NAME light2d_math COMMAND test_light2d_math)
+
 add_executable(test_state tests/test_state.c)
 target_link_libraries(test_state PRIVATE zcsr_glrender zcsr_platform)
 add_test(NAME state_sort COMMAND test_state)
