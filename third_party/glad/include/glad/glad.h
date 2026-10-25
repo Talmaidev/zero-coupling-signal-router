@@ -52,6 +52,9 @@ typedef ptrdiff_t GLintptr;
 #ifndef GL_TEXTURE0
 #define GL_TEXTURE0 0x84C0
 #endif
+#ifndef GL_TEXTURE8
+#define GL_TEXTURE8 0x84C8
+#endif
 #ifndef GL_ARRAY_BUFFER
 #define GL_ARRAY_BUFFER 0x8892
 #endif
@@ -84,6 +87,68 @@ typedef ptrdiff_t GLintptr;
 #endif
 #ifndef GL_FRAMEBUFFER_COMPLETE
 #define GL_FRAMEBUFFER_COMPLETE 0x8CD5
+#endif
+/* Light2D extension needs: blend-state queries, MRT attachments, float render targets and the
+ * state pnames saved/restored by the per-frame state stack. Still guarded the same way. */
+#ifndef GL_ACTIVE_TEXTURE
+#define GL_ACTIVE_TEXTURE 0x84E0
+#endif
+#ifndef GL_FUNC_ADD
+#define GL_FUNC_ADD 0x8006
+#endif
+#ifndef GL_MAX
+#define GL_MAX 0x8007
+#endif
+#ifndef GL_RED
+#define GL_RED 0x1903
+#endif
+#ifndef GL_R8
+#define GL_R8 0x8229
+#endif
+#ifndef GL_BLEND_EQUATION_RGB
+#define GL_BLEND_EQUATION_RGB 0x8009
+#endif
+#ifndef GL_BLEND_EQUATION_ALPHA
+#define GL_BLEND_EQUATION_ALPHA 0x883D
+#endif
+#ifndef GL_BLEND_DST_RGB
+#define GL_BLEND_DST_RGB 0x80C8
+#endif
+#ifndef GL_BLEND_SRC_RGB
+#define GL_BLEND_SRC_RGB 0x80C9
+#endif
+#ifndef GL_BLEND_SRC_ALPHA
+#define GL_BLEND_SRC_ALPHA 0x80CA
+#endif
+#ifndef GL_BLEND_DST_ALPHA
+#define GL_BLEND_DST_ALPHA 0x80CB
+#endif
+#ifndef GL_HALF_FLOAT
+#define GL_HALF_FLOAT 0x140B
+#endif
+#ifndef GL_RGBA16F
+#define GL_RGBA16F 0x881A
+#endif
+#ifndef GL_VERTEX_ARRAY_BINDING
+#define GL_VERTEX_ARRAY_BINDING 0x85B5
+#endif
+#ifndef GL_ARRAY_BUFFER_BINDING
+#define GL_ARRAY_BUFFER_BINDING 0x8B8C
+#endif
+#ifndef GL_CURRENT_PROGRAM
+#define GL_CURRENT_PROGRAM 0x8B8D
+#endif
+#ifndef GL_DRAW_FRAMEBUFFER_BINDING
+#define GL_DRAW_FRAMEBUFFER_BINDING 0x8CA6
+#endif
+#ifndef GL_COLOR_ATTACHMENT1
+#define GL_COLOR_ATTACHMENT1 0x8CE1
+#endif
+#ifndef GL_COLOR_ATTACHMENT2
+#define GL_COLOR_ATTACHMENT2 0x8CE2
+#endif
+#ifndef GL_COLOR_ATTACHMENT3
+#define GL_COLOR_ATTACHMENT3 0x8CE3
 #endif
 
 /* Function-pointer typedefs for the GL 2.0+ subset used below (Khronos signatures). */
@@ -124,6 +189,20 @@ typedef void (GLAPIENTRY *PFNGLDELETEFRAMEBUFFERSPROC)(GLsizei n, const GLuint* 
 typedef void (GLAPIENTRY *PFNGLVERTEXATTRIBDIVISORPROC)(GLuint index, GLuint divisor);
 typedef void (GLAPIENTRY *PFNGLDRAWELEMENTSINSTANCEDPROC)(GLenum mode, GLsizei count, GLenum type,
                                                           const void* indices, GLsizei instancecount);
+/* Light2D extension: uniform scalar/vector uploads, separate/equation blend control, MRT draw
+ * buffers and per-attachment clears (Khronos signatures). */
+typedef void (GLAPIENTRY *PFNGLUNIFORM1FPROC)(GLint location, GLfloat v0);
+typedef void (GLAPIENTRY *PFNGLUNIFORM3FPROC)(GLint location, GLfloat v0, GLfloat v1, GLfloat v2);
+typedef void (GLAPIENTRY *PFNGLUNIFORM4FPROC)(GLint location, GLfloat v0, GLfloat v1,
+                                              GLfloat v2, GLfloat v3);
+typedef void (GLAPIENTRY *PFNGLUNIFORM4FVPROC)(GLint location, GLsizei count, const GLfloat* value);
+typedef void (GLAPIENTRY *PFNGLBLENDEQUATIONPROC)(GLenum mode);
+typedef void (GLAPIENTRY *PFNGLBLENDFUNCSEPARATEPROC)(GLenum sfactorRGB, GLenum dfactorRGB,
+                                                      GLenum sfactorAlpha, GLenum dfactorAlpha);
+typedef void (GLAPIENTRY *PFNGLBLENDEQUATIONSEPARATEPROC)(GLenum modeRGB, GLenum modeAlpha);
+typedef void (GLAPIENTRY *PFNGLDRAWBUFFERSPROC)(GLsizei n, const GLenum* bufs);
+typedef void (GLAPIENTRY *PFNGLCLEARBUFFERFVPROC)(GLenum buffer, GLint drawbuffer,
+                                                  const GLfloat* value);
 #endif /* !__APPLE__ */
 
 #ifdef __cplusplus
@@ -168,6 +247,15 @@ extern PFNGLCHECKFRAMEBUFFERSTATUSPROC glad_glCheckFramebufferStatus;
 extern PFNGLDELETEFRAMEBUFFERSPROC glad_glDeleteFramebuffers;
 extern PFNGLVERTEXATTRIBDIVISORPROC glad_glVertexAttribDivisor;
 extern PFNGLDRAWELEMENTSINSTANCEDPROC glad_glDrawElementsInstanced;
+extern PFNGLUNIFORM1FPROC glad_glUniform1f;
+extern PFNGLUNIFORM3FPROC glad_glUniform3f;
+extern PFNGLUNIFORM4FPROC glad_glUniform4f;
+extern PFNGLUNIFORM4FVPROC glad_glUniform4fv;
+extern PFNGLBLENDEQUATIONPROC glad_glBlendEquation;
+extern PFNGLBLENDFUNCSEPARATEPROC glad_glBlendFuncSeparate;
+extern PFNGLBLENDEQUATIONSEPARATEPROC glad_glBlendEquationSeparate;
+extern PFNGLDRAWBUFFERSPROC glad_glDrawBuffers;
+extern PFNGLCLEARBUFFERFVPROC glad_glClearBufferfv;
 
 #ifdef __cplusplus
 }
@@ -209,5 +297,14 @@ extern PFNGLDRAWELEMENTSINSTANCEDPROC glad_glDrawElementsInstanced;
 #define glDeleteFramebuffers glad_glDeleteFramebuffers
 #define glVertexAttribDivisor glad_glVertexAttribDivisor
 #define glDrawElementsInstanced glad_glDrawElementsInstanced
+#define glUniform1f glad_glUniform1f
+#define glUniform3f glad_glUniform3f
+#define glUniform4f glad_glUniform4f
+#define glUniform4fv glad_glUniform4fv
+#define glBlendEquation glad_glBlendEquation
+#define glBlendFuncSeparate glad_glBlendFuncSeparate
+#define glBlendEquationSeparate glad_glBlendEquationSeparate
+#define glDrawBuffers glad_glDrawBuffers
+#define glClearBufferfv glad_glClearBufferfv
 
 #endif /* ZCSR_THIRD_PARTY_GLAD_H */

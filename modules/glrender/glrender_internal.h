@@ -70,6 +70,40 @@ typedef struct {
     size_t count;
 } zcsr_gl_draw;
 
+/* ---- Light2D extension (implementation in glrender_light2d_ext.c) -------------------------- */
+enum {
+    ZCSR_GL_L2D_MAX_TARGETS = 2,      /* MRT slot handles are slot index + 1; 0 = invalid */
+    ZCSR_GL_L2D_MAX_ATTACHMENTS = 4,  /* contract order: Albedo, Position, Normal, Emissive */
+    ZCSR_GL_L2D_STATE_DEPTH = 8,      /* save/restore stack depth */
+    ZCSR_GL_L2D_STATE_TEX_UNITS = 5   /* texture units 4..8 touched by the extension */
+};
+
+/* One MRT G-buffer target: up to 4 color attachments on one FBO. iformat/attachments are
+ * remembered so target_resize can rebuild the same configuration transactionally. */
+typedef struct {
+    unsigned int fbo;
+    unsigned int tex[ZCSR_GL_L2D_MAX_ATTACHMENTS];
+    int w, h;
+    int iformat[ZCSR_GL_L2D_MAX_ATTACHMENTS];
+    int attachments;
+    bool in_use;
+} zcsr_gl_l2d_mrt;
+
+/* Snapshot of every GL state field the extension touches across a frame: bound draw FBO,
+ * viewport, blend (enable + equation + func, RGB and Alpha), current program, active texture
+ * unit and the 2D bindings on units 4..8. draw_quad/draw_fullscreen_quad additionally restore
+ * the VAO and ARRAY_BUFFER bindings locally per call. */
+typedef struct {
+    int fbo;
+    int viewport[4];
+    bool blend;
+    int blend_equation_rgb, blend_equation_alpha;
+    int blend_src_rgb, blend_dst_rgb, blend_src_alpha, blend_dst_alpha;
+    int active_texture;
+    unsigned int textures[ZCSR_GL_L2D_STATE_TEX_UNITS];
+    unsigned int program;
+} zcsr_gl_l2d_state;
+
 /* The opaque renderer, laid out here so both translation units see the same fields. Everything
  * lives in the caller-provided buffer (no malloc); the only platform-varying members are the
  * native context handles at the tail, selected by the same compile-time gates as the platform.h
@@ -106,6 +140,91 @@ struct zcsr_gl_renderer {
     unsigned int inst_vbo;
     int inst_uniform_view;
     int inst_uniform_tex;
+
+    /* ---- Light2D extension (driven by modules/light2d through the public
+     * gl_render_light2d_ext.h contract; state is zeroed by zcsr_gl_create's memset) ---- */
+    zcsr_gl_l2d_mrt l2d_targets[ZCSR_GL_L2D_MAX_TARGETS];
+    int l2d_state_depth;
+    zcsr_gl_l2d_state l2d_state_stack[ZCSR_GL_L2D_STATE_DEPTH];
+    unsigned int l2d_prog_radial;
+    unsigned int l2d_prog_deferred;
+    unsigned int l2d_prog_bloom;
+    unsigned int fsq_vao;
+    unsigned int fsq_vbo;
+    int l2d_radial_loc_view;
+    int l2d_radial_loc_radius;
+    int l2d_radial_loc_decay;
+    int l2d_radial_loc_color;
+    int l2d_bloom_loc_ambient;
+    int l2d_bloom_loc_albedo;
+    int l2d_bloom_loc_emissive;
+    int l2d_bloom_loc_light;
+    int l2d_bloom_loc_lightres;
+    int l2d_deferred_loc_ambient;
+    int l2d_deferred_loc_albedo;
+    int l2d_deferred_loc_position;
+    int l2d_deferred_loc_normal;
+    int l2d_deferred_loc_emissive;
+    int l2d_deferred_loc_shadow;
+    int l2d_deferred_loc_viewsize;
+    int l2d_deferred_loc_lightcount;
+    int l2d_deferred_loc_lightdata;
+    int l2d_deferred_loc_lightcolor;
+    /* Light2d v2 (JoyECS-style): shadow-mask pass + light accumulation buffer. */
+    unsigned int l2d_prog_shadow;
+    unsigned int l2d_prog_light;
+    unsigned int l2d_shadow_fbo;
+    unsigned int l2d_shadow_tex;
+    int l2d_shadow_w, l2d_shadow_h;
+    unsigned int l2d_light_fbo;
+    unsigned int l2d_light_tex;
+    int l2d_light_w, l2d_light_h;
+    int l2d_shadow_loc_light;
+    int l2d_shadow_loc_view;
+    int l2d_shadow_loc_factor;
+    int l2d_shadow_loc_dir;      /* u_dir: parallel extrusion direction */
+    int l2d_shadow_loc_distance; /* u_distance: extrusion length (px) */
+    int l2d_shadow_loc_parallel; /* u_parallel: 1 = parallel light mode */
+    int l2d_shadow_loc_reverse;  /* u_reverse: extrude toward the light */
+    int l2d_light_loc_light;
+    int l2d_light_loc_view;
+    int l2d_light_loc_viewpos;
+    int l2d_light_loc_color;
+    int l2d_light_loc_radius;
+    int l2d_light_loc_decay;
+    int l2d_light_loc_gain;
+    int l2d_light_loc_normal;
+    int l2d_light_loc_shadow;
+    int l2d_light_loc_use_shadow;
+    int l2d_light_loc_normals_on;
+    int l2d_light_loc_dist_scale;
+    int l2d_light_loc_light_z;   /* u_light_z: flame height above the plane */
+    int l2d_light_loc_shadowres; /* u_shadowres: mask size for the 5-tap bias */
+    int l2d_light_loc_position;  /* u_Position sampler (unit 5, world 3D) */
+    int l2d_light_loc_px_per_unit; /* camera zoom: px per world unit */
+    int l2d_light_loc_parallel;  /* u_parallel: 1 = parallel light */
+    int l2d_light_loc_dir3;      /* u_dir3: parallel unit travel direction */
+    float l2d_px_per_unit;       /* active zoom for world->px quad sizing */
+    int l2d_view_w, l2d_view_h;  /* view size for parallel fullscreen quads */
+
+    /* ---- G-buffer geometry submission (gl_render_l2d_geo.h; lazy-init on
+     * first geo_begin, released from zcsr_gl_core_destroy) ---- */
+    unsigned int l2d_geo_prog;
+    unsigned int l2d_geo_vao;
+    unsigned int l2d_geo_vbo;
+    int l2d_geo_loc_cam, l2d_geo_loc_ppu, l2d_geo_loc_k, l2d_geo_loc_view;
+    int l2d_geo_loc_albedo, l2d_geo_loc_emissive;
+    /* textured variant: own program+VAO/VBO, samples the host texture on unit 0 */
+    unsigned int l2d_geo_tex_prog;
+    unsigned int l2d_geo_tex_vao;
+    unsigned int l2d_geo_tex_vbo;
+    int l2d_geo_tex_loc_cam, l2d_geo_tex_loc_ppu, l2d_geo_tex_loc_k, l2d_geo_tex_loc_view;
+    int l2d_geo_tex_loc_tint, l2d_geo_tex_loc_emissive, l2d_geo_tex_loc_sampler;
+    bool l2d_geo_active;
+    GLint l2d_geo_saved_prog, l2d_geo_saved_vao, l2d_geo_saved_vbo;
+    GLint l2d_geo_saved_blend, l2d_geo_saved_depth, l2d_geo_saved_cull;
+    GLint l2d_geo_saved_active_tex, l2d_geo_saved_unit0_tex;
+    int l2d_deferred_loc_light; /* u_Light sampler in the composite fs */
 
     /* ---- native platform context (exactly one branch compiles) ---- */
 #if defined(__ANDROID__)
@@ -152,6 +271,9 @@ unsigned int zcsr_gl_compile(unsigned int type, const char* src);
 
 bool zcsr_gl_core_init(zcsr_gl_renderer* r);
 void zcsr_gl_core_destroy(zcsr_gl_renderer* r);
+/* glrender_l2d_geo.c: releases the lazily-created geometry program/VAO/VBO
+ * (GL context must be current — core destroy runs inside one). */
+void zcsr_gl_l2d_geo_cleanup(zcsr_gl_renderer* r);
 zcsr_gl_tex_entry* zcsr_gl_find_tex(zcsr_gl_renderer* r, zcsr_gl_texture t);
 zcsr_gl_tex_entry* zcsr_gl_free_tex(zcsr_gl_renderer* r);
 
@@ -171,5 +293,11 @@ void zcsr_gl_record_draw(zcsr_gl_renderer* r, unsigned int texture, size_t first
 /* ---- Instanced (program/init/destroy/draw/radix sort/state sort) --------------------------- */
 bool zcsr_gl_instanced_init(zcsr_gl_renderer* r);
 void zcsr_gl_instanced_destroy(zcsr_gl_renderer* r);
+
+/* ---- Light2D extension (MRT G-buffer targets, state stack, radial/deferred programs) ------- */
+/* Called from zcsr_gl_create/destroy only; every public entry point of the extension contract
+ * (include/zcsr/gl_render_light2d_ext.h) is implemented in glrender_light2d_ext.c. */
+bool zcsr_gl_l2d_init(zcsr_gl_renderer* r);
+void zcsr_gl_l2d_destroy(zcsr_gl_renderer* r);
 
 #endif /* ZCSR_GLRENDER_INTERNAL_H */

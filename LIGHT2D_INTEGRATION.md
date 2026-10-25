@@ -1,0 +1,207 @@
+# LIGHT2D_INTEGRATION.md — Light2D 可继承基础层 v1 接入文档
+
+封版版本：Q5（2026-10-26）。范围：平色 + 纹理几何进入 G-buffer、世界坐标契约、
+共享相机高度剪切投影、逐像素射线阴影、延迟合成。
+**这不是完整的游戏 Sprite/Tilemap 管线**—— sprite 管线集成、半透明混合、
+emissive 纹理等明确不支持（见"能力与限制"）。
+
+## 1. 系统目标与渲染阶段
+
+Light2D 是零耦合的 2.5D 延迟光照管线，跑在 glrender 之上：
+
+```
+宿主游戏
+  ├── zcsr_camera（共享相机，camera.h）
+  ├── 场景几何（世界坐标角点 + 法线 + 材质）
+  ▼
+zcsr_light2d_begin_geometry()        ← G-buffer MRT 绑定（引擎内部管理）
+  ├── zcsr_gl_l2d_geo_begin/face/tex_face/end   ← 宿主提交几何（公开 API）
+  ▼
+zcsr_light2d_begin_lighting()        ← 绑回默认目标 + G-buffer 纹理上单元
+  ├── zcsr_light2d_add_light() × N   ← 世界坐标 3D 点光
+  ▼
+zcsr_light2d_end_lighting()          ← 逐像素射线阴影 + N·L + 合成回窗口
+  ▼
+宿主照常画 HUD（默认目标已在绑）
+```
+
+数学核心（Geometry Proof v1，数值用例固化在 testmain 启动时打印）：
+接收点 P 被遮挡 ⟺ 线段 L→P 与遮挡棱柱（footprint × z∈[0,H]）相交。
+遮挡体高度与光高真实参与：光越低/箱越高影子越长（尖端 x = 3·xmax/Lz）。
+
+## 2. 最小调用示例
+
+### 2.1 平色几何（Q3）
+
+```c
+/* 一次性 */ zcsr_light2d_set_camera(ctx, &cam);   /* 存活指针，改字段即生效 */
+/*           zcsr_light2d_add_occluder(ctx, &occ); footprint+height，世界单位 */
+
+/* 每帧 */ zcsr_light2d_begin_geometry(ctx);
+zcsr_gl_l2d_geo_begin(r, &cam);
+zcsr_gl_l2d_geo_face(r, corners_xyz, albedo_rgba, normal_xyz, emissive_rgba);
+/* ... 按远到近提交 ... */
+zcsr_gl_l2d_geo_end(r);
+zcsr_light2d_begin_lighting(ctx);
+zcsr_light2d_add_light(ctx, &light);   /* x,y,世界单位；height=离地高 */
+zcsr_light2d_end_lighting(ctx);        /* 合成自动回窗口 */
+```
+
+### 2.2 纹理几何（Q4）
+
+```c
+zcsr_gl_texture tex = zcsr_gl_texture_create(r, rgba, w, h); /* 宿主所有 */
+/* geo_begin/geo_end 之间： */
+zcsr_gl_l2d_geo_tex_face(r, tex, corners_xyz, uv_st, tint_rgba,
+                         normal_xyz, emissive_rgba);
+/* 宿主在 shutdown 里 zcsr_gl_texture_destroy(r, tex); */
+```
+
+## 3. 调用顺序与生命周期（源码审计结论）
+
+- `l2d_geo_*` 的 program/VAO/VBO 属于 **renderer 内部资源**
+  （`glrender_internal.h` l2d_geo_* 字段），首次 `geo_begin` 惰性创建
+  （glrender_l2d_geo.c:126 门卫），`zcsr_gl_core_destroy` 统一释放
+  （glrender_core.c:281 → cleanup :239）。宿主不创建、不销毁、不持有。
+- `geo_begin` 失败（惰性初始化失败/嵌套 begin/相机参数非法）返回 false，
+  不会置 active；`geo_face/tex_face/geo_end` 在非 active 时一律 false。
+  顺序错误不会破坏 GL 状态。
+- **"只在几何阶段内调用"是文档契约，无机制强制**：geo API 不感知
+  light2d 相位，错相位调用会画进当时绑定的任意 FBO。接入者必须自律。
+- 纹理句柄 `zcsr_gl_texture` 由宿主 `zcsr_gl_texture_create` 创建并销毁；
+  `tex_face` 内部经 `zcsr_gl_find_tex` 解析，**句柄无效或已销毁 → 返回
+  false，无 GL 调用、无崩溃**。geo 不拥有纹理。
+
+## 4. 坐标 / 投影 / 数据契约
+
+- 世界：X 东、Y 南、Z 上；地面 z=0；一切几何、光源、遮挡体用世界单位。
+- **G-buffer Position 必须是世界 XYZ**（VS varying 插值直传）。禁止用
+  `gl_FragCoord` 反推——那会丢 z（本项目曾因此整层方向错误）。
+- 投影（唯一权威 = `zcsr_camera.height_shear`，任何 shader 禁止写死）：
+  ```
+  screen_x = view_w/2 + (x − cam.cx) · ppu
+  screen_y = view_h/2 + ((y − cam.cy) − k·z) · ppu      k = height_shear
+  ```
+  0 = 纯俯视；0.5 = 当前 2.5D 调试观感。这是**游戏剪切投影**，
+  不是真实斜俯视相机（地面 y 无 cosθ 压缩）。视口尺寸取调用时
+  GL viewport（渲染目标为权威）。
+- 面角点：`corners_xyz[12]` 边界顺序 4 点，拆 (0,1,2)+(0,2,3) 两个三角形；
+  v1 只承诺简单凸平面四边形。`normal_xyz` 为世界轴法线。
+- **Normal 编码与实际支持范围**：FS 写 `n*0.5+0.5`；光照 shader 解码只读
+  xy——xy=(0,0) 解码为朝上 (0,0,1)，否则为平面内 (nx,ny,0)。
+  **法线 z 分量被写入但当前不被读取（D2）**：仅支持朝上面与轴对齐立面，
+  斜面会在光照时丢 nz。
+- **Emissive**：线性 RGBA（attachment 3，HDR RGBA16F），调用方提供，
+  v1 不支持纹理发光。
+- **深度**：G-buffer 无深度附件 → painter's order，宿主按远到近提交。
+  排序参考键 `q = k·(y − cy) + z` 升序。`world_z` 单独不是通用深度。
+
+## 5. 纹理 / 颜色 / Alpha 契约
+
+- **UV**：`(u0,v0)` = 子矩形**图像左上**，v 向图像底增长（与 sprite 管线
+  一致；运行时证据：v=0.25 采样到夹具顶行象限=红色，翻转假设会被证伪）。
+  角点 0 对应 (u0,v0)。
+- **颜色空间**：纹理以普通 GL_RGBA 上传（无 GL sRGB 内部格式）→ GPU 不做
+  sRGB 解码；**合成 pass 的 pow(2.2) 是全链路唯一线性化环节**。texel×tint
+  直写 attachment 0，与平色路径同一编码——**禁止在纹理路径再解一次 sRGB**。
+- **tint**：线性 RGBA，与 texel 逐通道相乘。
+- **Alpha-cutout v1（精确规则，源码 glrender_l2d_geo.c:92）**：
+  `if (rgba.a < 0.5) discard;` 其中 `rgba = texel × tint`。
+  阈值 0.5、比较符 `<`、作用于乘后 alpha。被 discard 的片元**不写任何
+  attachment**，先提交的下层表面完整保留；通过阈值的片元按表面数据写入
+  （albedo alpha = texel.a × tint.a）。无混合、无排序。
+- **纹理 alpha ≠ 阴影几何**：遮挡轮廓只由 `zcsr_light2d_add_occluder`
+  契约决定，永不从纹理 alpha 自动生成。
+
+## 6. OpenGL 状态契约（逐项源码核对，行号为 glrender_l2d_geo.c）
+
+| 状态 | begin 保存 | 使用期间 | end 恢复 |
+|---|---|---|---|
+| GL_CURRENT_PROGRAM | :271 | 改为 geo program（face 可切 tex :406） | :428 ✓ |
+| GL_VERTEX_ARRAY_BINDING | :269 | geo VAO（:359/:418） | :429 ✓ |
+| GL_ARRAY_BUFFER_BINDING | :270 | geo VBO（:360/:419） | :430 ✓ |
+| GL_BLEND | :272 | **禁用**（:280） | :434 ✓ |
+| GL_DEPTH_TEST | :273 | **禁用**（:281） | :435 ✓ |
+| GL_CULL_FACE | :274 | **禁用**（:282） | :436 ✓ |
+| GL_ACTIVE_TEXTURE | :276 | 切到 TEXTURE0（:277/:416） | :433 ✓ |
+| TEXTURE0 的 2D 绑定 | :278 | 绑宿主纹理（:417） | :431-432 ✓ |
+| viewport / FBO / draw buffers / scissor | 不触及（viewport 只读 :284） | — | — |
+
+注意两点：(1) 恢复 `GL_ACTIVE_TEXTURE` 与恢复 unit0 绑定是**两个独立动作**，
+:431-432 先在 TEXTURE0 下还原绑定、:433 再还原活动单元——两者都已处理。
+(2) begin 与 end 之间 blend/depth/cull 处于引擎禁用态：**不要在 geo_begin/
+geo_end 之间穿插其他 GL 绘制**；需要画别的，先 geo_end。
+
+## 7. 能力与限制（接入者必读）
+
+**能用的**：平色/纹理凸四边形进 G-buffer；世界 XYZ Position；朝上面 +
+轴对齐立面法线；alpha-cutout 贴片；3D 点光（高度/半径/逐光强度）；
+逐像素高度感知射线阴影；遮挡棱柱（height/distance/reverse/self_shadow/
+auto_disable 属性在 2D 挤出路径，ray 路径用 footprint+height）；bloom 合成；
+LOW 档回退（调试级色块）。
+
+**不能用的（明确限制）**：任意半透明混合与排序；纹理 emissive；斜面法线
+（D2：Normal.z 写而不读）；ray 阴影路径忽略遮挡体 factor/distance/reverse/
+self（G1）；sprite/instance 管线直接进 G-buffer（单输出 shader，需另建
+入口）；自动 alpha→遮挡体；图集/动画/Tilemap。缺陷登记：D1 已修复
+（height_shear 单源化）、D2/D3、G1 仍开放。
+
+## 8. 如何验证接入成功（工程教训）
+
+**退出码 0 + shader 编译成功 ≠ 像素正确。** Q4 曾出现：shader 编译通过、
+无任何 GL 报错、autoquit 退出 0，但 tex program 的相机 uniform 未设置
+（u_ppu=0）→ 四边形塌缩成视口中心的零面积点，屏幕上什么都没有。
+**唯一可靠的验收是读像素**：
+
+```powershell
+# 1) 构建（零警告）
+cmd /c "call \"C:\Program Files\Microsoft Visual Studio\18\Professional\VC\Auxiliary\Build\vcvars64.bat\" && cmake --build build-msvc -j"
+# 2) autoquit 冒烟（proof 4/4 PASS 打印在 stdout）
+build-msvc\zcsr_test.exe autoquit
+# 3) 截图探针（启动 exe → 定窗 → 截帧 → 读指定像素 RGB）
+powershell -ExecutionPolicy Bypass -File tools\verify_light2d_shot.ps1
+```
+
+`tools/verify_light2d_shot.ps1`（自 build-msvc/shot.ps1 固化）在 1280×720
+autoquit 会话（光钉在 (0,0)）截帧后输出指定像素 RGB。预期（tonemap 后的
+实测值，判定方式 = 色相比对而非逐字节相等，标注◎处须为"地板中性色"）：
+
+| 探针（客户坐标） | 场景 | 实测 RGB | 判定 |
+|---|---|---|---|
+| (256,216) | 火苗标记 (0,0,3) | 106,80,31 | 暖色 R>G>B |
+| (126,422) | rug A 左上象限 | 77,25,19 | **红主** |
+| (174,470) | rug A 右下象限 | 43,39,14 | **黄主**（R≈G≫B） |
+| (106,402) | rug A 透明框 | 50,49,49 | ◎地板中性色 |
+| (338,432) | rug B（子矩形 UV 全面 BR） | 43,39,14 | **黄主** |
+| (386,480) | rug B 角点（落在夹具透明框） | 23,24,27 | ◎地板值 |
+| (100,64) | Position 窗格中心 | 183,129,0 | 解码=世界 (4,0,0) |
+| (316,64) | Normal 窗格中心 | 128,128,255 | 朝上法线 |
+
+数字会随光照/gain 调整漂移；**判定标准是色相结构**（红主/黄主/中性地板/
+朝上蓝），不是逐字节相等。autoquit 的阴影数值证明（4 用例 + 尖端公式）
+每次运行打印在 stdout，属自动化断言；上表为人工+脚本探针流程，**不是
+CTests**——CTest 全绿不覆盖纹理视觉路径。
+
+## 9. 真实 Sprite/Tilemap 宿主需要做什么
+
+1. 用 `zcsr_camera` 作为唯一相机（center/ppu/height_shear），几何、光照、
+   鼠标拾取全部从它取（活指针契约）。
+2. 场景对象改为按面提交：`geo_face`（平色）或 `geo_tex_face`（图块），
+   传世界角点 + 轴对齐法线，按 q 键远到近排序。
+3. 遮挡体单独注册（footprint+height），与纹理 alpha 无关。
+4. 光源实体存世界 (x,y,height)，鼠标 = `px_to_world`（地面反投影），
+   高度独立控制。
+5. 帧序固定：begin_geometry → geo 提交 → begin_lighting → add_light →
+   end_lighting → 宿主 HUD。
+6. 合成后如需读 G-buffer（调试窗格等）：`zcsr_light2d_gbuffer_handle` +
+   重绑 `bind_target_textures`；光缓冲在 unit 8 需 `bind_light_texture`。
+7. 已知会被阻塞的需求 → 先查第 7 节限制清单；新能力由真实宿主需求触发，
+   最小适配，不预先扩建。
+
+## 10. 相关文件
+
+契约：`include/zcsr/light2d.h`、`include/zcsr/gl_render_light2d_ext.h`、
+`include/zcsr/gl_render_l2d_geo.h`、`include/zcsr/camera.h`。
+实现：`modules/light2d/light2d.c`、`modules/glrender/glrender_light2d_ext.c`、
+`modules/glrender/glrender_l2d_geo.c`。参考场景：`integration/testmain.c`
+（程序化夹具 + rug A/B）。验收：`tools/verify_light2d_shot.ps1`。

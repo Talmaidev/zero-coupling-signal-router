@@ -134,6 +134,9 @@ static ATOM zcsr_window_class(void) {
         wc.lpfnWndProc = zcsr_wndproc;
         wc.hInstance = GetModuleHandleA(0);
         wc.lpszClassName = "zcsr_overlay_surface";
+        /* NULL hCursor would hide the pointer over the client area in every mode
+         * (the app is then responsible for drawing it); request the standard arrow. */
+        wc.hCursor = LoadCursorA(NULL, IDC_ARROW);
         atom = RegisterClassA(&wc);
     }
     return atom;

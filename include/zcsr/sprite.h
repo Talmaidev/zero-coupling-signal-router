@@ -22,4 +22,42 @@ void               zcsr_sprite_batch_begin(zcsr_sprite_batch*);
 void               zcsr_sprite_batch_submit(zcsr_sprite_batch*, const zcsr_sprite*);
 void               zcsr_sprite_batch_flush(zcsr_sprite_batch*); /* draw all submitted in one batch */
 
+/* ---- GL sprite component (camera-aware; drives glrender, additive) ------------------
+ * NOTE: the instance type is zcsr_sprite_instance — the plain zcsr_sprite name
+ * above already belongs to the software-render contract and must not change.
+ *
+ * glrender's public types are redeclared identically here (C11 permits exact
+ * typedef repeats) so this section stands alone no matter which header a
+ * translation unit includes first; gl_render.h includes this file for
+ * zcsr_rectf. */
+#include <stdint.h>
+#include "camera.h"
+#include "transform.h"
+
+typedef struct zcsr_gl_renderer zcsr_gl_renderer;
+typedef uint32_t zcsr_gl_texture;
+
+/* Shared sprite resource (many entities can reference one asset). */
+typedef struct {
+    zcsr_gl_texture tex;
+    float u0, v0, u1, v1;   /* atlas UV sub-rect; 0,0,1,1 = whole texture */
+    float w, h;             /* world-space size at scale 1 */
+} zcsr_sprite_asset;
+
+/* Sprite instance on an entity. asset == NULL (or tex == 0) draws nothing. */
+typedef struct {
+    const zcsr_sprite_asset* asset;
+    float r, g, b, a;        /* tint; 1,1,1,1 = original */
+} zcsr_sprite_instance;
+
+/* Enqueue one sprite into the renderer's current batch: world size and center
+ * project through the camera, rotation comes from the transform. Enqueue-only
+ * — the caller owns begin/flush. Rotation is applied on the whole-texture
+ * path; atlas sub-rects enqueue without rotation (the atlas queue has no
+ * rotation channel). */
+void zcsr_sprite_draw(zcsr_gl_renderer* r,
+                      const zcsr_camera* cam,
+                      const zcsr_transform* tr,
+                      const zcsr_sprite_instance* sp);
+
 #endif /* ZCSR_SPRITE_H */

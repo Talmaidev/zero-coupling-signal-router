@@ -1,0 +1,17 @@
+=== zcsr window shell ===
+black home screen + category buttons; SETTINGS built in; 1 module(s)
+Ready. window 1280x720, 1 display(s)
+autoquit: enter module 0
+[proof] L=(0,0,3) P=(7,0,0)  occluded: PASS
+[proof] L=(0,0,3) P=(10,0,0) clear: PASS
+[proof] L=(0,0,5) P=(4,0,0)  occluded: PASS
+[proof] L=(0,0,5) P=(7,0,0)  clear: PASS
+[proof] tip(L_z=3)=x9 tip(L_z=5)=x5 (all PASS)
+[light] 2.5D slice init 1280x720 (floor+wall+H2 box+3D light)
+[light] quality -> HIGH
+autoquit: sent SPACE to module
+[light] autoquit frame 30: L=(0.00,0.00,3.00)
+[shell] settings open
+[shell] settings closed (cancelled)
+[light] module shutdown
+=== window shell ended (151 frames) ===

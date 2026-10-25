@@ -4,13 +4,14 @@
  *   glrender_core.c      — shader/program/VAO-VBO-FBO/white-tex/texture CRUD/clear/set_target
  *   glrender_sprite.c    — vertex queue/quad push/draw recording/flush/batch
  *   glrender_instanced.c — instanced program/init/destroy/draw/radix sort/state sort
+ *   glrender_light2d_ext.c — Light2D contract impl (MRT G-buffer, state stack, radial/deferred)
  *   glrender_text.c      — 8x8 bitmap font text (ASCII 32-126)
  *   glrender_platform_*.c — Linux GLX / Android EGL / Windows WGL backends
  *   glrender_cocoa.m     — macOS NSOpenGL backend (unchanged)
  *
- * This file owns zcsr_gl_create/destroy (orchestrate platform → core → instanced init order)
- * and the trivial present/vsync forwarders. Every other public API is implemented directly in
- * the corresponding sub-file above.
+ * This file owns zcsr_gl_create/destroy (orchestrate platform → core → instanced → light2d
+ * init order) and the trivial present/vsync forwarders. Every other public API is implemented
+ * directly in the corresponding sub-file above.
  */
 #include "glrender_internal.h"
 
@@ -47,12 +48,23 @@ zcsr_gl_renderer* zcsr_gl_create(zcsr_surface* surface, void* buffer, size_t byt
         memset(r, 0, sizeof(*r));
         return 0;
     }
+    if (!zcsr_gl_l2d_init(r)) {
+        /* Same rollback shape as the instanced_init failure above: l2d_init may have created
+         * partial GL resources (programs/VAO/VBO/MRT slots) before failing. */
+        zcsr_gl_l2d_destroy(r);
+        zcsr_gl_instanced_destroy(r);
+        zcsr_gl_core_destroy(r);
+        zcsr_gl_platform_destroy(r);
+        memset(r, 0, sizeof(*r));
+        return 0;
+    }
     return r;
 }
 
 void zcsr_gl_destroy(zcsr_gl_renderer* r) {
     if (!r) return;
     zcsr_gl_make_current(r);
+    zcsr_gl_l2d_destroy(r);
     zcsr_gl_instanced_destroy(r);
     zcsr_gl_core_destroy(r);
     zcsr_gl_platform_destroy(r);
