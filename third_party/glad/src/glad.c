@@ -34,6 +34,15 @@ PFNGLCHECKFRAMEBUFFERSTATUSPROC glad_glCheckFramebufferStatus;
 PFNGLDELETEFRAMEBUFFERSPROC glad_glDeleteFramebuffers;
 PFNGLVERTEXATTRIBDIVISORPROC glad_glVertexAttribDivisor;
 PFNGLDRAWELEMENTSINSTANCEDPROC glad_glDrawElementsInstanced;
+PFNGLUNIFORM1FPROC glad_glUniform1f;
+PFNGLUNIFORM3FPROC glad_glUniform3f;
+PFNGLUNIFORM4FPROC glad_glUniform4f;
+PFNGLUNIFORM4FVPROC glad_glUniform4fv;
+PFNGLBLENDEQUATIONPROC glad_glBlendEquation;
+PFNGLBLENDFUNCSEPARATEPROC glad_glBlendFuncSeparate;
+PFNGLBLENDEQUATIONSEPARATEPROC glad_glBlendEquationSeparate;
+PFNGLDRAWBUFFERSPROC glad_glDrawBuffers;
+PFNGLCLEARBUFFERFVPROC glad_glClearBufferfv;
 
 typedef union {
     GLADgenericproc generic;
@@ -71,6 +80,15 @@ typedef union {
     PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers;
     PFNGLVERTEXATTRIBDIVISORPROC glVertexAttribDivisor;
     PFNGLDRAWELEMENTSINSTANCEDPROC glDrawElementsInstanced;
+    PFNGLUNIFORM1FPROC glUniform1f;
+    PFNGLUNIFORM3FPROC glUniform3f;
+    PFNGLUNIFORM4FPROC glUniform4f;
+    PFNGLUNIFORM4FVPROC glUniform4fv;
+    PFNGLBLENDEQUATIONPROC glBlendEquation;
+    PFNGLBLENDFUNCSEPARATEPROC glBlendFuncSeparate;
+    PFNGLBLENDEQUATIONSEPARATEPROC glBlendEquationSeparate;
+    PFNGLDRAWBUFFERSPROC glDrawBuffers;
+    PFNGLCLEARBUFFERFVPROC glClearBufferfv;
 } zcsr_glad_proc;
 
 #define ZCSR_LOAD(name) do { zcsr_glad_proc p; p.generic = load(#name); glad_##name = p.name; if (!glad_##name) return 0; } while (0)
@@ -111,6 +129,15 @@ int gladLoadGLLoader(GLADloadproc load) {
     ZCSR_LOAD(glDeleteFramebuffers);
     ZCSR_LOAD(glVertexAttribDivisor);
     ZCSR_LOAD(glDrawElementsInstanced);
+    ZCSR_LOAD(glUniform1f);
+    ZCSR_LOAD(glUniform3f);
+    ZCSR_LOAD(glUniform4f);
+    ZCSR_LOAD(glUniform4fv);
+    ZCSR_LOAD(glBlendEquation);
+    ZCSR_LOAD(glBlendFuncSeparate);
+    ZCSR_LOAD(glBlendEquationSeparate);
+    ZCSR_LOAD(glDrawBuffers);
+    ZCSR_LOAD(glClearBufferfv);
     return 1;
 }
 
