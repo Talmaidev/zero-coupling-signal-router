@@ -117,13 +117,19 @@ static unsigned int geo_compile(unsigned int type, const char* src) {
     return shader;
 }
 
-/* Lazy one-time resource init: program + VAO/VBO (6 verts, pos+normal). */
+/* Lazy one-time resource init: program + VAO/VBO (6 verts, pos+normal).
+ * BOTH programs must exist for a clean bill; a partial init (flat ok, tex
+ * failed) rolls back so the next begin retries from zero — otherwise
+ * tex_face would silently draw with program 0. */
 static bool geo_ensure(zcsr_gl_renderer* r) {
     unsigned int v;
     unsigned int f;
     unsigned int p;
     int ok = 0;
-    if (r->l2d_geo_prog != 0u) return true;
+    if (r->l2d_geo_prog != 0u && r->l2d_geo_tex_prog != 0u) return true;
+    if (r->l2d_geo_prog != 0u || r->l2d_geo_tex_prog != 0u) {
+        zcsr_gl_l2d_geo_cleanup(r); /* roll back the partial set, retry clean */
+    }
     v = geo_compile(GL_VERTEX_SHADER, geo_vs);
     f = geo_compile(GL_FRAGMENT_SHADER, geo_fs);
     if (!v || !f) {
@@ -173,18 +179,22 @@ static bool geo_ensure(zcsr_gl_renderer* r) {
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
                           (void*)(3 * sizeof(float)));
     glBindVertexArray(0);
-    /* textured variant (both programs up front — one lifecycle, one cleanup) */
+    /* textured variant (both programs up front — one lifecycle, one cleanup).
+     * Any tex-side failure rolls the WHOLE set back (flat included) so the
+     * next begin retries from zero — the ensure gate demands both. */
     v = geo_compile(GL_VERTEX_SHADER, geo_tex_vs);
     f = geo_compile(GL_FRAGMENT_SHADER, geo_tex_fs);
     if (!v || !f) {
         if (v) glDeleteShader(v);
         if (f) glDeleteShader(f);
+        zcsr_gl_l2d_geo_cleanup(r);
         return false;
     }
     p = glCreateProgram();
     if (!p) {
         glDeleteShader(v);
         glDeleteShader(f);
+        zcsr_gl_l2d_geo_cleanup(r);
         return false;
     }
     glAttachShader(p, v);
@@ -202,6 +212,7 @@ static bool geo_ensure(zcsr_gl_renderer* r) {
         log[len] = '\0';
         fprintf(stderr, "l2d_geo tex program link failed: %s\n", log);
         glDeleteProgram(p);
+        zcsr_gl_l2d_geo_cleanup(r);
         return false;
     }
     r->l2d_geo_tex_prog = p;
@@ -376,6 +387,7 @@ bool zcsr_gl_l2d_geo_tex_face(zcsr_gl_renderer* renderer,
     zcsr_gl_tex_entry* e;
 
     if (renderer == NULL || !renderer->l2d_geo_active) return false;
+    if (renderer->l2d_geo_tex_prog == 0u) return false; /* partial init guard */
     if (corners_xyz == NULL || uv_st == NULL || tint_rgba == NULL ||
         normal_xyz == NULL || emissive_rgba == NULL) return false;
     e = zcsr_gl_find_tex(renderer, texture);
