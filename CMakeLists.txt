@@ -65,6 +65,7 @@ zcsr_module(gamelogic) # Game Core Agent 4 — AABB collision + binary save/load
 zcsr_module(glrender)  # Engine-ext Agent 1 — OpenGL 3.3 renderer (vendors glad; coexists w/ software render)
 zcsr_module(audiomix)  # Engine-ext Agent 2 — multi-channel WAV mixer (coexists w/ single-stream audio)
 zcsr_module(inputext)  # Engine-ext Agent 3 — mouse + gamepad (additive to keyboard input)
+zcsr_module(light2d)   # Light2D additive lighting (no GL calls; drives glrender via gl_render_light2d_ext.h)
 zcsr_module(image)     # Engine-ext Agent — decode→RGBA32 + offline CPU processing (separated from rendering; vendors stb_image)
 zcsr_module(atlas)     # Texture atlas shelf-packing + region table (pure logic, no GL)
 zcsr_module(culling)   # Viewport culling: linear + uniform grid (pure logic, no GL)
@@ -337,6 +338,37 @@ target_link_libraries(zcsr_glrender_worst_bench PRIVATE zcsr_glrender zcsr_platf
 # Text rendering demo (real 8x8 bitmap font verification). Not a ctest.
 add_executable(zcsr_text_demo integration/text_demo.c)
 target_link_libraries(zcsr_text_demo PRIVATE zcsr_glrender zcsr_platform)
+
+# Light2D demo (LOW forward-additive vs HIGH deferred G-buffer; SPACE toggles). Not a ctest.
+# The demo's tiny albedo-rect program reuses the vendored glad pointers zcsr_gl_create loads.
+add_executable(zcsr_light2d_demo integration/light2d_demo.c)
+target_include_directories(zcsr_light2d_demo PRIVATE ${CMAKE_SOURCE_DIR}/third_party/glad/include)
+target_link_libraries(zcsr_light2d_demo PRIVATE
+    zcsr_light2d zcsr_glrender zcsr_platform zcsr_input)
+# 2D world-space infrastructure (camera + sprite component), compiled straight
+# into the executables for now — no zcsr_<name> lib target yet.
+target_sources(zcsr_light2d_demo PRIVATE
+    ${CMAKE_SOURCE_DIR}/modules/camera/camera.c
+    ${CMAKE_SOURCE_DIR}/modules/sprite/sprite.c)
+
+# Integration skeleton: window.c/h is the standalone shell (black home screen with
+# category buttons + built-in settings overlay; standard contract id pending), and
+# testmain.c is the entry that plugs test modules (light2d) into it.
+# "autoquit" argument runs a headless self-test. Interactive, not a ctest.
+add_executable(zcsr_test
+    integration/testmain.c
+    integration/window.c
+    integration/modern_settings_ui.c)
+target_include_directories(zcsr_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/integration
+    ${CMAKE_SOURCE_DIR}/third_party/glad/include)
+target_link_libraries(zcsr_test PRIVATE
+    zcsr_light2d zcsr_glrender zcsr_platform zcsr_input zcsr_inputext)
+# 2D world-space infrastructure (camera + sprite component), compiled straight
+# into the executables for now — no zcsr_<name> lib target yet.
+target_sources(zcsr_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/modules/camera/camera.c
+    ${CMAKE_SOURCE_DIR}/modules/sprite/sprite.c)
 
 # Window/platform API functional test (modes, resize, multi-display, DPI, callbacks). Not a ctest.
 add_executable(zcsr_window_demo integration/demo_window.c)

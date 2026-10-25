@@ -277,6 +277,8 @@ void zcsr_gl_core_destroy(zcsr_gl_renderer* r) {
     if (r->vbo) glDeleteBuffers(1, &r->vbo);
     if (r->vao) glDeleteVertexArrays(1, &r->vao);
     if (r->program) glDeleteProgram(r->program);
+    /* lazily-created light2d geometry submission resources (no-op if unused) */
+    zcsr_gl_l2d_geo_cleanup(r);
 }
 
 /* ===========================================================================================
