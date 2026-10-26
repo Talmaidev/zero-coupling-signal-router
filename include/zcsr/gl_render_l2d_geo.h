@@ -20,12 +20,18 @@
  *   corners_xyz  4 world-space corners in boundary order, simple, convex,
  *                planar. Each is a real (x,y,z); vertical faces keep their
  *                per-pixel world z via interpolation.
- *   albedo_rgba  linear surface color (written to attachment 0).
+ *   albedo_rgba  surface color in the SAME display (gamma) encoding as the
+ *                texels: written straight to attachment 0 (RGBA8) and
+ *                linearized once by the deferred composite's pow(2.2).
+ *                NOT a linear-space value; >1 is clamped by RGBA8.
  *   normal_xyz   unit world normal of the whole face. v1 supports the
  *                axis-aligned classes the light shader decodes: up faces
  *                (0,0,1) and in-plane wall normals; other directions lose
  *                their z component at light time (existing pipeline limit).
- *   emissive_rgba linear self-emission (attachment 3, HDR).
+ *   emissive_rgba linear HDR self-emission (attachment 3, RGBA16F). NOTE:
+ *                the v1 composite multiplies (emissive + light + ambient)
+ *                by albedo_lin, so emissive itself is albedo-tinted rather
+ *                than an independent additive term.
  *   Internally one quad = two triangles.
  *
  * ORDERING CONTRACT (no depth attachment on the G-buffer): the host is
@@ -66,9 +72,13 @@ bool zcsr_gl_l2d_geo_face(zcsr_gl_renderer* renderer,
  *                  matches the sprite pipeline: (u0,v0) = image TOP-LEFT of
  *                  the requested sub-rectangle, v grows toward the image
  *                  bottom; corner 0 of the quad receives (u0,v0).
- *   tint_rgba      linear tint multiplied with the sampled texel.
+ *   tint_rgba      display-gamma tint multiplied with the sampled texel in
+ *                  the SAME non-linear space; the product is written to
+ *                  attachment 0 (RGBA8) and linearized once by the
+ *                  composite pow(2.2). >1 is clamped by RGBA8.
  *   normal_xyz     face world normal (same axis-aligned classes as flat).
- *   emissive_rgba  linear self-emission (NOT textured in v1).
+ *   emissive_rgba  linear HDR self-emission (NOT textured in v1; albedo-tinted
+ *                  at composite time, not independently additive).
  * COLOR/ALPHA CONTRACT: textures are stored as plain GL_RGBA (no GPU sRGB
  * decode); the deferred composite's pow(2.2) is the single linearization
  * step, so the sampled texel is written to attachment 0 exactly like the
