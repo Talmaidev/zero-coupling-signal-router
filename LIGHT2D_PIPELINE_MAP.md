@@ -67,7 +67,8 @@
 ## 4. 管线 D：纹理几何输入
 
 - 契约：`zcsr_gl_l2d_geo_tex_face`（同头文件；UV v0=图像顶、cutout<0.5、
-  tint 线性、emissive 不走纹理——细节见 INTEGRATION §5）。
+  tint 与 texel 同在显示域相乘后直写 RGBA8 G0、emissive 不走纹理——
+  细节见 INTEGRATION §5 与 MATH_MODEL §3.2）。
 - 实现：第二个 program（共享剪切 VS+uv attribute；FS `texel*tint`，
   :92 `if (rgba.a < 0.5) discard;`），独立 VAO/VBO（8-float 顶点），
   纹理绑 unit 0（begin 存 GL_ACTIVE_TEXTURE+unit0 绑定，end 成对恢复

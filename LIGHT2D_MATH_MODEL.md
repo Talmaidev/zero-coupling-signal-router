@@ -82,9 +82,24 @@ UV：(u0,v0)=子矩形图像左上，v 向图像底（与 sprite 管线一致；
 **全链路唯一线性化 = 合成 FS 的 `A_lin = pow(max(A_stored,0), 2.2)`**
 （ext.c deferred/bloom FS）。因此 texel 直写 G0（同平色路径编码），
 纹理路径禁止二次解码。输出：`C_out = (C_lin/(C_lin+1))^(1/2.2)`，
-tonemap 与 gamma 在同一合成 FS。HDR 输入允许 >1（emissive/tint/光色），
-tonemap 收敛。完整 sRGB 工作流迁移 = PROPOSED（需单独立项规划三阶段：
-纹理解码/光照域/输出编码），本次不改。
+tonemap 与 gamma 在同一合成 FS。
+
+**tint / albedo 的实际乘法空间（合并前审计修正）**：geo FS 在
+显示域直接做 `rgba = texture(UV) ⊙ tint` 后写入 G0（RGBA8），
+合成时才整体 `pow(2.2)`。因此 tint 与平色 albedo_rgba 实际是
+**显示域（gamma）乘子**，与纹理想素同空间相乘——**不是线性空间
+乘法**。公开头文件早期注释中的"linear tint / linear albedo"措辞
+不准确，v1.1 起改为"显示域值，直写 G0，合成时统一线性化"。
+数学推论：`(texel·tint)^2.2 = texel^2.2 · tint^2.2`，tint 本身
+也被 gamma 化；要得到真正的线性 tint 需在 geo FS 内先对 texel
+`pow(1/2.2)`、乘线性 tint、再由合成 FS 不重复线性化——这是
+PROPOSED 的 sRGB 工作流迁移，**本次不改**。
+
+**HDR >1 的适用范围**：G0 是 RGBA8，tint/albedo 乘积 >1 会被
+归一化格式截断到 1.0，**G0 路径不能承载 HDR Albedo**。
+HDR >1 仅在 RGBA16F 附件上保留：G3 Emissive 与光缓冲（light
+accumulation RGBA16F）。完整 sRGB 工作流迁移 = PROPOSED（需单独
+立项规划三阶段：纹理解码/光照域/输出编码），本次不改。
 
 ## 4. 光照模型
 
@@ -111,12 +126,19 @@ PROPOSED 候选（未来统一用，当前不用）：`a = max(0,1−r²)²`—�
 ### 4.4 累积与合成 【CURRENT】
 每光一次 ADD quad（平行光=全屏）：贡献 = `color.rgb × a × d × V × gain`
 （gain=全局 options.gain；逐光强度=a 已乘进 color——light2d.c draw_high）。
-合成：
+合成（ext.c deferred/bloom FS 直查）：
 ```
 C_lin = albedo_lin ⊙ (E_lin + Σ light_lin + vec3(0.03))    （环境光 0.03 固定）
 C_out = ( C_lin/(C_lin+1) )^(1/2.2)
 ```
-半透明混合 = UNSUPPORTED（无逐层混合项）。
+**Emissive 当前语义（合并前审计明确）**：E_lin 在合成中**先与光照/
+环境光相加，再被 albedo_lin 逐通道调制**——即发光面的颜色也受其
+albedo 染色。这**不是**教科书式的独立加性自发光
+`C_lin = albedo_lin ⊙ (Σ light_lin + amb) + E_lin`；后者在当前
+管线中不成立（Bloom 路径同样把 bloom9(E) 放入 albedo_lin 的括号内）。
+该行为由源码确定，v1 不修改；若未来需要独立加性自发光，应作为
+PROPOSED 单独立项并重新跑合成回归。半透明混合 = UNSUPPORTED
+（无逐层混合项）。
 
 ### 4.5 平行光 【已声明未确认（代码在，无运行证据）】
 方向 = 归一化 (dir_x,dir_y,dir_z)（默认语义对齐参考引擎 (0,−1,1).unit）；
@@ -131,13 +153,17 @@ C_out = ( C_lin/(C_lin+1) )^(1/2.2)
 某轴 |D_j|<1e-6 时退化为原点在 slab 内判定）。数值边界：端点 ε 使
 光点/接收面不自遮挡；退化线段（P=L_p）判定不受遮挡。
 宿主镜像与自动化：testmain `seg_blocked`（autoquit 打印 4 个密封用例）
-+ tests/test_light2d_math.c（4 用例 + 平行射线 + 影子尖端 x=3·xmax/Lz
-边界 + 退化段，全部确定性断言）。
++ tests/test_light2d_math.c（4 密封用例 + 平行射线 + 影子尖端公式
+x_tip = xmax·Lz/(Lz−H) 含 Lz=3/5 双光高与 near-H 长影边界 + 退化段，
+全部确定性断言）。
 
 ### 5.2 遮挡体参数语义 【CURRENT + G1 裁决】
-- ray 路径消费：footprint AABB + height（棱柱高度真实参与：光越低影越长，
-  尖端 `x_tip = max_x · l_z / (l_z − 0)` 对地面接收点；L_z=3→x=9、
-  L_z=5→x=5，运行+ctest 双证）。
+- ray 路径消费：footprint AABB + height（棱柱高度真实参与：光越低影越长。
+  对地面接收点（z=0），光线越过遮挡体远边顶棱 (x_max,0,H) 后落地的
+  尖端由相似三角形给出：
+  `x_tip = x_max · L_z / (L_z − H)`，适用条件 `L_z > H`。
+  数值：H=2、x_max=3 时，L_z=3 → x_tip=9、L_z=5 → x_tip=5、
+  L_z→H⁺ → x_tip→∞。ctest 双光高 + near-H 边界断言。）
 - `factor/distance/reverse/self_shadow`：2D 挤出掩码路径消费
   （浓度/有限带/反向/自阴影填充）；ray 路径不消费（硬 1.0/无限楔）——
   **契约已声明**（light2d.h ray_shadows 注释、INTEGRATION §7），

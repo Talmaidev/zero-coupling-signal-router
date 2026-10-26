@@ -67,7 +67,7 @@ void zcsr_gl_l2d_target_destroy(zcsr_gl_renderer* renderer,
  * with xyz in WORLD 3D coordinates (x,y ground plane, z elevation; painter
  * converts its pixel-space geometry through the camera); location 2 Normal
  * RGBA8 with xy encoded from [-1,+1] to [0,1] ((0,0) decodes to the UP
- * normal, other values to in-plane wall normals); location 3 Emissive RGBA8. */
+ * normal, other values to in-plane wall normals); location 3 Emissive RGBA16F. */
 bool zcsr_gl_l2d_gbuffer_begin(zcsr_gl_renderer* renderer,
                                zcsr_gl_l2d_target target,
                                int width,

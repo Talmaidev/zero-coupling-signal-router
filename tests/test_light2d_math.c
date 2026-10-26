@@ -174,13 +174,25 @@ int main(void)
           "parallel-ray through box");
     CHECK(seg_blocked(0, 3, 1, 7, 3, 1, 2, -0.5f, 3, 0.5f, 2) == 0,
           "parallel-ray outside y slab");
-    /* ray below the light along +x at ground level clears the box only past
-     * the shadow tip (tip x = max_x * lz / (lz - 0) ... geometric check via
-     * the sealed tip law: L_z=3 -> 9) */
+    /* Shadow-tip law (similar triangles): light at (0,0,Lz), occluder far edge
+     * at x=xmax=3 with height H=2, ground receiver at z=0. The ray over the
+     * occluder's top edge (xmax,0,H) hits the ground at
+     *     x_tip = xmax * Lz / (Lz - H)      (Lz > H)
+     * Lz=3 -> x_tip = 3*3/(3-2) = 9
+     * Lz=5 -> x_tip = 3*5/(5-2) = 5
+     * A ground receiver at y=0 is blocked while x < x_tip and clear past it. */
     CHECK(seg_blocked(0, 0, 3, 8.5f, 0, 0, 2, -0.5f, 3, 0.5f, 2) == 1,
-          "inside tip x=9");
+          "inside tip x=9 (Lz=3)");
     CHECK(seg_blocked(0, 0, 3, 9.5f, 0, 0, 2, -0.5f, 3, 0.5f, 2) == 0,
-          "outside tip x=9");
+          "outside tip x=9 (Lz=3)");
+    CHECK(seg_blocked(0, 0, 5, 4.5f, 0, 0, 2, -0.5f, 3, 0.5f, 2) == 1,
+          "inside tip x=5 (Lz=5)");
+    CHECK(seg_blocked(0, 0, 5, 5.5f, 0, 0, 2, -0.5f, 3, 0.5f, 2) == 0,
+          "outside tip x=5 (Lz=5)");
+    /* Boundary: Lz just above H -> tip far away, so a receiver at x=10 is
+     * still inside the shadow (x_tip = 3*2.1/0.1 = 63). */
+    CHECK(seg_blocked(0, 0, 2.1f, 10.0f, 0, 0, 2, -0.5f, 3, 0.5f, 2) == 1,
+          "near-H light casts long shadow");
     /* receiver exactly at the light position: segment degenerates -> clear */
     CHECK(seg_blocked(0, 0, 3, 0, 0, 3, 2, -0.5f, 3, 0.5f, 2) == 0,
           "degenerate segment clear");

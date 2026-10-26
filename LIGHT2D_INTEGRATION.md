@@ -30,7 +30,9 @@ zcsr_light2d_end_lighting()          ← 逐像素射线阴影 + N·L + 合成�
 
 数学核心（Geometry Proof v1，数值用例固化在 testmain 启动时打印）：
 接收点 P 被遮挡 ⟺ 线段 L→P 与遮挡棱柱（footprint × z∈[0,H]）相交。
-遮挡体高度与光高真实参与：光越低/箱越高影子越长（尖端 x = 3·xmax/Lz）。
+遮挡体高度与光高真实参与：光越低/箱越高影子越长。地面（z=0）接收点
+的阴影尖端由相似三角形给出：`x_tip = x_max · L_z / (L_z − H)`
+（L_z > H；H=2、x_max=3 时 L_z=3→9、L_z=5→5）。
 
 ## 2. 最小调用示例
 
@@ -94,8 +96,10 @@ zcsr_gl_l2d_geo_tex_face(r, tex, corners_xyz, uv_st, tint_rgba,
   xy——xy=(0,0) 解码为朝上 (0,0,1)，否则为平面内 (nx,ny,0)。
   **法线 z 分量被写入但当前不被读取（D2）**：仅支持朝上面与轴对齐立面，
   斜面会在光照时丢 nz。
-- **Emissive**：线性 RGBA（attachment 3，HDR RGBA16F），调用方提供，
-  v1 不支持纹理发光。
+- **Emissive**：RGBA16F HDR 自发光（attachment 3，调用方提供），
+  v1 不支持纹理发光。注意 v1 合成语义：Emissive 在最终式中先与光照/
+  环境光相加，**再被 Albedo 逐通道调制**（`C = A_lin·(E_lin+ΣL+amb)`），
+  不是独立加性自发光（`A_lin·ΣL + E_lin`）；独立加性 = PROPOSED，未实现。
 - **深度**：G-buffer 无深度附件 → painter's order，宿主按远到近提交。
   排序参考键 `q = k·(y − cy) + z` 升序。`world_z` 单独不是通用深度。
 
@@ -106,8 +110,13 @@ zcsr_gl_l2d_geo_tex_face(r, tex, corners_xyz, uv_st, tint_rgba,
   角点 0 对应 (u0,v0)。
 - **颜色空间**：纹理以普通 GL_RGBA 上传（无 GL sRGB 内部格式）→ GPU 不做
   sRGB 解码；**合成 pass 的 pow(2.2) 是全链路唯一线性化环节**。texel×tint
-  直写 attachment 0，与平色路径同一编码——**禁止在纹理路径再解一次 sRGB**。
-- **tint**：线性 RGBA，与 texel 逐通道相乘。
+  直写 attachment 0（RGBA8），与平色路径同一编码——**禁止在纹理路径再
+  解一次 sRGB**。
+- **tint / albedo 乘法空间**：tint 与平色 albedo_rgba 实际在**显示域
+  （gamma）**与纹理想素逐通道相乘，乘积直写 RGBA8 G0，合成时整体
+  pow(2.2) 线性化。**这不是线性空间乘法**（早期文档"linear tint"措辞
+  已修正）。RGBA8 会把 >1 的 tint/albedo 截断到 1.0——G0 路径不能承载
+  HDR；HDR >1 仅在 RGBA16F 附件（Emissive、光缓冲）上保留。
 - **Alpha-cutout v1（精确规则，源码 glrender_l2d_geo.c:92）**：
   `if (rgba.a < 0.5) discard;` 其中 `rgba = texel × tint`。
   阈值 0.5、比较符 `<`、作用于乘后 alpha。被 discard 的片元**不写任何
