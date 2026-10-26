@@ -1,4 +1,4 @@
-param([int]$RunMs = 1950)
+param([int]$RunMs = 800, [int]$MaxWaitMs = 20000)
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
@@ -24,6 +24,29 @@ $r = New-Object Win32+RECT
 $w = $r.R - $r.L
 $hh = $r.B - $r.T
 if ($w -lt 50 -or $hh -lt 50) { Write-Output "BADRECT $w x $hh"; Stop-Process -Id $p.Id -Force; exit 1 }
+
+# STATE-TRIGGERED CAPTURE (frame-rate independent): poll the flame pixel
+# (client 256,216) until it is warm (module active) in two consecutive
+# samples 250ms apart - this also skips the autoquit settings-overlay
+# window, where the scene is dimmed. Falls back to capture-after-timeout.
+$probeX = [int](256 + 8); $probeY = [int](216 + 31)
+$deadline = (Get-Date).AddMilliseconds($MaxWaitMs)
+$warmStreak = 0
+$captured = $false
+while ((Get-Date) -lt $deadline) {
+  Start-Sleep -Milliseconds 250
+  if ($p.HasExited) { break }
+  $probe = New-Object System.Drawing.Bitmap(1, 1)
+  $pg = [System.Drawing.Graphics]::FromImage($probe)
+  $pg.CopyFromScreen($r.L + $probeX, $r.T + $probeY, 0, 0, $probe.Size)
+  $pg.Dispose()
+  $c = $probe.GetPixel(0, 0)
+  $probe.Dispose()
+  if ($c.R -gt 50 -and $c.R -gt $c.B) { $warmStreak++ } else { $warmStreak = 0 }
+  if ($warmStreak -ge 2) { $captured = $true; break }
+}
+if (-not $captured) { Write-Output "WARN: module-warm window not detected in ${MaxWaitMs}ms; capturing anyway" }
+
 $bmp = New-Object System.Drawing.Bitmap($w, $hh)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $g.CopyFromScreen($r.L, $r.T, 0, 0, $bmp.Size)
