@@ -84,22 +84,24 @@ UV：(u0,v0)=子矩形图像左上，v 向图像底（与 sprite 管线一致；
 纹理路径禁止二次解码。输出：`C_out = (C_lin/(C_lin+1))^(1/2.2)`，
 tonemap 与 gamma 在同一合成 FS。
 
-**tint / albedo 的实际乘法空间（合并前审计修正）**：geo FS 在
+**tint / albedo 的实际乘法空间（v1.1 契约裁决）**：geo FS 在
 显示域直接做 `rgba = texture(UV) ⊙ tint` 后写入 G0（RGBA8），
 合成时才整体 `pow(2.2)`。因此 tint 与平色 albedo_rgba 实际是
 **显示域（gamma）乘子**，与纹理想素同空间相乘——**不是线性空间
-乘法**。公开头文件早期注释中的"linear tint / linear albedo"措辞
-不准确，v1.1 起改为"显示域值，直写 G0，合成时统一线性化"。
+乘法**。
+**裁决**：旧版头文件曾将 tint/albedo 标注为 "linear"，该描述与实际
+实现不符，自 v1.1 起视为已纠正的契约说明。需要真正线性 tint 的
+调用者不能把当前路径当作已支持该语义；要在线性空间做颜色调制，
+必须单独设计纹理解码 + 光照域 + 输出编码的完整 sRGB 工作流，
+并重新跑合成回归——本次不做。
 数学推论：`(texel·tint)^2.2 = texel^2.2 · tint^2.2`，tint 本身
-也被 gamma 化；要得到真正的线性 tint 需在 geo FS 内先对 texel
-`pow(1/2.2)`、乘线性 tint、再由合成 FS 不重复线性化——这是
-PROPOSED 的 sRGB 工作流迁移，**本次不改**。
+也被 gamma 化。
 
 **HDR >1 的适用范围**：G0 是 RGBA8，tint/albedo 乘积 >1 会被
-归一化格式截断到 1.0，**G0 路径不能承载 HDR Albedo**。
+归一化格式截断到 1.0，**G0 路径不能承载 HDR Albedo**——不能因为
+tint 参数是 float 就推断经过 RGBA8 后仍保留超出 1 的数据。
 HDR >1 仅在 RGBA16F 附件上保留：G3 Emissive 与光缓冲（light
-accumulation RGBA16F）。完整 sRGB 工作流迁移 = PROPOSED（需单独
-立项规划三阶段：纹理解码/光照域/输出编码），本次不改。
+accumulation RGBA16F）。
 
 ## 4. 光照模型
 
@@ -159,11 +161,15 @@ x_tip = xmax·Lz/(Lz−H) 含 Lz=3/5 双光高与 near-H 长影边界 + 退化�
 
 ### 5.2 遮挡体参数语义 【CURRENT + G1 裁决】
 - ray 路径消费：footprint AABB + height（棱柱高度真实参与：光越低影越长。
-  对地面接收点（z=0），光线越过遮挡体远边顶棱 (x_max,0,H) 后落地的
-  尖端由相似三角形给出：
+  地面接收点（z=0）的阴影尖端由相似三角形给出。
+  **坐标假设**：测试场景光源水平位置在 x_L=0，遮挡体远边在 x_max、
+  高度 H。此特例下：
   `x_tip = x_max · L_z / (L_z − H)`，适用条件 `L_z > H`。
-  数值：H=2、x_max=3 时，L_z=3 → x_tip=9、L_z=5 → x_tip=5、
-  L_z→H⁺ → x_tip→∞。ctest 双光高 + near-H 边界断言。）
+  **通用式**（光源不在 x=0 时）：
+  `x_tip = x_L + (x_max − x_L) · L_z / (L_z − H)`。
+  数值：H=2、x_max=3、x_L=0 时，L_z=3 → x_tip=9、L_z=5 → x_tip=5、
+  L_z=2.1 → x_tip=63。ctest 断言覆盖 L_z=3/5 双端与 L_z=2.1 尖端两侧
+  （x=62.9 在内、x=63.1 在外）。**勿把 x_L=0 特例误当通用式使用。**
 - `factor/distance/reverse/self_shadow`：2D 挤出掩码路径消费
   （浓度/有限带/反向/自阴影填充）；ray 路径不消费（硬 1.0/无限楔）——
   **契约已声明**（light2d.h ray_shadows 注释、INTEGRATION §7），
@@ -203,10 +209,33 @@ x_tip = xmax·Lz/(Lz−H) 含 Lz=3/5 双光高与 near-H 长影边界 + 退化�
 | UV | 全区域/子矩形采样正确 | rug A/B 探针 | ✅运行 |
 | 光照方向 | max(0,N·L̂) 逐样例 | 源码审计（公式直查） | 审计（无数值单测） |
 | 衰减 | r≥1 无第一项 | 源码审计 | 审计 |
-| 射线相交 | 4 密封用例+边界 | ctest + autoquit proof | ✅自动 |
+| 射线相交 | 4 密封用例+边界+尖端双光高+near-H 两侧 | ctest 29 项 + autoquit proof | ✅自动（CPU 镜像） |
 | 颜色空间 | 线性化仅合成一处 | 源码 grep（无二次 pow2.2） | ✅审计 |
 | 合成目标 | 结果落默认目标 | v15 修复 + 探针 | ✅运行 |
 | 平行光 | — | 无运行证据 | ⚠️未验证 |
+
+### 7.1 证据等级区分（v1.1 审计补记）
+
+不同验证手段证明的对象不同，不能互相替代：
+
+- **CPU 数学 ctest（29 项）**：只验证 tests/test_light2d_math.c 里
+  seg_blocked 的 CPU 镜像实现符合公式与边界。它证明的是"数学关系
+  本身正确"，**不证明 GLSL 里的 zcsr_ray_blocked 与之一致**。
+- **autoquit 4/4 proof**：testmain 启动时打印，走的是同一套 CPU
+  seg_blocked 镜像；证明镜像算法 + 测试场景数值，不直接证明 GPU
+  shader 的射线输出。
+- **像素截图探针（verify_light2d_shot.ps1）**：验证火苗颜色、rug
+  象限、透明框、Position/Normal 窗格等**视觉/G-buffer 解码像素**。
+  它间接确认了射线阴影在火苗场景里产生了暖色光照，但**没有专门
+  读取阴影落影区的像素**来直接证明 GPU ray_blocked 的遮挡输出。
+- **GPU 射线阴影像素探针**：当前**缺失**。若未来需要直接证明 GLSL
+  slab 测试在真实 GPU 上的遮挡结果，应补一个在阴影落影区采样像素
+  的探针（光源照亮区 vs 遮挡暗区的亮度差）。这是后续专项验收项，
+  本次不扩建。
+
+源码层面已逐行核对 GLSL zcsr_ray_blocked 与 CPU seg_blocked 的 slab
+公式、t 区间 (1e-4, 1-1e-4)、平行退化处理一致——这是审计证据，不是
+运行证据。
 
 ## 8. 完成标准自查（对应补充令 §十二）
 

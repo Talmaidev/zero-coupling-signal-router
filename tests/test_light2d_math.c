@@ -189,10 +189,15 @@ int main(void)
           "inside tip x=5 (Lz=5)");
     CHECK(seg_blocked(0, 0, 5, 5.5f, 0, 0, 2, -0.5f, 3, 0.5f, 2) == 0,
           "outside tip x=5 (Lz=5)");
-    /* Boundary: Lz just above H -> tip far away, so a receiver at x=10 is
-     * still inside the shadow (x_tip = 3*2.1/0.1 = 63). */
+    /* Boundary: Lz just above H -> tip far away. For x_L=0, x_max=3, H=2,
+     * x_tip = 3*2.1/(2.1-2) = 63. Assert both sides of the tip, not just
+     * a single far-inside point, so the boundary itself is pinned. */
     CHECK(seg_blocked(0, 0, 2.1f, 10.0f, 0, 0, 2, -0.5f, 3, 0.5f, 2) == 1,
           "near-H light casts long shadow");
+    CHECK(seg_blocked(0, 0, 2.1f, 62.9f, 0, 0, 2, -0.5f, 3, 0.5f, 2) == 1,
+          "inside near-H tip x=63");
+    CHECK(seg_blocked(0, 0, 2.1f, 63.1f, 0, 0, 2, -0.5f, 3, 0.5f, 2) == 0,
+          "outside near-H tip x=63");
     /* receiver exactly at the light position: segment degenerates -> clear */
     CHECK(seg_blocked(0, 0, 3, 0, 0, 3, 2, -0.5f, 3, 0.5f, 2) == 0,
           "degenerate segment clear");
