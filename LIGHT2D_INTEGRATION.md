@@ -1,9 +1,12 @@
 # LIGHT2D_INTEGRATION.md — Light2D 可继承基础层 v1 接入文档
 
-封版版本：Q5（2026-10-26）。范围：平色 + 纹理几何进入 G-buffer、世界坐标契约、
+封版版本：Q5（2026-10-26）；加固增量 v1.1（2026-10-26，见 §7 R1 与 §8）。
+范围：平色 + 纹理几何进入 G-buffer、世界坐标契约、
 共享相机高度剪切投影、逐像素射线阴影、延迟合成。
 **这不是完整的游戏 Sprite/Tilemap 管线**—— sprite 管线集成、半透明混合、
 emissive 纹理等明确不支持（见"能力与限制"）。
+维护者文档：`LIGHT2D_PIPELINE_MAP.md`（结构/风险）；数学基准：
+`LIGHT2D_MATH_MODEL.md`（公式与证据分级）。
 
 ## 1. 系统目标与渲染阶段
 
@@ -27,7 +30,9 @@ zcsr_light2d_end_lighting()          ← 逐像素射线阴影 + N·L + 合成�
 
 数学核心（Geometry Proof v1，数值用例固化在 testmain 启动时打印）：
 接收点 P 被遮挡 ⟺ 线段 L→P 与遮挡棱柱（footprint × z∈[0,H]）相交。
-遮挡体高度与光高真实参与：光越低/箱越高影子越长（尖端 x = 3·xmax/Lz）。
+遮挡体高度与光高真实参与：光越低/箱越高影子越长。地面（z=0）接收点
+的阴影尖端由相似三角形给出：`x_tip = x_max · L_z / (L_z − H)`
+（L_z > H；H=2、x_max=3 时 L_z=3→9、L_z=5→5）。
 
 ## 2. 最小调用示例
 
@@ -91,8 +96,10 @@ zcsr_gl_l2d_geo_tex_face(r, tex, corners_xyz, uv_st, tint_rgba,
   xy——xy=(0,0) 解码为朝上 (0,0,1)，否则为平面内 (nx,ny,0)。
   **法线 z 分量被写入但当前不被读取（D2）**：仅支持朝上面与轴对齐立面，
   斜面会在光照时丢 nz。
-- **Emissive**：线性 RGBA（attachment 3，HDR RGBA16F），调用方提供，
-  v1 不支持纹理发光。
+- **Emissive**：RGBA16F HDR 自发光（attachment 3，调用方提供），
+  v1 不支持纹理发光。注意 v1 合成语义：Emissive 在最终式中先与光照/
+  环境光相加，**再被 Albedo 逐通道调制**（`C = A_lin·(E_lin+ΣL+amb)`），
+  不是独立加性自发光（`A_lin·ΣL + E_lin`）；独立加性 = PROPOSED，未实现。
 - **深度**：G-buffer 无深度附件 → painter's order，宿主按远到近提交。
   排序参考键 `q = k·(y − cy) + z` 升序。`world_z` 单独不是通用深度。
 
@@ -103,8 +110,15 @@ zcsr_gl_l2d_geo_tex_face(r, tex, corners_xyz, uv_st, tint_rgba,
   角点 0 对应 (u0,v0)。
 - **颜色空间**：纹理以普通 GL_RGBA 上传（无 GL sRGB 内部格式）→ GPU 不做
   sRGB 解码；**合成 pass 的 pow(2.2) 是全链路唯一线性化环节**。texel×tint
-  直写 attachment 0，与平色路径同一编码——**禁止在纹理路径再解一次 sRGB**。
-- **tint**：线性 RGBA，与 texel 逐通道相乘。
+  直写 attachment 0（RGBA8），与平色路径同一编码——**禁止在纹理路径再
+  解一次 sRGB**。
+- **tint / albedo 乘法空间（v1.1 契约裁决）**：tint 与平色 albedo_rgba
+  实际在**显示域（gamma）**与纹理想素逐通道相乘，乘积直写 RGBA8 G0，
+  合成时整体 pow(2.2) 线性化。**这不是线性空间乘法**。旧版头文件曾将
+  tint 标注为 "linear"，该描述与实际实现不符，自 v1.1 起视为已纠正的
+  契约说明；需要真正线性 tint 的调用者不能把当前路径当作已支持。
+  RGBA8 会把 >1 的 tint/albedo 截断到 1.0——G0 路径不能承载 HDR；
+  HDR >1 仅在 RGBA16F 附件（Emissive、光缓冲）上保留。
 - **Alpha-cutout v1（精确规则，源码 glrender_l2d_geo.c:92）**：
   `if (rgba.a < 0.5) discard;` 其中 `rgba = texel × tint`。
   阈值 0.5、比较符 `<`、作用于乘后 alpha。被 discard 的片元**不写任何
@@ -136,8 +150,9 @@ geo_end 之间穿插其他 GL 绘制**；需要画别的，先 geo_end。
 
 **能用的**：平色/纹理凸四边形进 G-buffer；世界 XYZ Position；朝上面 +
 轴对齐立面法线；alpha-cutout 贴片；3D 点光（高度/半径/逐光强度）；
-逐像素高度感知射线阴影；遮挡棱柱（height/distance/reverse/self_shadow/
-auto_disable 属性在 2D 挤出路径，ray 路径用 footprint+height）；bloom 合成；
+逐像素高度感知射线阴影；遮挡棱柱（height 在 ray 路径生效；
+factor/distance/reverse/self_shadow 在 2D 挤出路径生效——ray_shadows
+开启时点光走射线、**平行光仍走 2D 掩码路径并保留全部属性**）；bloom 合成；
 LOW 档回退（调试级色块）。
 
 **不能用的（明确限制）**：任意半透明混合与排序；纹理 emissive；斜面法线
@@ -160,6 +175,8 @@ cmd /c "call \"C:\Program Files\Microsoft Visual Studio\18\Professional\VC\Auxil
 build-msvc\zcsr_test.exe autoquit
 # 3) 截图探针（启动 exe → 定窗 → 截帧 → 读指定像素 RGB）
 powershell -ExecutionPolicy Bypass -File tools\verify_light2d_shot.ps1
+# 4) 数学契约 ctest（纯 CPU：投影往返/k-shift 定律/射线 slab 用例）
+cmd /c "call \"C:\Program Files\Microsoft Visual Studio\18\Professional\VC\Auxiliary\Build\vcvars64.bat\" && cd build-msvc && ctest -R light2d_math --output-on-failure"
 ```
 
 `tools/verify_light2d_shot.ps1`（自 build-msvc/shot.ps1 固化）在 1280×720
@@ -204,4 +221,17 @@ CTests**——CTest 全绿不覆盖纹理视觉路径。
 `include/zcsr/gl_render_l2d_geo.h`、`include/zcsr/camera.h`。
 实现：`modules/light2d/light2d.c`、`modules/glrender/glrender_light2d_ext.c`、
 `modules/glrender/glrender_l2d_geo.c`。参考场景：`integration/testmain.c`
-（程序化夹具 + rug A/B）。验收：`tools/verify_light2d_shot.ps1`。
+（程序化夹具 + rug A/B）。验收：`tools/verify_light2d_shot.ps1`（视觉探针）、
+`tests/test_light2d_math.c`（数学 ctest）。
+维护者：`LIGHT2D_PIPELINE_MAP.md`；数学基准：`LIGHT2D_MATH_MODEL.md`。
+
+### v1.1 加固增量（2026-10-26，分支 light2d-hardening-v1.1）
+
+- R1 修复：geo 惰性初始化要求平色+纹理两 program 齐备，纹理侧创建失败
+  整组回滚重试；`tex_face` 增加零程序守卫——杜绝"部分初始化后静默无渲染"
+  （u_ppu=0 同类教训的第二个实例）。
+- D3 部分交付：`tests/test_light2d_math.c`（ctest `light2d_math`，24 断言：
+  投影往返/已知高度往返/k-shift 定律/view_rect/zoom 钳位/排序键/射线 slab
+  用例含边界与退化段）。视觉路径仍需 §8 探针流程，不被 ctest 覆盖。
+- 走查澄清：parallel+ray_shadows 组合正确（平行光走 2D 掩码并保留全部
+  遮挡属性，light2d.c 掩码分支内 use_shadow=1）——此前风险假设不成立。
