@@ -112,11 +112,13 @@ zcsr_gl_l2d_geo_tex_face(r, tex, corners_xyz, uv_st, tint_rgba,
   sRGB 解码；**合成 pass 的 pow(2.2) 是全链路唯一线性化环节**。texel×tint
   直写 attachment 0（RGBA8），与平色路径同一编码——**禁止在纹理路径再
   解一次 sRGB**。
-- **tint / albedo 乘法空间**：tint 与平色 albedo_rgba 实际在**显示域
-  （gamma）**与纹理想素逐通道相乘，乘积直写 RGBA8 G0，合成时整体
-  pow(2.2) 线性化。**这不是线性空间乘法**（早期文档"linear tint"措辞
-  已修正）。RGBA8 会把 >1 的 tint/albedo 截断到 1.0——G0 路径不能承载
-  HDR；HDR >1 仅在 RGBA16F 附件（Emissive、光缓冲）上保留。
+- **tint / albedo 乘法空间（v1.1 契约裁决）**：tint 与平色 albedo_rgba
+  实际在**显示域（gamma）**与纹理想素逐通道相乘，乘积直写 RGBA8 G0，
+  合成时整体 pow(2.2) 线性化。**这不是线性空间乘法**。旧版头文件曾将
+  tint 标注为 "linear"，该描述与实际实现不符，自 v1.1 起视为已纠正的
+  契约说明；需要真正线性 tint 的调用者不能把当前路径当作已支持。
+  RGBA8 会把 >1 的 tint/albedo 截断到 1.0——G0 路径不能承载 HDR；
+  HDR >1 仅在 RGBA16F 附件（Emissive、光缓冲）上保留。
 - **Alpha-cutout v1（精确规则，源码 glrender_l2d_geo.c:92）**：
   `if (rgba.a < 0.5) discard;` 其中 `rgba = texel × tint`。
   阈值 0.5、比较符 `<`、作用于乘后 alpha。被 discard 的片元**不写任何
