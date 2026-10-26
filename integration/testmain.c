@@ -10,6 +10,8 @@
 #include "zcsr/gl_render.h"
 #include "zcsr/gl_render_l2d_geo.h"
 #include "zcsr/light2d.h"
+#include "zcsr/sprite.h"
+#include "zcsr/transform.h"
 
 #include <glad/glad.h>
 
@@ -360,6 +362,27 @@ static void draw_scene(light_state* s, zcsr_gl_renderer* r, int cw, int ch,
                                    1.6f, 1.5f, 0.0f, 0.6f, 1.5f, 0.0f };
             const float ub[8] = { 0.5f, 0.5f, 1.0f, 0.5f, 1.0f, 1.0f, 0.5f, 1.0f };
             (void)zcsr_gl_l2d_geo_tex_face(r, s->rug_tex, cb, ub, tint, up, emiss);
+        }
+
+        /* Adapter smoke test: zcsr_sprite_draw_lit builds the same corner/uv
+         * geometry from a transform + asset + ground_z and submits it via the
+         * public API. Placed at (2.5, 1.8) on the ground, 1x1 world unit,
+         * whole-texture, unit tint. If this renders identically to a hand-built
+         * quad, the §14.4 contract holds. */
+        {
+            zcsr_sprite_asset asset;
+            zcsr_sprite_instance inst;
+            zcsr_transform tr;
+            asset.tex = s->rug_tex;
+            asset.u0 = 0.0f; asset.v0 = 0.0f;
+            asset.u1 = 1.0f; asset.v1 = 1.0f;
+            asset.w = 1.0f; asset.h = 1.0f;
+            inst.asset = &asset;
+            inst.r = 1.0f; inst.g = 1.0f; inst.b = 1.0f; inst.a = 1.0f;
+            tr.x = 2.5f; tr.y = 1.8f;
+            tr.rotation = 0.0f;
+            tr.scale_x = 1.0f; tr.scale_y = 1.0f;
+            zcsr_sprite_draw_lit(r, &tr, &inst, 0.0f);
         }
     }
 

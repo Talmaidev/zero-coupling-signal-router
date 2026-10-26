@@ -60,4 +60,14 @@ void zcsr_sprite_draw(zcsr_gl_renderer* r,
                       const zcsr_transform* tr,
                       const zcsr_sprite_instance* sp);
 
+/* Lit sprite (Light2D path B): submit a transform + sprite_instance as a
+ * world-space textured quad into the G-buffer. Caller must already be inside
+ * an open light2d geometry phase (after zcsr_gl_l2d_geo_begin, before geo_end).
+ * ground_z is the world height of the sprite plane (0 = ground).
+ * See RENDER2D_CONTRACT §14.4 for the corner/uv/normal convention. */
+void zcsr_sprite_draw_lit(zcsr_gl_renderer* r,
+                          const zcsr_transform* tr,
+                          const zcsr_sprite_instance* sp,
+                          float ground_z);
+
 #endif /* ZCSR_SPRITE_H */
