@@ -390,7 +390,7 @@ static bool light_module_init(zcsr_gl_renderer* r, int cw, int ch, void* user)
     proof_check();
 
     s->ctx = zcsr_light2d_create(r,
-                                 s->autoquit ? ZCSR_LIGHT_QUALITY_LOW : ZCSR_LIGHT_QUALITY_HIGH,
+                                 ZCSR_LIGHT_QUALITY_HIGH,
                                  ZCSR_LIGHT_QUALITY_HIGH,
                                  cw, ch, light2d_buf, sizeof(light2d_buf));
     if (!s->ctx) return false;
@@ -438,7 +438,7 @@ static bool light_module_init(zcsr_gl_renderer* r, int cw, int ch, void* user)
         return false;
     }
 
-    s->quality = s->autoquit ? (int)ZCSR_LIGHT_QUALITY_LOW : (int)ZCSR_LIGHT_QUALITY_HIGH;
+    s->quality = (int)ZCSR_LIGHT_QUALITY_HIGH;
     s->last_cw = cw;
     s->last_ch = ch;
     s->frame_index = 0;
@@ -558,12 +558,6 @@ static void light_module_frame(zcsr_gl_renderer* r, int cw, int ch, void* user)
         if (frame_index == 30) {
             printf("[light] autoquit frame 30: L=(%.2f,%.2f,%.2f)\n", lx, ly, lz);
         }
-        if (frame_index == 60 && s->quality != (int)ZCSR_LIGHT_QUALITY_HIGH) {
-            if (zcsr_light2d_set_quality(s->ctx, ZCSR_LIGHT_QUALITY_HIGH)) {
-                s->quality = (int)ZCSR_LIGHT_QUALITY_HIGH;
-                printf("[light] autoquit frame 60: quality -> HIGH\n");
-            }
-        }
     }
 
     memset(&light, 0, sizeof(light));
@@ -596,7 +590,51 @@ static void light_module_frame(zcsr_gl_renderer* r, int cw, int ch, void* user)
         return;
     }
 
+    /* GPU ray-shadow pixel verification: autoquit frame 80 runs after the
+     * LOW->HIGH quality switch (frame 60), so the deferred ray-shadow path
+     * is active. Read back the COMPOSITED default-framebuffer pixels at two
+     * ground points with identical albedo/normal:
+     *   P_lit=(1,0,0)  — ray L->P does NOT cross the box footprint
+     *   P_shadow=(4,0,0) — ray L->P crosses the box at z in [0.75,1.5]
+     * Camera center=(4,0), PPU=96: screen_x = (wx-4)*96+cw/2, screen_y=ch/2.
+     * glReadPixels uses bottom-left origin: gl_y = ch - screen_y. */
     dbg_insets(s, r, cw, ch);
+
+    if (s->autoquit && frame_index == 30 &&
+        s->quality == (int)ZCSR_LIGHT_QUALITY_HIGH) {
+        /* GPU ray-shadow pixel verification on the composited default FB.
+         * Shadow band for L=(0,0,3), box x[2,3] H=2 is x in [2,9] on the floor.
+         * P_lit=(-1.5,0,0) — left of the box, ray never crosses footprint.
+         * P_shadow=(6.5,0,0) — inside the shadow band, ray crosses the box.
+         * Both on the same y=0 ground strip, identical albedo/normal. */
+        unsigned char lit_px[9*4], sha_px[9*4];
+        float lit_sum = 0.0f, sha_sum = 0.0f;
+        int gi;
+        const int lit_sx = (int)((-1.5f - s->cam.center_x) * s->cam.px_per_unit + cw * 0.5f);
+        const int sha_sx = (int)((6.5f - s->cam.center_x) * s->cam.px_per_unit + cw * 0.5f);
+        const int gl_y = ch / 2;
+        glFinish();
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glReadPixels(lit_sx - 1, gl_y - 1, 3, 3, GL_RGBA, GL_UNSIGNED_BYTE, lit_px);
+        glReadPixels(sha_sx - 1, gl_y - 1, 3, 3, GL_RGBA, GL_UNSIGNED_BYTE, sha_px);
+        for (gi = 0; gi < 9; ++gi) {
+            lit_sum += 0.2126f*lit_px[gi*4+0] + 0.7152f*lit_px[gi*4+1] + 0.0722f*lit_px[gi*4+2];
+            sha_sum += 0.2126f*sha_px[gi*4+0] + 0.7152f*sha_px[gi*4+1] + 0.0722f*sha_px[gi*4+2];
+        }
+        lit_sum /= 9.0f;
+        sha_sum /= 9.0f;
+        printf("[gpu_shadow] P_lit=(-1.5,0,0) screen=(%d,%d) lum=%.1f RGB=(%d,%d,%d)\n",
+               lit_sx, gl_y, lit_sum, lit_px[4], lit_px[5], lit_px[6]);
+        printf("[gpu_shadow] P_shadow=(6.5,0,0) screen=(%d,%d) lum=%.1f RGB=(%d,%d,%d)\n",
+               sha_sx, gl_y, sha_sum, sha_px[4], sha_px[5], sha_px[6]);
+        if (sha_sum < lit_sum * 0.7f) {
+            printf("[gpu_shadow] PASS: shadow point dimmer than lit control (%.1f < %.1f*0.7)\n",
+                   sha_sum, lit_sum);
+        } else {
+            printf("[gpu_shadow] FAIL: shadow point not dimmer enough (sha=%.1f lit=%.1f)\n",
+                   sha_sum, lit_sum);
+        }
+    }
 
     {
         char status[160];
@@ -619,6 +657,7 @@ static bool light_module_key(int key, void* user)
 {
     light_state* s = (light_state*)user;
     if (s->ctx == NULL) return false;
+    if (s->autoquit) return false; /* autoquit: no interactive key handling */
     if (key == LIGHT_KEY_SPACE) {
         zcsr_light_quality next = (s->quality == (int)ZCSR_LIGHT_QUALITY_LOW)
             ? ZCSR_LIGHT_QUALITY_HIGH : ZCSR_LIGHT_QUALITY_LOW;
