@@ -3,6 +3,7 @@
  * Linux attempts ALSA dynamically (no CMake find_package); if no device exists, the mixer
  * still runs its logic path so headless CI can validate threading/state.
  */
+#include <stdlib.h>
 #include "zcsr/audio_mix.h"
 #include "audiomix_internal.h"
 

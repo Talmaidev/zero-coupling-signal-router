@@ -48,6 +48,14 @@ function(zcsr_module name)
   endif()
   add_library(zcsr_${name} STATIC ${SRC})
   target_link_libraries(zcsr_${name} PUBLIC zcsr_contracts)
+  # 每个模块都可能通过 ZCSR_LOG_* / zcsr_log_write 打日志，而 log 实现在 core。
+  # 之前没有声明这条依赖，Windows(link.exe) 靠重扫静态库掩盖了问题；GNU ld 单遍
+  # 扫描时，libzcsr_ui.a / libzcsr_file_service.a / libzcsr_runtime_viewport.a 里的
+  # zcsr_log_write 全都解析不到（undefined reference）。在宏里统一声明，链接顺序
+  # 与传递依赖一次性闭合。
+  if(NOT name STREQUAL "core")
+    target_link_libraries(zcsr_${name} PUBLIC zcsr_core)
+  endif()
   if(APPLE AND MSRC)
     set_source_files_properties(${MSRC} PROPERTIES COMPILE_OPTIONS "-fobjc-arc") # Cocoa backends use ARC
   endif()

@@ -23,6 +23,7 @@
  */
 #if defined(__linux__) && !defined(__ANDROID__)
 
+#include <stdio.h>
 #include "audiomix_internal.h"
 
 #include <pipewire/pipewire.h>
