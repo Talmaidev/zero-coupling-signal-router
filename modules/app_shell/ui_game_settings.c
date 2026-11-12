@@ -1,4 +1,4 @@
-/* modules/ui/ui_modern_settings.c — 现代游戏设置面板实现.
+/* modules/ui/ui_game_settings.c — 现代游戏设置面板实现.
  *
  * 特性:
  *   - 顶部标签页 (鼠标点击 / 键盘切换)
@@ -11,7 +11,7 @@
  *   - 鼠标悬停高亮 + 键盘导航双模式
  *   - 修改暂存 + Apply/Cancel/Reset 语义
  */
-#include "zcsr/ui_modern_settings.h"
+#include "zcsr/ui_game_settings.h"
 #include "zcsr/ui.h"
 #include <string.h>
 #include <math.h>
@@ -37,9 +37,9 @@
 typedef struct { float x, y, w, h; } ms_rect;
 
 /* ---- 内部结构体 ---- */
-struct zcsr_ms {
+struct zcsr_game_settings {
     /* config */
-    zcsr_ms_tab* tabs;
+    zcsr_game_settings_tab* tabs;
     int    tab_count;
     int    x, y, width, height;
     int    item_height;
@@ -127,46 +127,46 @@ static inline float text_w(const char* s, float scale) {
     return (float)strlen(s) * 8.0f * scale;
 }
 
-static inline zcsr_ms_tab* cur_tab(zcsr_ms* s) {
+static inline zcsr_game_settings_tab* cur_tab(zcsr_game_settings* s) {
     return &s->tabs[s->active_tab];
 }
 
-static int first_selectable(zcsr_ms* s) {
-    zcsr_ms_tab* t = cur_tab(s);
+static int first_selectable(zcsr_game_settings* s) {
+    zcsr_game_settings_tab* t = cur_tab(s);
     for (int i = 0; i < t->count; i++)
-        if (t->items[i].type != ZCSR_MS_SEPARATOR) return i;
+        if (t->items[i].type != ZCSR_GAME_SETTINGS_SEPARATOR) return i;
     return -1;
 }
 
-static int find_next_item(zcsr_ms* s, int from, int dir) {
-    zcsr_ms_tab* t = cur_tab(s);
+static int find_next_item(zcsr_game_settings* s, int from, int dir) {
+    zcsr_game_settings_tab* t = cur_tab(s);
     if (t->count <= 0) return -1;
     int idx = from;
     for (int i = 0; i < t->count; i++) {
         idx += dir;
         if (idx < 0) idx = t->count - 1;
         if (idx >= t->count) idx = 0;
-        if (t->items[idx].type != ZCSR_MS_SEPARATOR) return idx;
+        if (t->items[idx].type != ZCSR_GAME_SETTINGS_SEPARATOR) return idx;
     }
     return -1;
 }
 
-static void recompute_dirty(zcsr_ms* s) {
+static void recompute_dirty(zcsr_game_settings* s) {
     s->dirty = false;
     for (int t = 0; t < s->tab_count; t++) {
-        zcsr_ms_tab* tab = &s->tabs[t];
+        zcsr_game_settings_tab* tab = &s->tabs[t];
         for (int i = 0; i < tab->count; i++) {
-            zcsr_ms_item* it = &tab->items[i];
-            if (it->type == ZCSR_MS_DROPDOWN && it->pending_value != it->value) { s->dirty = true; return; }
-            if (it->type == ZCSR_MS_SLIDER && fabsf(it->pending_slider - it->slider_value) > 0.001f) { s->dirty = true; return; }
-            if (it->type == ZCSR_MS_TOGGLE && it->pending_toggle != it->toggle_value) { s->dirty = true; return; }
+            zcsr_game_settings_item* it = &tab->items[i];
+            if (it->type == ZCSR_GAME_SETTINGS_DROPDOWN && it->pending_value != it->value) { s->dirty = true; return; }
+            if (it->type == ZCSR_GAME_SETTINGS_SLIDER && fabsf(it->pending_slider - it->slider_value) > 0.001f) { s->dirty = true; return; }
+            if (it->type == ZCSR_GAME_SETTINGS_TOGGLE && it->pending_toggle != it->toggle_value) { s->dirty = true; return; }
         }
     }
 }
 
 /* ---- 布局计算 ---- */
 /* node 是几何权威；公式只在 node 尚未建立时兜底。 */
-static bool ms_node_rect(const zcsr_ms* s, ZCSR_NodeId id, ms_rect* out) {
+static bool ms_node_rect(const zcsr_game_settings* s, ZCSR_NodeId id, ms_rect* out) {
     ZCSR_Rect r;
     if (!s->ui || (uint32_t)id == 0u) return false;
     if (zcsr_node_get_rect(s->ui, id, &r) != ZCSR_OK) return false;
@@ -174,7 +174,7 @@ static bool ms_node_rect(const zcsr_ms* s, ZCSR_NodeId id, ms_rect* out) {
     return true;
 }
 
-static ms_rect tab_rect(const zcsr_ms* s, int idx) {
+static ms_rect tab_rect(const zcsr_game_settings* s, int idx) {
     ms_rect n;
     if (idx >= 0 && idx < s->tab_count && idx < MS_MAX_TABS &&
         ms_node_rect(s, s->tab_node[idx], &n))
@@ -188,7 +188,7 @@ static ms_rect tab_rect(const zcsr_ms* s, int idx) {
     return (ms_rect){ cx, (float)s->y + 4.0f, tw, (float)(MS_TAB_BAR_H - 8) };
 }
 
-static ms_rect item_row_rect(const zcsr_ms* s, int idx) {
+static ms_rect item_row_rect(const zcsr_game_settings* s, int idx) {
     ms_rect n;
     int tab = s->active_tab;
     if (tab >= 0 && tab < MS_MAX_TABS && idx >= 0) {
@@ -204,7 +204,7 @@ static ms_rect item_row_rect(const zcsr_ms* s, int idx) {
     };
 }
 
-static void clamp_scroll(zcsr_ms* s) {
+static void clamp_scroll(zcsr_game_settings* s) {
     int total_h = cur_tab(s)->count * s->item_height;
     int max_scroll = total_h - s->content_h;
     if (max_scroll < 0) max_scroll = 0;
@@ -212,7 +212,7 @@ static void clamp_scroll(zcsr_ms* s) {
     if (s->scroll_offset > max_scroll) s->scroll_offset = max_scroll;
 }
 
-static void ensure_item_visible(zcsr_ms* s, int idx) {
+static void ensure_item_visible(zcsr_game_settings* s, int idx) {
     if (idx < 0) return;
     int item_top = idx * s->item_height;
     int item_bot = item_top + s->item_height;
@@ -224,13 +224,13 @@ static void ensure_item_visible(zcsr_ms* s, int idx) {
     clamp_scroll(s);
 }
 
-static ms_rect dropdown_closed_rect(const zcsr_ms* s, int idx) {
+static ms_rect dropdown_closed_rect(const zcsr_game_settings* s, int idx) {
     ms_rect row = item_row_rect(s, idx);
     float cy = row.y + ((float)s->item_height - 24.0f) * 0.5f;
     return (ms_rect){ row.x + row.w - MS_CONTROL_W, cy, MS_CONTROL_W, 24.0f };
 }
 
-static ms_rect dropdown_option_rect(const zcsr_ms* s, int item_idx, int opt_idx) {
+static ms_rect dropdown_option_rect(const zcsr_game_settings* s, int item_idx, int opt_idx) {
     ms_rect dd = dropdown_closed_rect(s, item_idx);
     if (s->dropdown_up) {
         /* expand upward: option 0 is at the bottom, closest to the closed box */
@@ -241,8 +241,8 @@ static ms_rect dropdown_option_rect(const zcsr_ms* s, int item_idx, int opt_idx)
 }
 
 /* compute whether dropdown should expand upward to stay within content area */
-static bool compute_dropdown_up(const zcsr_ms* s, int item_idx) {
-    const zcsr_ms_item* it = &s->tabs[s->active_tab].items[item_idx];
+static bool compute_dropdown_up(const zcsr_game_settings* s, int item_idx) {
+    const zcsr_game_settings_item* it = &s->tabs[s->active_tab].items[item_idx];
     ms_rect cb = dropdown_closed_rect(s, item_idx);
     float pop_h = (float)it->option_count * MS_DD_OPT_H;
     float bottom = cb.y + cb.h + pop_h;
@@ -254,19 +254,19 @@ static bool compute_dropdown_up(const zcsr_ms* s, int item_idx) {
     return false;
 }
 
-static ms_rect slider_track_rect(const zcsr_ms* s, int idx) {
+static ms_rect slider_track_rect(const zcsr_game_settings* s, int idx) {
     ms_rect row = item_row_rect(s, idx);
     float cy = row.y + ((float)s->item_height - 6.0f) * 0.5f;
     return (ms_rect){ row.x + row.w - MS_SLIDER_W - 40.0f, cy, MS_SLIDER_W, 6.0f };
 }
 
-static ms_rect toggle_rect(const zcsr_ms* s, int idx) {
+static ms_rect toggle_rect(const zcsr_game_settings* s, int idx) {
     ms_rect row = item_row_rect(s, idx);
     float cy = row.y + ((float)s->item_height - 22.0f) * 0.5f;
     return (ms_rect){ row.x + row.w - MS_TOGGLE_W - 40.0f, cy, MS_TOGGLE_W, 22.0f };
 }
 
-static ms_rect button_rect(const zcsr_ms* s, int idx) {
+static ms_rect button_rect(const zcsr_game_settings* s, int idx) {
     ms_rect n;
     if (idx >= 0 && idx < 3 && ms_node_rect(s, s->btn_node[idx], &n)) return n;
     /* 0=Apply (right), 1=Cancel (right of Apply), 2=Reset (left) */
@@ -282,7 +282,7 @@ static ms_rect button_rect(const zcsr_ms* s, int idx) {
 
 /* 把布局结果写回组件树：标签页、当前标签页的每一项、三个底部按钮。
  * 这里用纯公式计算，不读 node，避免"写的时候又依赖上一次写的结果"。 */
-static void ms_sync_nodes(zcsr_ms* s) {
+static void ms_sync_nodes(zcsr_game_settings* s) {
     if (!s->ui) return;
 
     float scale = s->text_scale;
@@ -319,7 +319,7 @@ static void ms_sync_nodes(zcsr_ms* s) {
 }
 
 /* ---- recompute layout from current x/y/width/height (call after resize) ---- */
-static void ms_recompute_layout(zcsr_ms* s) {
+static void ms_recompute_layout(zcsr_game_settings* s) {
     if (!s) return;
     s->content_left = s->x + MS_PAD;
     s->content_top  = s->y + MS_TAB_BAR_H + MS_PAD;
@@ -337,30 +337,30 @@ static void ms_recompute_layout(zcsr_ms* s) {
 }
 
 /* ---- 创建 ---- */
-zcsr_ms* zcsr_ms_create(void* buf, size_t bytes, const zcsr_ms_config* cfg) {
-    if (!buf || !cfg || bytes < sizeof(zcsr_ms)) return NULL;
+zcsr_game_settings* zcsr_game_settings_create(void* buf, size_t bytes, const zcsr_game_settings_config* cfg) {
+    if (!buf || !cfg || bytes < sizeof(zcsr_game_settings)) return NULL;
     if (!cfg->tabs || cfg->tab_count <= 0) return NULL;
 
     /* validate every tab and item */
     for (int t = 0; t < cfg->tab_count; t++) {
-        const zcsr_ms_tab* tab = &cfg->tabs[t];
+        const zcsr_game_settings_tab* tab = &cfg->tabs[t];
         if (!tab->items || tab->count < 0) return NULL;
         for (int i = 0; i < tab->count; i++) {
-            const zcsr_ms_item* it = &tab->items[i];
-            if (it->type < ZCSR_MS_DROPDOWN || it->type > ZCSR_MS_SEPARATOR) return NULL;
-            if (it->type == ZCSR_MS_DROPDOWN) {
+            const zcsr_game_settings_item* it = &tab->items[i];
+            if (it->type < ZCSR_GAME_SETTINGS_DROPDOWN || it->type > ZCSR_GAME_SETTINGS_SEPARATOR) return NULL;
+            if (it->type == ZCSR_GAME_SETTINGS_DROPDOWN) {
                 if (it->option_count <= 0 || !it->options) return NULL;
                 for (int o = 0; o < it->option_count; o++)
                     if (!it->options[o]) return NULL;
             }
-            if (it->type == ZCSR_MS_SLIDER) {
+            if (it->type == ZCSR_GAME_SETTINGS_SLIDER) {
                 if (it->min >= it->max) return NULL;
                 if (it->step <= 0.0f) return NULL;
             }
         }
     }
 
-    zcsr_ms* s = (zcsr_ms*)buf;
+    zcsr_game_settings* s = (zcsr_game_settings*)buf;
     memset(s, 0, sizeof(*s));
     s->tabs        = cfg->tabs;
     s->tab_count   = cfg->tab_count;
@@ -377,7 +377,7 @@ zcsr_ms* zcsr_ms_create(void* buf, size_t bytes, const zcsr_ms_config* cfg) {
     /* init pending + default values for all tabs */
     for (int t = 0; t < s->tab_count; t++) {
         for (int i = 0; i < s->tabs[t].count; i++) {
-            zcsr_ms_item* it = &s->tabs[t].items[i];
+            zcsr_game_settings_item* it = &s->tabs[t].items[i];
             it->pending_value  = it->value;
             it->pending_slider = it->slider_value;
             it->pending_toggle = it->toggle_value;
@@ -385,12 +385,12 @@ zcsr_ms* zcsr_ms_create(void* buf, size_t bytes, const zcsr_ms_config* cfg) {
             it->default_slider = it->slider_value;
             it->default_toggle = it->toggle_value;
             /* clamp slider default to [min,max] */
-            if (it->type == ZCSR_MS_SLIDER) {
+            if (it->type == ZCSR_GAME_SETTINGS_SLIDER) {
                 if (it->default_slider < it->min) it->default_slider = it->min;
                 if (it->default_slider > it->max) it->default_slider = it->max;
             }
             /* clamp dropdown default to [0, option_count-1] */
-            if (it->type == ZCSR_MS_DROPDOWN && it->option_count > 0) {
+            if (it->type == ZCSR_GAME_SETTINGS_DROPDOWN && it->option_count > 0) {
                 if (it->default_value < 0) it->default_value = 0;
                 if (it->default_value >= it->option_count) it->default_value = it->option_count - 1;
                 it->value = it->default_value;
@@ -448,7 +448,7 @@ zcsr_ms* zcsr_ms_create(void* buf, size_t bytes, const zcsr_ms_config* cfg) {
 }
 
 /* ---- runtime resize: update panel bounds and recompute layout ---- */
-void zcsr_ms_set_bounds(zcsr_ms* s, int x, int y, int w, int h) {
+void zcsr_game_settings_set_bounds(zcsr_game_settings* s, int x, int y, int w, int h) {
     if (!s) return;
     if (w < 320) w = 320;
     if (h < 200) h = 200;
@@ -456,7 +456,7 @@ void zcsr_ms_set_bounds(zcsr_ms* s, int x, int y, int w, int h) {
     ms_recompute_layout(s);
 }
 
-void zcsr_ms_destroy(zcsr_ms* s) {
+void zcsr_game_settings_destroy(zcsr_game_settings* s) {
     if (!s) return;
     if (s->ui) {
         zcsr_ui_destroy(s->ui);
@@ -465,8 +465,8 @@ void zcsr_ms_destroy(zcsr_ms* s) {
 }
 
 /* ---- 滑块: 从鼠标 x 坐标设置值 ---- */
-static void set_slider_from_mouse(zcsr_ms* s, int item_idx, int mx) {
-    zcsr_ms_item* it = &cur_tab(s)->items[item_idx];
+static void set_slider_from_mouse(zcsr_game_settings* s, int item_idx, int mx) {
+    zcsr_game_settings_item* it = &cur_tab(s)->items[item_idx];
     ms_rect tr = slider_track_rect(s, item_idx);
     float ratio = ((float)mx - tr.x) / tr.w;
     if (ratio < 0.0f) ratio = 0.0f;
@@ -482,7 +482,7 @@ static void set_slider_from_mouse(zcsr_ms* s, int item_idx, int mx) {
 }
 
 /* ---- 鼠标更新 (返回 1=apply, -1=cancel, 0=normal) ---- */
-int zcsr_ms_update_mouse(zcsr_ms* s, const zcsr_mouse_state* mouse) {
+int zcsr_game_settings_update_mouse(zcsr_game_settings* s, const zcsr_mouse_state* mouse) {
     if (!s || !mouse) return 0;
 
     bool left_down = (mouse->buttons & ZCSR_MOUSE_LEFT) != 0;
@@ -505,7 +505,7 @@ int zcsr_ms_update_mouse(zcsr_ms* s, const zcsr_mouse_state* mouse) {
 
     /* --- dropdown open: capture all clicks --- */
     if (s->dropdown_open >= 0) {
-        zcsr_ms_item* it = &cur_tab(s)->items[s->dropdown_open];
+        zcsr_game_settings_item* it = &cur_tab(s)->items[s->dropdown_open];
         if (edge_down) {
             /* click on closed box -> toggle close */
             ms_rect cb = dropdown_closed_rect(s, s->dropdown_open);
@@ -554,9 +554,9 @@ int zcsr_ms_update_mouse(zcsr_ms* s, const zcsr_mouse_state* mouse) {
         if (point_in_rect(mx, my, tab_rect(s, t))) { s->hovered_tab = t; break; }
     }
 
-    zcsr_ms_tab* tab = cur_tab(s);
+    zcsr_game_settings_tab* tab = cur_tab(s);
     for (int i = 0; i < tab->count; i++) {
-        if (tab->items[i].type == ZCSR_MS_SEPARATOR) continue;
+        if (tab->items[i].type == ZCSR_GAME_SETTINGS_SEPARATOR) continue;
         ms_rect r = item_row_rect(s, i);
         if (r.y + r.h < s->content_top || r.y > s->content_top + s->content_h) continue;
         if (point_in_rect(mx, my, r)) { s->hovered_item = i; break; }
@@ -580,25 +580,25 @@ int zcsr_ms_update_mouse(zcsr_ms* s, const zcsr_mouse_state* mouse) {
         else if (s->hovered_button >= 0) {
             if (s->hovered_button == 0) { action = 1; }  /* Apply: caller applies */
             else if (s->hovered_button == 1) { action = -1; }  /* Cancel: caller cancels */
-            else if (s->hovered_button == 2) { zcsr_ms_reset(s); }  /* Reset: internal */
+            else if (s->hovered_button == 2) { zcsr_game_settings_reset(s); }  /* Reset: internal */
         }
         /* item click */
         else if (s->hovered_item >= 0) {
             s->selected_item = s->hovered_item;
             s->focus_area = 0;
-            zcsr_ms_item* it = &tab->items[s->hovered_item];
-            if (it->type == ZCSR_MS_DROPDOWN) {
+            zcsr_game_settings_item* it = &tab->items[s->hovered_item];
+            if (it->type == ZCSR_GAME_SETTINGS_DROPDOWN) {
                 if (point_in_rect(mx, my, dropdown_closed_rect(s, s->hovered_item))) {
                     s->dropdown_open = s->hovered_item;
                     s->dropdown_up = compute_dropdown_up(s, s->hovered_item);
                     s->dropdown_hover_opt = it->pending_value;
                 }
-            } else if (it->type == ZCSR_MS_TOGGLE) {
+            } else if (it->type == ZCSR_GAME_SETTINGS_TOGGLE) {
                 if (point_in_rect(mx, my, toggle_rect(s, s->hovered_item))) {
                     it->pending_toggle = !it->pending_toggle;
                     recompute_dirty(s);
                 }
-            } else if (it->type == ZCSR_MS_SLIDER) {
+            } else if (it->type == ZCSR_GAME_SETTINGS_SLIDER) {
                 ms_rect tr = slider_track_rect(s, s->hovered_item);
                 /* expand hit area vertically for easier grabbing */
                 ms_rect hit = { tr.x, tr.y - 8, tr.w, tr.h + 16 };
@@ -615,12 +615,12 @@ int zcsr_ms_update_mouse(zcsr_ms* s, const zcsr_mouse_state* mouse) {
 }
 
 /* ---- 键盘处理 (返回 1=apply, -1=cancel, 0=normal) ---- */
-int zcsr_ms_handle_key(zcsr_ms* s, zcsr_keycode key, zcsr_key_action action) {
+int zcsr_game_settings_handle_key(zcsr_game_settings* s, zcsr_keycode key, zcsr_key_action action) {
     if (!s || action != ZCSR_KEY_DOWN) return 0;
 
     /* --- dropdown open: capture keys --- */
     if (s->dropdown_open >= 0) {
-        zcsr_ms_item* it = &cur_tab(s)->items[s->dropdown_open];
+        zcsr_game_settings_item* it = &cur_tab(s)->items[s->dropdown_open];
         switch (key) {
             case 38: case 87: /* Up / W */
                 if (s->dropdown_hover_opt > 0) s->dropdown_hover_opt--;
@@ -662,7 +662,7 @@ int zcsr_ms_handle_key(zcsr_ms* s, zcsr_keycode key, zcsr_key_action action) {
             case 13: case 32: /* Enter / Space — activate button */
                 if (s->selected_button == 0) { return 1; }  /* Apply: caller applies */
                 if (s->selected_button == 1) { return -1; } /* Cancel: caller cancels */
-                if (s->selected_button == 2) { zcsr_ms_reset(s); return 0; } /* Reset: internal */
+                if (s->selected_button == 2) { zcsr_game_settings_reset(s); return 0; } /* Reset: internal */
                 return 0;
             case 38: case 87: /* Up / W -> back to items */
                 s->focus_area = 0; return 0;
@@ -688,13 +688,13 @@ int zcsr_ms_handle_key(zcsr_ms* s, zcsr_keycode key, zcsr_key_action action) {
         }
         case 39: case 68: { /* Right / D — increase */
             if (s->selected_item < 0) return 0;
-            zcsr_ms_item* it = &cur_tab(s)->items[s->selected_item];
-            if (it->type == ZCSR_MS_DROPDOWN) {
+            zcsr_game_settings_item* it = &cur_tab(s)->items[s->selected_item];
+            if (it->type == ZCSR_GAME_SETTINGS_DROPDOWN) {
                 if (it->pending_value < it->option_count - 1) it->pending_value++;
-            } else if (it->type == ZCSR_MS_SLIDER) {
+            } else if (it->type == ZCSR_GAME_SETTINGS_SLIDER) {
                 it->pending_slider += it->step;
                 if (it->pending_slider > it->max) it->pending_slider = it->max;
-            } else if (it->type == ZCSR_MS_TOGGLE) {
+            } else if (it->type == ZCSR_GAME_SETTINGS_TOGGLE) {
                 it->pending_toggle = true;
             }
             recompute_dirty(s);
@@ -702,13 +702,13 @@ int zcsr_ms_handle_key(zcsr_ms* s, zcsr_keycode key, zcsr_key_action action) {
         }
         case 37: case 65: { /* Left / A — decrease */
             if (s->selected_item < 0) return 0;
-            zcsr_ms_item* it = &cur_tab(s)->items[s->selected_item];
-            if (it->type == ZCSR_MS_DROPDOWN) {
+            zcsr_game_settings_item* it = &cur_tab(s)->items[s->selected_item];
+            if (it->type == ZCSR_GAME_SETTINGS_DROPDOWN) {
                 if (it->pending_value > 0) it->pending_value--;
-            } else if (it->type == ZCSR_MS_SLIDER) {
+            } else if (it->type == ZCSR_GAME_SETTINGS_SLIDER) {
                 it->pending_slider -= it->step;
                 if (it->pending_slider < it->min) it->pending_slider = it->min;
-            } else if (it->type == ZCSR_MS_TOGGLE) {
+            } else if (it->type == ZCSR_GAME_SETTINGS_TOGGLE) {
                 it->pending_toggle = false;
             }
             recompute_dirty(s);
@@ -716,12 +716,12 @@ int zcsr_ms_handle_key(zcsr_ms* s, zcsr_keycode key, zcsr_key_action action) {
         }
         case 13: case 32: { /* Enter / Space */
             if (s->selected_item < 0) return 0;
-            zcsr_ms_item* it = &cur_tab(s)->items[s->selected_item];
-            if (it->type == ZCSR_MS_DROPDOWN) {
+            zcsr_game_settings_item* it = &cur_tab(s)->items[s->selected_item];
+            if (it->type == ZCSR_GAME_SETTINGS_DROPDOWN) {
                 s->dropdown_open = s->selected_item;
                 s->dropdown_up = compute_dropdown_up(s, s->selected_item);
                 s->dropdown_hover_opt = it->pending_value;
-            } else if (it->type == ZCSR_MS_TOGGLE) {
+            } else if (it->type == ZCSR_GAME_SETTINGS_TOGGLE) {
                 it->pending_toggle = !it->pending_toggle;
                 recompute_dirty(s);
             }
@@ -779,7 +779,7 @@ static void draw_dd_arrow(zcsr_gl_renderer* r, float cx, float cy, float r0, flo
 }
 
 /* ---- 渲染 ---- */
-void zcsr_ms_render(zcsr_ms* s, zcsr_gl_renderer* r) {
+void zcsr_game_settings_render(zcsr_game_settings* s, zcsr_gl_renderer* r) {
     if (!s || !r) return;
     float scale = s->text_scale;
 
@@ -823,9 +823,9 @@ void zcsr_ms_render(zcsr_ms* s, zcsr_gl_renderer* r) {
 
     /* determine info item: hovered takes priority, else selected */
     int info_idx = (s->hovered_item >= 0) ? s->hovered_item : s->selected_item;
-    zcsr_ms_tab* tab = cur_tab(s);
+    zcsr_game_settings_tab* tab = cur_tab(s);
     if (info_idx >= 0 && info_idx < tab->count) {
-        zcsr_ms_item* it = &tab->items[info_idx];
+        zcsr_game_settings_item* it = &tab->items[info_idx];
         float iy = (float)s->right_y + 12.0f;
         /* title */
         zcsr_gl_draw_text(r, it->label, (float)s->right_x + 8, iy, scale * 1.1f, C_TXT_ACCENT);
@@ -852,13 +852,13 @@ void zcsr_ms_render(zcsr_ms* s, zcsr_gl_renderer* r) {
         zcsr_gl_draw_text(r, "Current:", (float)s->right_x + 8, iy, scale * 0.85f, C_TXT_DIM);
         iy += 8.0f * scale * 0.85f + 4.0f;
         char valbuf[64];
-        if (it->type == ZCSR_MS_DROPDOWN) {
+        if (it->type == ZCSR_GAME_SETTINGS_DROPDOWN) {
             const char* v = (it->pending_value >= 0 && it->pending_value < it->option_count)
                             ? it->options[it->pending_value] : "?";
             snprintf(valbuf, sizeof(valbuf), "%s", v);
-        } else if (it->type == ZCSR_MS_SLIDER) {
+        } else if (it->type == ZCSR_GAME_SETTINGS_SLIDER) {
             snprintf(valbuf, sizeof(valbuf), "%.1f", it->pending_slider);
-        } else if (it->type == ZCSR_MS_TOGGLE) {
+        } else if (it->type == ZCSR_GAME_SETTINGS_TOGGLE) {
             snprintf(valbuf, sizeof(valbuf), "%s", it->pending_toggle ? "On" : "Off");
         } else {
             valbuf[0] = '\0';
@@ -868,13 +868,13 @@ void zcsr_ms_render(zcsr_ms* s, zcsr_gl_renderer* r) {
 
     /* === settings items === */
     for (int i = 0; i < tab->count; i++) {
-        zcsr_ms_item* it = &tab->items[i];
+        zcsr_game_settings_item* it = &tab->items[i];
         ms_rect row = item_row_rect(s, i);
 
         /* skip items outside content area */
         if (row.y + row.h < s->content_top || row.y > s->content_top + s->content_h) continue;
 
-        if (it->type == ZCSR_MS_SEPARATOR) {
+        if (it->type == ZCSR_GAME_SETTINGS_SEPARATOR) {
             /* group label */
             zcsr_gl_draw_text(r, it->label, row.x, row.y + 4, scale * 0.8f, C_TXT_DIM);
             /* line */
@@ -901,15 +901,15 @@ void zcsr_ms_render(zcsr_ms* s, zcsr_gl_renderer* r) {
 
         /* dirty marker */
         bool item_dirty = false;
-        if (it->type == ZCSR_MS_DROPDOWN) item_dirty = (it->pending_value != it->value);
-        else if (it->type == ZCSR_MS_SLIDER) item_dirty = (fabsf(it->pending_slider - it->slider_value) > 0.001f);
-        else if (it->type == ZCSR_MS_TOGGLE) item_dirty = (it->pending_toggle != it->toggle_value);
+        if (it->type == ZCSR_GAME_SETTINGS_DROPDOWN) item_dirty = (it->pending_value != it->value);
+        else if (it->type == ZCSR_GAME_SETTINGS_SLIDER) item_dirty = (fabsf(it->pending_slider - it->slider_value) > 0.001f);
+        else if (it->type == ZCSR_GAME_SETTINGS_TOGGLE) item_dirty = (it->pending_toggle != it->toggle_value);
         if (item_dirty) {
             zcsr_gl_fill_rect(r, row.x + row.w + 4, row.y + row.h * 0.5f - 2, 4.0f, 4.0f, C_DIRTY);
         }
 
         /* --- control rendering --- */
-        if (it->type == ZCSR_MS_DROPDOWN) {
+        if (it->type == ZCSR_GAME_SETTINGS_DROPDOWN) {
             ms_rect cb = dropdown_closed_rect(s, i);
             bool dd_open = (s->dropdown_open == i);
             bool hov = is_hov || dd_open;
@@ -921,7 +921,7 @@ void zcsr_ms_render(zcsr_ms* s, zcsr_gl_renderer* r) {
                               scale * 0.9f, C_TXT_BRIGHT);
             draw_dd_arrow(r, cb.x + cb.w - 12, cb.y + cb.h * 0.5f,
                           hov ? 0.5f : 0.35f, hov ? 0.7f : 0.5f, hov ? 1.0f : 0.7f, 1.0f);
-        } else if (it->type == ZCSR_MS_SLIDER) {
+        } else if (it->type == ZCSR_GAME_SETTINGS_SLIDER) {
             ms_rect tr = slider_track_rect(s, i);
             /* value text */
             char vbuf[16];
@@ -940,7 +940,7 @@ void zcsr_ms_render(zcsr_ms* s, zcsr_gl_renderer* r) {
             float hx = tr.x + tr.w * ratio - 4;
             zcsr_gl_fill_rect(r, hx, tr.y - 4, 8.0f, tr.h + 8,
                               MS_RGBA_IF(is_sel, 1.0f,1.0f,1.0f,1.0f, 0.85f,0.9f,1.0f,1.0f));
-        } else if (it->type == ZCSR_MS_TOGGLE) {
+        } else if (it->type == ZCSR_GAME_SETTINGS_TOGGLE) {
             ms_rect tg = toggle_rect(s, i);
             bool on = it->pending_toggle;
             /* track */
@@ -957,7 +957,7 @@ void zcsr_ms_render(zcsr_ms* s, zcsr_gl_renderer* r) {
 
     /* === dropdown popup (render on top) === */
     if (s->dropdown_open >= 0) {
-        zcsr_ms_item* it = &cur_tab(s)->items[s->dropdown_open];
+        zcsr_game_settings_item* it = &cur_tab(s)->items[s->dropdown_open];
         ms_rect cb = dropdown_closed_rect(s, s->dropdown_open);
         float pop_h = (float)it->option_count * MS_DD_OPT_H;
         float pop_y = s->dropdown_up ? cb.y - pop_h : cb.y + cb.h;
@@ -1017,7 +1017,7 @@ void zcsr_ms_render(zcsr_ms* s, zcsr_gl_renderer* r) {
 }
 
 /* ---- apply / cancel / reset ---- */
-void zcsr_ms_apply(zcsr_ms* s) {
+void zcsr_game_settings_apply(zcsr_game_settings* s) {
     if (!s) return;
     for (int t = 0; t < s->tab_count; t++) {
         for (int i = 0; i < s->tabs[t].count; i++) {
@@ -1029,7 +1029,7 @@ void zcsr_ms_apply(zcsr_ms* s) {
     s->dirty = false;
 }
 
-void zcsr_ms_cancel(zcsr_ms* s) {
+void zcsr_game_settings_cancel(zcsr_game_settings* s) {
     if (!s) return;
     for (int t = 0; t < s->tab_count; t++) {
         for (int i = 0; i < s->tabs[t].count; i++) {
@@ -1043,11 +1043,11 @@ void zcsr_ms_cancel(zcsr_ms* s) {
     s->dirty = false;
 }
 
-void zcsr_ms_reset(zcsr_ms* s) {
+void zcsr_game_settings_reset(zcsr_game_settings* s) {
     if (!s) return;
     for (int t = 0; t < s->tab_count; t++) {
         for (int i = 0; i < s->tabs[t].count; i++) {
-            zcsr_ms_item* it = &s->tabs[t].items[i];
+            zcsr_game_settings_item* it = &s->tabs[t].items[i];
             it->value         = it->default_value;
             it->slider_value  = it->default_slider;
             it->toggle_value  = it->default_toggle;
@@ -1061,5 +1061,5 @@ void zcsr_ms_reset(zcsr_ms* s) {
     s->dirty = false;
 }
 
-bool zcsr_ms_is_dirty(const zcsr_ms* s) { return s ? s->dirty : false; }
-int  zcsr_ms_active_tab(const zcsr_ms* s) { return s ? s->active_tab : -1; }
+bool zcsr_game_settings_is_dirty(const zcsr_game_settings* s) { return s ? s->dirty : false; }
+int  zcsr_game_settings_active_tab(const zcsr_game_settings* s) { return s ? s->active_tab : -1; }
