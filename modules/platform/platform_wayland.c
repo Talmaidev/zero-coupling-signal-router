@@ -1,14 +1,22 @@
-/* platform_wayland.c — Wayland window backend (opt-in via -DZCSR_LINUX_BACKEND=wayland).
+/* platform_wayland.c — Wayland window backend（目前 Linux 上唯一实现的窗口后端）。
+ *
+ * 编译门槛（两处都要满足，缺一不可）：
+ *   1) 本文件的整文件守卫 `#if defined(__linux__) && !defined(__ANDROID__)`；
+ *   2) CMake 里 Linux 分支把本文件显式 target_sources 进 zcsr_platform，
+ *      并定义 ZCSR_LINUX_BACKEND_WAYLAND / 链接 libwayland-client。
+ * 注意：守卫故意不检查 ZCSR_LINUX_BACKEND_WAYLAND —— 因为本文件是 Linux 的
+ * 默认（唯一）后端。将来补 X11 后端时，必须先把这个守卫改成后端二选一，
+ * 否则 platform_x11.c 与本文件会在同一平台上重复定义同名符号。
  *
  * Zero-heap: uses the fixed surface pool from platform_internal.h, no malloc/calloc.
  * System library (libwayland-client) internal allocations are out of scope.
  *
- * Key correctness points (per DS/GPT review):
- *   - xdg_wm_base ping/pong MUST be answered, else compositor kills the client.
- *   - Event pump: dispatch_pending + flush + poll(fd) + dispatch (not dispatch_pending alone,
- *     which never reads the socket).
- *   - Full failure paths in create (goto fail -> destroy -> NULL).
- *   - native_handle returns wl_surface*, native_display returns wl_display* (for EGL).
+ * 关键正确性要求（违反任一条会导致合成器断开或界面卡死）：
+ *   - xdg_wm_base ping/pong 必须回应，否则合成器会杀掉客户端。
+ *   - 事件泵必须 dispatch_pending + flush + poll(fd) + dispatch；
+ *     只用 dispatch_pending 永远不会从 socket 读取。
+ *   - create 的每条失败路径都要走 goto fail → destroy → NULL。
+ *   - native_handle 返回 wl_surface*，native_display 返回 wl_display*（供 EGL）。
  */
 
 /* This file is auto-globbed by zcsr_module() on every platform. Gate the entire
@@ -245,7 +253,7 @@ bool zcsr_display_get(int index, zcsr_display_info* out) {
     out->refresh_hz = 0;
     out->dpi_scale = 1.0f;
     out->is_primary = 1;
-    zcsr_copy_name(out->name, sizeof(out->name), "Wayland");
+    zcsr_display_set_name(out, "Wayland");
     return true;
 }
 
@@ -309,3 +317,10 @@ float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
 }
 
 #endif /* defined(__linux__) && !defined(__ANDROID__) */
+
+/* 本文件在 Windows / macOS / Android 上整文件被守卫剔除，MSVC 会报
+ * C4206（translation unit is empty）；配 /WX 时直接构建失败。
+ * 给一个无副作用的外部链接 typedef 保持 TU 非空，与 file_posix.c 的处理一致。 */
+#if !defined(__linux__) || defined(__ANDROID__)
+typedef int zcsr_platform_wayland_unused_tu_;
+#endif
