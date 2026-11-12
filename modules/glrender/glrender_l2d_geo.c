@@ -10,6 +10,11 @@
 #include <stdio.h>
 #include <string.h>
 
+/* glad only defines GL_TEXTURE0; unit 1 is the next consecutive value. */
+#ifndef GL_TEXTURE1
+#define GL_TEXTURE1 0x84C1
+#endif
+
 /* VS applies the shared game-shear projection; the ORIGINAL world position
  * and normal pass through as varyings — the G-buffer stores world data, the
  * projection decides screen placement only. k comes from the camera argument
@@ -93,6 +98,65 @@ static const char* geo_tex_fs =
     "  o_albedo = rgba;\n"
     "  o_position = vec4(v_world, 1.0);\n"
     "  o_normal = vec4(v_norm * 0.5 + 0.5, 1.0);\n"
+    "  o_emissive = u_emissive;\n"
+    "}\n";
+
+/* Normal-mapped textured variant: vertex carries an explicit tangent in
+ * addition to the face normal, so the FS can build a TBN basis and convert
+ * the tangent-space normal-map texel into the world normal written to G2.
+ * Two textures: albedo on unit 0, normal map on unit 1. */
+static const char* geo_nmap_vs =
+    "#version 330 core\n"
+    "layout(location=0) in vec3 a_pos;\n"
+    "layout(location=1) in vec3 a_norm;\n"
+    "layout(location=2) in vec3 a_tan;\n"
+    "layout(location=3) in vec2 a_uv;\n"
+    "uniform vec2 u_cam;\n"
+    "uniform float u_ppu;\n"
+    "uniform float u_k;\n"
+    "uniform vec2 u_view;\n"
+    "out vec3 v_world;\n"
+    "out vec3 v_norm;\n"
+    "out vec3 v_tan;\n"
+    "out vec2 v_uv;\n"
+    "void main(){\n"
+    "  float sx = (a_pos.x - u_cam.x) * u_ppu + u_view.x * 0.5;\n"
+    "  float sy = (a_pos.y - u_cam.y - u_k * a_pos.z) * u_ppu + u_view.y * 0.5;\n"
+    "  gl_Position = vec4(sx / u_view.x * 2.0 - 1.0, 1.0 - sy / u_view.y * 2.0, 0.0, 1.0);\n"
+    "  v_world = a_pos;\n"
+    "  v_norm = a_norm;\n"
+    "  v_tan = a_tan;\n"
+    "  v_uv = a_uv;\n"
+    "}\n";
+
+static const char* geo_nmap_fs =
+    "#version 330 core\n"
+    "in vec3 v_world;\n"
+    "in vec3 v_norm;\n"
+    "in vec3 v_tan;\n"
+    "in vec2 v_uv;\n"
+    "uniform sampler2D u_tex;    /* unit 0, albedo */\n"
+    "uniform sampler2D u_nmap;   /* unit 1, tangent-space normal */\n"
+    "uniform vec4 u_tint;\n"
+    "uniform vec4 u_emissive;\n"
+    "layout(location=0) out vec4 o_albedo;\n"
+    "layout(location=1) out vec4 o_position;\n"
+    "layout(location=2) out vec4 o_normal;\n"
+    "layout(location=3) out vec4 o_emissive;\n"
+    "void main(){\n"
+    "  vec4 rgba = texture(u_tex, v_uv) * u_tint;\n"
+    "  if (rgba.a < 0.5) discard;\n"
+    "  vec3 n = normalize(v_norm);\n"
+    "  vec3 t = normalize(v_tan);\n"
+    "  /* Gram-Schmidt re-orthogonalize tangent against the normal. */\n"
+    "  t = normalize(t - n * dot(t, n));\n"
+    "  vec3 b = cross(n, t);\n"
+    "  mat3 tbn = mat3(t, b, n);\n"
+    "  vec3 map_n = texture(u_nmap, v_uv).rgb * 2.0 - 1.0;\n"
+    "  vec3 world_n = normalize(tbn * map_n);\n"
+    "  o_albedo = rgba;\n"
+    "  o_position = vec4(v_world, 1.0);\n"
+    "  o_normal = vec4(world_n * 0.5 + 0.5, 1.0);\n"
     "  o_emissive = u_emissive;\n"
     "}\n";
 
@@ -243,6 +307,75 @@ static bool geo_ensure(zcsr_gl_renderer* r) {
         glUniform1i(r->l2d_geo_tex_loc_sampler, 0);
         glUseProgram(0);
     }
+
+    /* Normal-mapped variant: one more program/VAO/VBO, same lifecycle. */
+    v = geo_compile(GL_VERTEX_SHADER, geo_nmap_vs);
+    f = geo_compile(GL_FRAGMENT_SHADER, geo_nmap_fs);
+    if (!v || !f) {
+        if (v) glDeleteShader(v);
+        if (f) glDeleteShader(f);
+        zcsr_gl_l2d_geo_cleanup(r);
+        return false;
+    }
+    p = glCreateProgram();
+    if (!p) {
+        glDeleteShader(v);
+        glDeleteShader(f);
+        zcsr_gl_l2d_geo_cleanup(r);
+        return false;
+    }
+    glAttachShader(p, v);
+    glAttachShader(p, f);
+    glLinkProgram(p);
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    glDeleteShader(v);
+    glDeleteShader(f);
+    if (!ok) {
+        char log[1024];
+        GLsizei len = 0;
+        glGetProgramInfoLog(p, (GLsizei)sizeof(log), &len, log);
+        if (len < 0) len = 0;
+        if (len >= (GLsizei)sizeof(log)) len = (GLsizei)sizeof(log) - 1;
+        log[len] = '\0';
+        fprintf(stderr, "l2d_geo nmap program link failed: %s\n", log);
+        glDeleteProgram(p);
+        zcsr_gl_l2d_geo_cleanup(r);
+        return false;
+    }
+    r->l2d_geo_nmap_prog = p;
+    r->l2d_geo_nmap_loc_cam = glGetUniformLocation(p, "u_cam");
+    r->l2d_geo_nmap_loc_ppu = glGetUniformLocation(p, "u_ppu");
+    r->l2d_geo_nmap_loc_k = glGetUniformLocation(p, "u_k");
+    r->l2d_geo_nmap_loc_view = glGetUniformLocation(p, "u_view");
+    r->l2d_geo_nmap_loc_tint = glGetUniformLocation(p, "u_tint");
+    r->l2d_geo_nmap_loc_emissive = glGetUniformLocation(p, "u_emissive");
+    r->l2d_geo_nmap_loc_albedo = glGetUniformLocation(p, "u_tex");
+    r->l2d_geo_nmap_loc_nmap = glGetUniformLocation(p, "u_nmap");
+    glGenVertexArrays(1, &r->l2d_geo_nmap_vao);
+    glGenBuffers(1, &r->l2d_geo_nmap_vbo);
+    if (!r->l2d_geo_nmap_vao || !r->l2d_geo_nmap_vbo) return false;
+    glBindVertexArray(r->l2d_geo_nmap_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, r->l2d_geo_nmap_vbo);
+    /* 11 floats per vertex: pos3 + normal3 + tangent3 + uv2. */
+    glBufferData(GL_ARRAY_BUFFER, 6 * 11 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 11 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 11 * sizeof(float),
+                          (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 11 * sizeof(float),
+                          (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, 11 * sizeof(float),
+                          (void*)(9 * sizeof(float)));
+    glBindVertexArray(0);
+    glUseProgram(r->l2d_geo_nmap_prog);
+    if (r->l2d_geo_nmap_loc_albedo >= 0)
+        glUniform1i(r->l2d_geo_nmap_loc_albedo, 0);
+    if (r->l2d_geo_nmap_loc_nmap >= 0)
+        glUniform1i(r->l2d_geo_nmap_loc_nmap, 1);
+    glUseProgram(0);
     return true;
 }
 
@@ -255,12 +388,18 @@ void zcsr_gl_l2d_geo_cleanup(zcsr_gl_renderer* r) {
     if (r->l2d_geo_tex_vbo) glDeleteBuffers(1, &r->l2d_geo_tex_vbo);
     if (r->l2d_geo_tex_vao) glDeleteVertexArrays(1, &r->l2d_geo_tex_vao);
     if (r->l2d_geo_tex_prog) glDeleteProgram(r->l2d_geo_tex_prog);
+    if (r->l2d_geo_nmap_vbo) glDeleteBuffers(1, &r->l2d_geo_nmap_vbo);
+    if (r->l2d_geo_nmap_vao) glDeleteVertexArrays(1, &r->l2d_geo_nmap_vao);
+    if (r->l2d_geo_nmap_prog) glDeleteProgram(r->l2d_geo_nmap_prog);
     r->l2d_geo_vbo = 0;
     r->l2d_geo_vao = 0;
     r->l2d_geo_prog = 0;
     r->l2d_geo_tex_vbo = 0;
     r->l2d_geo_tex_vao = 0;
     r->l2d_geo_tex_prog = 0;
+    r->l2d_geo_nmap_vbo = 0;
+    r->l2d_geo_nmap_vao = 0;
+    r->l2d_geo_nmap_prog = 0;
     r->l2d_geo_active = false;
 }
 
@@ -321,6 +460,22 @@ bool zcsr_gl_l2d_geo_begin(zcsr_gl_renderer* renderer,
     }
     if (renderer->l2d_geo_tex_loc_k >= 0) {
         glUniform1f(renderer->l2d_geo_tex_loc_k, camera->height_shear);
+    }
+    /* nmap variant needs the same camera/projection uniforms */
+    glUseProgram(renderer->l2d_geo_nmap_prog);
+    if (renderer->l2d_geo_nmap_loc_view >= 0) {
+        glUniform2f(renderer->l2d_geo_nmap_loc_view,
+                    (float)viewport[2], (float)viewport[3]);
+    }
+    if (renderer->l2d_geo_nmap_loc_cam >= 0) {
+        glUniform2f(renderer->l2d_geo_nmap_loc_cam,
+                    camera->center_x, camera->center_y);
+    }
+    if (renderer->l2d_geo_nmap_loc_ppu >= 0) {
+        glUniform1f(renderer->l2d_geo_nmap_loc_ppu, camera->px_per_unit);
+    }
+    if (renderer->l2d_geo_nmap_loc_k >= 0) {
+        glUniform1f(renderer->l2d_geo_nmap_loc_k, camera->height_shear);
     }
     renderer->l2d_geo_active = true;
     return true;
@@ -429,6 +584,78 @@ bool zcsr_gl_l2d_geo_tex_face(zcsr_gl_renderer* renderer,
     glBindTexture(GL_TEXTURE_2D, e->id);
     glBindVertexArray(renderer->l2d_geo_tex_vao);
     glBindBuffer(GL_ARRAY_BUFFER, renderer->l2d_geo_tex_vbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    return true;
+}
+
+/* NORMAL-MAPPED textured face: albedo texture plus a tangent-space normal
+ * texture. The caller supplies the face normal AND the tangent direction
+ * (unit world vectors); the FS builds TBN and writes the perturbed world
+ * normal to G2. Same cutout rule as geo_tex_face. */
+bool zcsr_gl_l2d_geo_nmap_face(zcsr_gl_renderer* renderer,
+                               zcsr_gl_texture albedo_tex,
+                               zcsr_gl_texture normal_tex,
+                               const float corners_xyz[12],
+                               const float uv_st[8],
+                               const float tint_rgba[4],
+                               const float normal_xyz[3],
+                               const float tangent_xyz[3],
+                               const float emissive_rgba[4]) {
+    /* 6 vertices x 11 floats: pos3 + normal3 + tangent3 + uv2. */
+    float verts[6 * 11];
+    int i;
+    static const int idx[6] = { 0, 1, 2, 0, 2, 3 };
+    zcsr_gl_tex_entry* ae;
+    zcsr_gl_tex_entry* ne;
+
+    if (renderer == NULL || !renderer->l2d_geo_active) return false;
+    if (renderer->l2d_geo_nmap_prog == 0u) return false;
+    if (corners_xyz == NULL || uv_st == NULL || tint_rgba == NULL ||
+        normal_xyz == NULL || tangent_xyz == NULL ||
+        emissive_rgba == NULL) return false;
+    ae = zcsr_gl_find_tex(renderer, albedo_tex);
+    ne = zcsr_gl_find_tex(renderer, normal_tex);
+    if (ae == NULL || ae->id == 0u || ne == NULL || ne->id == 0u) return false;
+    for (i = 0; i < 12; ++i)
+        if (!isfinite(corners_xyz[i])) return false;
+    for (i = 0; i < 8; ++i)
+        if (!isfinite(uv_st[i])) return false;
+    for (i = 0; i < 4; ++i)
+        if (!isfinite(tint_rgba[i]) || !isfinite(emissive_rgba[i])) return false;
+    for (i = 0; i < 3; ++i)
+        if (!isfinite(normal_xyz[i]) || !isfinite(tangent_xyz[i])) return false;
+
+    for (i = 0; i < 6; ++i) {
+        const int c = idx[i];
+        float* v = &verts[i * 11];
+        v[0] = corners_xyz[c * 3 + 0];
+        v[1] = corners_xyz[c * 3 + 1];
+        v[2] = corners_xyz[c * 3 + 2];
+        v[3] = normal_xyz[0];
+        v[4] = normal_xyz[1];
+        v[5] = normal_xyz[2];
+        v[6] = tangent_xyz[0];
+        v[7] = tangent_xyz[1];
+        v[8] = tangent_xyz[2];
+        v[9]  = uv_st[c * 2 + 0];
+        v[10] = uv_st[c * 2 + 1];
+    }
+
+    glUseProgram(renderer->l2d_geo_nmap_prog);
+    if (renderer->l2d_geo_nmap_loc_tint >= 0)
+        glUniform4f(renderer->l2d_geo_nmap_loc_tint,
+                    tint_rgba[0], tint_rgba[1], tint_rgba[2], tint_rgba[3]);
+    if (renderer->l2d_geo_nmap_loc_emissive >= 0)
+        glUniform4f(renderer->l2d_geo_nmap_loc_emissive,
+                    emissive_rgba[0], emissive_rgba[1],
+                    emissive_rgba[2], emissive_rgba[3]);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, ae->id);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, ne->id);
+    glBindVertexArray(renderer->l2d_geo_nmap_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, renderer->l2d_geo_nmap_vbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     return true;

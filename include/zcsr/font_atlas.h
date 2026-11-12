@@ -22,6 +22,10 @@ zcsr_font_atlas* zcsr_font_atlas_create(zcsr_gl_renderer* gl, zcsr_font* font,
 
 void zcsr_font_atlas_destroy(zcsr_font_atlas*);
 
+/* Switch the atlas to a different TTF font at runtime. The glyph cache is
+ * fully rebuilt (old bitmaps are invalid); the atlas GL texture is reused. */
+void zcsr_font_atlas_set_font(zcsr_font_atlas*, zcsr_font* font);
+
 /* Call at the start of each frame before any draw_text. Resets the per-frame
  * codepoint set used for atlas rebuild-on-overflow. */
 void zcsr_font_atlas_begin_frame(zcsr_font_atlas*);

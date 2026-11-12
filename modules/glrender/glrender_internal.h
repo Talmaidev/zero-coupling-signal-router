@@ -9,6 +9,7 @@
  */
 
 #include "zcsr/gl_render.h"
+#include "zcsr/gl_render_light2d_ext.h"
 
 /* Platform system headers must precede the vendored GL loader where the platform's GL headers
  * depend on them (Windows: windows.h before GL/gl.h). */
@@ -203,9 +204,22 @@ struct zcsr_gl_renderer {
     int l2d_light_loc_position;  /* u_Position sampler (unit 5, world 3D) */
     int l2d_light_loc_px_per_unit; /* camera zoom: px per world unit */
     int l2d_light_loc_parallel;  /* u_parallel: 1 = parallel light */
+    int l2d_light_loc_spot;      /* u_spot: 1 = spot light */
+    int l2d_light_loc_inner;     /* u_inner: spot inner cone angle */
+    int l2d_light_loc_outer;     /* u_outer: spot outer cone angle */
     int l2d_light_loc_dir3;      /* u_dir3: parallel unit travel direction */
     float l2d_px_per_unit;       /* active zoom for world->px quad sizing */
     int l2d_view_w, l2d_view_h;  /* view size for parallel fullscreen quads */
+
+    /* ---- Composite post-process FBO: deferred/bloom shader draws here first,
+     * then optional game hook reads it, then blit to default framebuffer. ---- */
+    unsigned int l2d_comp_fbo;
+    unsigned int l2d_comp_tex;
+    int l2d_comp_w, l2d_comp_h;
+    unsigned int l2d_blit_prog;  /* simple textured fullscreen copy */
+    int l2d_blit_loc_sampler;
+    zcsr_l2d_post_process_fn l2d_post_cb;
+    void* l2d_post_ud;
 
     /* ---- G-buffer geometry submission (gl_render_l2d_geo.h; lazy-init on
      * first geo_begin, released from zcsr_gl_core_destroy) ---- */
@@ -220,6 +234,14 @@ struct zcsr_gl_renderer {
     unsigned int l2d_geo_tex_vbo;
     int l2d_geo_tex_loc_cam, l2d_geo_tex_loc_ppu, l2d_geo_tex_loc_k, l2d_geo_tex_loc_view;
     int l2d_geo_tex_loc_tint, l2d_geo_tex_loc_emissive, l2d_geo_tex_loc_sampler;
+    /* normal-mapped variant: albedo + tangent-space normal map, TBN in FS */
+    unsigned int l2d_geo_nmap_prog;
+    unsigned int l2d_geo_nmap_vao;
+    unsigned int l2d_geo_nmap_vbo;
+    int l2d_geo_nmap_loc_cam, l2d_geo_nmap_loc_ppu, l2d_geo_nmap_loc_k,
+        l2d_geo_nmap_loc_view;
+    int l2d_geo_nmap_loc_tint, l2d_geo_nmap_loc_emissive,
+        l2d_geo_nmap_loc_albedo, l2d_geo_nmap_loc_nmap;
     bool l2d_geo_active;
     GLint l2d_geo_saved_prog, l2d_geo_saved_vao, l2d_geo_saved_vbo;
     GLint l2d_geo_saved_blend, l2d_geo_saved_depth, l2d_geo_saved_cull;

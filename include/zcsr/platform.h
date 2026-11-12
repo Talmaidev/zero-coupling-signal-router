@@ -26,6 +26,7 @@ typedef enum {
 #endif
 
 typedef struct { int x, y, w, h; } zcsr_rect;
+typedef struct { float x, y, w, h; } zcsr_rectf; /* float rectangle, for viewport/rendering */
 
 typedef struct zcsr_surface zcsr_surface; /* opaque native top-level surface */
 

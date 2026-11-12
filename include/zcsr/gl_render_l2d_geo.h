@@ -96,6 +96,26 @@ bool zcsr_gl_l2d_geo_tex_face(zcsr_gl_renderer* renderer,
                               const float normal_xyz[3],
                               const float emissive_rgba[4]);
 
+/* NORMAL-MAPPED textured face: same G-buffer path but two textures — an
+ * albedo texture and a tangent-space normal map. The caller supplies both
+ * the face normal and the tangent (unit world vectors); the engine builds
+ * the TBN basis and writes the perturbed world normal to attachment 2.
+ *   normal_tex    PUBLIC texture handle holding the tangent-space normal
+ *                 map (RGB, stored as plain GL_RGBA; sampled, not color
+ *                 managed). Normal maps are data, not sRGB color.
+ *   tangent_xyz   unit world tangent aligned with the normal map's +U.
+ * Other arguments match geo_tex_face; the same alpha-cutout rule applies.
+ * Existing geo_face / geo_tex_face behavior is unchanged. */
+bool zcsr_gl_l2d_geo_nmap_face(zcsr_gl_renderer* renderer,
+                               zcsr_gl_texture albedo_tex,
+                               zcsr_gl_texture normal_tex,
+                               const float corners_xyz[12],
+                               const float uv_st[8],
+                               const float tint_rgba[4],
+                               const float normal_xyz[3],
+                               const float tangent_xyz[3],
+                               const float emissive_rgba[4]);
+
 bool zcsr_gl_l2d_geo_end(zcsr_gl_renderer* renderer);
 
 #ifdef __cplusplus

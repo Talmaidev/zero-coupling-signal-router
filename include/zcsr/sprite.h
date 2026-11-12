@@ -4,10 +4,8 @@
  * Target: render n*10000 (n>0) sprites within the frame budget; bench gate = 200 sprites <1ms.
  * Implementer: modules/render. Draws onto the platform surface. */
 #include "texture.h"
-#include "platform.h"
+#include "platform.h"  /* zcsr_rectf */
 #include <stddef.h>
-
-typedef struct { float x, y, w, h; } zcsr_rectf; /* destination rect, top-left origin */
 
 typedef struct {
     const zcsr_texture* tex;
