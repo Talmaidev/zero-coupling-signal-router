@@ -12,9 +12,14 @@
  *   - 修改暂存 + Apply/Cancel/Reset 语义
  */
 #include "zcsr/ui_modern_settings.h"
+#include "zcsr/ui.h"
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
+
+/* ---- 组件树上限 ---- */
+#define MS_MAX_TABS  8
+#define MS_MAX_ITEMS 128
 
 /* ---- 布局常量 ---- */
 #define MS_TAB_BAR_H     44
@@ -69,6 +74,19 @@ struct zcsr_ms {
     int scroll_offset;  /* pixels scrolled down from top */
 
     bool dirty;
+
+    /* ---- 组件树 ----
+     * 每个标签页 / 每个设置项 / 每个底部按钮都是一个独立 node，位置与尺寸存在
+     * node 的 local_rect 里，而不是散落在绘制代码里的硬编码偏移。布局每帧把
+     * 计算结果写进 node，所有读取（命中、绘制、外部消费者）一律走 node。
+     * 这样页面成为一个可枚举、可逐控件改位置的组件集合。 */
+    ZCSR_UI*    ui;
+    ZCSR_NodeId tab_node[MS_MAX_TABS];
+    ZCSR_NodeId item_node[MS_MAX_ITEMS];
+    int         item_node_base[MS_MAX_TABS]; /* 每个标签页在 item_node 里的起点 */
+    int         item_node_count;
+    ZCSR_NodeId btn_node[3];
+    ZCSR_NodeId root_node;
 };
 
 /* ---- 颜色 ---- */
@@ -147,7 +165,20 @@ static void recompute_dirty(zcsr_ms* s) {
 }
 
 /* ---- 布局计算 ---- */
+/* node 是几何权威；公式只在 node 尚未建立时兜底。 */
+static bool ms_node_rect(const zcsr_ms* s, ZCSR_NodeId id, ms_rect* out) {
+    ZCSR_Rect r;
+    if (!s->ui || (uint32_t)id == 0u) return false;
+    if (zcsr_node_get_rect(s->ui, id, &r) != ZCSR_OK) return false;
+    *out = (ms_rect){ r.x, r.y, r.width, r.height };
+    return true;
+}
+
 static ms_rect tab_rect(const zcsr_ms* s, int idx) {
+    ms_rect n;
+    if (idx >= 0 && idx < s->tab_count && idx < MS_MAX_TABS &&
+        ms_node_rect(s, s->tab_node[idx], &n))
+        return n;
     /* tabs are left-aligned in the tab bar, each tab width = text + 32 pad */
     float scale = s->text_scale;
     float tw = text_w(s->tabs[idx].name, scale) + 32.0f;
@@ -158,6 +189,13 @@ static ms_rect tab_rect(const zcsr_ms* s, int idx) {
 }
 
 static ms_rect item_row_rect(const zcsr_ms* s, int idx) {
+    ms_rect n;
+    int tab = s->active_tab;
+    if (tab >= 0 && tab < MS_MAX_TABS && idx >= 0) {
+        int f = s->item_node_base[tab] + idx;
+        if (f >= 0 && f < s->item_node_count && ms_node_rect(s, s->item_node[f], &n))
+            return n;
+    }
     return (ms_rect){
         (float)s->content_left,
         (float)s->content_top + (float)idx * (float)s->item_height - (float)s->scroll_offset,
@@ -229,6 +267,8 @@ static ms_rect toggle_rect(const zcsr_ms* s, int idx) {
 }
 
 static ms_rect button_rect(const zcsr_ms* s, int idx) {
+    ms_rect n;
+    if (idx >= 0 && idx < 3 && ms_node_rect(s, s->btn_node[idx], &n)) return n;
     /* 0=Apply (right), 1=Cancel (right of Apply), 2=Reset (left) */
     float by = (float)s->bottom_y + (MS_BOTTOM_H - MS_BTN_H) * 0.5f;
     if (idx == 0) {
@@ -238,6 +278,44 @@ static ms_rect button_rect(const zcsr_ms* s, int idx) {
     } else {
         return (ms_rect){ (float)(s->x + MS_PAD), by, MS_BTN_W, MS_BTN_H };
     }
+}
+
+/* 把布局结果写回组件树：标签页、当前标签页的每一项、三个底部按钮。
+ * 这里用纯公式计算，不读 node，避免"写的时候又依赖上一次写的结果"。 */
+static void ms_sync_nodes(zcsr_ms* s) {
+    if (!s->ui) return;
+
+    float scale = s->text_scale;
+    float cx = (float)s->x + MS_PAD;
+    for (int t = 0; t < s->tab_count && t < MS_MAX_TABS; t++) {
+        float tw = text_w(s->tabs[t].name, scale) + 32.0f;
+        ZCSR_Rect r = { cx, (float)s->y + 4.0f, tw, (float)(MS_TAB_BAR_H - 8) };
+        zcsr_node_set_rect(s->ui, s->tab_node[t], &r);
+        cx += tw + 4.0f;
+    }
+
+    int tab = s->active_tab;
+    if (tab < 0) tab = 0;
+    if (tab < s->tab_count && tab < MS_MAX_TABS) {
+        int base = s->item_node_base[tab];
+        for (int i = 0; i < s->tabs[tab].count && base + i < s->item_node_count; i++) {
+            ZCSR_Rect r = {
+                (float)s->content_left,
+                (float)s->content_top + (float)i * (float)s->item_height - (float)s->scroll_offset,
+                (float)s->content_w,
+                (float)s->item_height
+            };
+            zcsr_node_set_rect(s->ui, s->item_node[base + i], &r);
+        }
+    }
+
+    float by = (float)s->bottom_y + (MS_BOTTOM_H - MS_BTN_H) * 0.5f;
+    ZCSR_Rect b0 = { (float)(s->x + s->width - MS_PAD - MS_BTN_W), by, MS_BTN_W, MS_BTN_H };
+    ZCSR_Rect b1 = { (float)(s->x + s->width - MS_PAD - MS_BTN_W * 2 - 12), by, MS_BTN_W, MS_BTN_H };
+    ZCSR_Rect b2 = { (float)(s->x + MS_PAD), by, MS_BTN_W, MS_BTN_H };
+    zcsr_node_set_rect(s->ui, s->btn_node[0], &b0);
+    zcsr_node_set_rect(s->ui, s->btn_node[1], &b1);
+    zcsr_node_set_rect(s->ui, s->btn_node[2], &b2);
 }
 
 /* ---- recompute layout from current x/y/width/height (call after resize) ---- */
@@ -255,6 +333,7 @@ static void ms_recompute_layout(zcsr_ms* s) {
     s->right_h      = s->content_h;
     s->bottom_y     = s->y + s->height - MS_BOTTOM_H;
     clamp_scroll(s);
+    ms_sync_nodes(s);
 }
 
 /* ---- 创建 ---- */
@@ -332,6 +411,39 @@ zcsr_ms* zcsr_ms_create(void* buf, size_t bytes, const zcsr_ms_config* cfg) {
     s->prev_buttons    = 0;
     s->scroll_offset   = 0;
     s->dirty           = false;
+
+    /* ---- 建立组件树：每个标签页 / 每个设置项 / 每个底部按钮一个 node ----
+     * 布局几何不再只存在于绘制代码里，而是每个控件自己持有一份 rect。 */
+    {
+        ZCSR_UIConfig ucfg;
+        memset(&ucfg, 0, sizeof(ucfg));
+        ucfg.max_nodes            = (uint32_t)(MS_MAX_ITEMS + MS_MAX_TABS + 8);
+        ucfg.event_queue_capacity = 32;
+        ucfg.draw_command_capacity = 64;
+        ucfg.viewport_width       = (float)s->width;
+        ucfg.viewport_height      = (float)s->height;
+
+        if (zcsr_ui_create(&ucfg, &s->ui) == ZCSR_OK && s->ui) {
+            (void)zcsr_node_create(s->ui, 0, 0, &s->root_node);
+            int used = 0;
+            for (int t = 0; t < s->tab_count; t++) {
+                if (t < MS_MAX_TABS) {
+                    s->item_node_base[t] = used;
+                    (void)zcsr_node_create(s->ui, 0, s->root_node, &s->tab_node[t]);
+                }
+                for (int i = 0; i < s->tabs[t].count; i++) {
+                    if (used < MS_MAX_ITEMS) {
+                        (void)zcsr_node_create(s->ui, 0, s->root_node, &s->item_node[used]);
+                        used++;
+                    }
+                }
+            }
+            s->item_node_count = used;
+            for (int b = 0; b < 3; b++)
+                (void)zcsr_node_create(s->ui, 0, s->root_node, &s->btn_node[b]);
+            ms_sync_nodes(s);
+        }
+    }
     return s;
 }
 
@@ -344,7 +456,13 @@ void zcsr_ms_set_bounds(zcsr_ms* s, int x, int y, int w, int h) {
     ms_recompute_layout(s);
 }
 
-void zcsr_ms_destroy(zcsr_ms* s) { (void)s; }
+void zcsr_ms_destroy(zcsr_ms* s) {
+    if (!s) return;
+    if (s->ui) {
+        zcsr_ui_destroy(s->ui);
+        s->ui = NULL;
+    }
+}
 
 /* ---- 滑块: 从鼠标 x 坐标设置值 ---- */
 static void set_slider_from_mouse(zcsr_ms* s, int item_idx, int mx) {
