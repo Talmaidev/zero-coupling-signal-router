@@ -134,14 +134,20 @@ endif()
 if(UNIX AND NOT APPLE)
   # Linux: Wayland window backend + EGL + PipeWire audio (post-migration default).
   # X11/GLX/ALSA/evdev legacy backends removed in commit 5.
+  #
+  # 依赖全部改成"探测到才启用"：这台机器没有 Wayland/PipeWire 开发包时（默认 Kali
+  # X11 桌面、容器、CI），configure 仍然成功，所有库与纯 CPU 测试照常构建，只是
+  # 窗口/音频后端不参与链接 —— 引擎本身零依赖，不该被宿主显示栈挡住编译。
+
+  find_package(PkgConfig REQUIRED)
 
   # ---- Wayland client + xdg-shell protocol generation ----
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(WAYLAND_CLIENT REQUIRED wayland-client)
-  find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
+  pkg_check_modules(WAYLAND_CLIENT wayland-client)
+  find_program(WAYLAND_SCANNER wayland-scanner)
   find_file(XDG_SHELL_XML NAMES xdg-shell.xml
-      PATHS /usr/share/wayland-protocols/stable/xdg-shell
-      REQUIRED)
+      PATHS /usr/share/wayland-protocols/stable/xdg-shell)
+
+  if(WAYLAND_CLIENT_FOUND AND WAYLAND_SCANNER AND XDG_SHELL_XML)
   add_custom_command(
       OUTPUT ${CMAKE_BINARY_DIR}/gen/xdg-shell-client-protocol.h
              ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c
@@ -160,10 +166,14 @@ if(UNIX AND NOT APPLE)
       ${WAYLAND_CLIENT_INCLUDE_DIRS})
   target_compile_definitions(zcsr_platform PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
   target_link_libraries(zcsr_platform PUBLIC ${WAYLAND_CLIENT_LIBRARIES} m)
+  else()
+  message(STATUS "Linux: Wayland 窗口后端未启用（缺 wayland-client / wayland-scanner / xdg-shell.xml），库仍按 headless 构建")
+  endif()
 
   # ---- PipeWire audio ----
-  pkg_check_modules(PIPEWIRE REQUIRED libpipewire-0.3)
-  pkg_check_modules(SPA REQUIRED libspa-0.2)
+  pkg_check_modules(PIPEWIRE libpipewire-0.3)
+  pkg_check_modules(SPA libspa-0.2)
+  if(PIPEWIRE_FOUND AND SPA_FOUND)
   target_compile_definitions(zcsr_audiomix PRIVATE ZCSR_AUDIO_BACKEND_PIPEWIRE)
   target_include_directories(zcsr_audiomix PRIVATE
       ${PIPEWIRE_INCLUDE_DIRS}
@@ -171,7 +181,11 @@ if(UNIX AND NOT APPLE)
   target_link_libraries(zcsr_audiomix PUBLIC
       ${PIPEWIRE_LIBRARIES}
       ${SPA_LIBRARIES})
+  else()
+  message(STATUS "Linux: PipeWire 音频后端未启用（缺 libpipewire-0.3 / libspa-0.2），audiomix 保持静音实现")
+  endif()
 
+  if(WAYLAND_CLIENT_FOUND AND WAYLAND_SCANNER AND XDG_SHELL_XML)
   # ---- input / inputext: Wayland wl_keyboard / wl_pointer ----
   target_compile_definitions(zcsr_input PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
   target_compile_definitions(zcsr_inputext PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
@@ -181,9 +195,9 @@ if(UNIX AND NOT APPLE)
   target_link_libraries(zcsr_inputext PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
 
   # ---- glrender: EGL on Wayland ----
-  pkg_check_modules(WAYLAND_EGL REQUIRED wayland-egl)
-  pkg_check_modules(EGL REQUIRED egl)
-  find_package(OpenGL REQUIRED)  # OpenGL::OpenGL = libOpenGL.so (GLVND, no X11 dep)
+  pkg_check_modules(WAYLAND_EGL wayland-egl)
+  pkg_check_modules(EGL egl)
+  find_package(OpenGL)
   target_compile_definitions(zcsr_glrender PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
   target_include_directories(zcsr_glrender PRIVATE
       ${CMAKE_BINARY_DIR}/gen
@@ -195,6 +209,7 @@ if(UNIX AND NOT APPLE)
       ${WAYLAND_EGL_LIBRARIES}
       ${EGL_LIBRARIES}
       OpenGL::OpenGL m)
+  endif()
 elseif(WIN32)
   # GL 1.1 entry points (textures, glDrawArrays, ...) live in opengl32; the WGL/DC calls
   # (ChoosePixelFormat / SetPixelFormat / SwapBuffers / GetDC / ReleaseDC) live in gdi32. The
