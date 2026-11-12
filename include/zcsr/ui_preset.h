@@ -24,16 +24,12 @@ typedef struct {
     size_t                      entry_count;
 } zcsr_ui_preset;
 
-/* Validate every entry (bound editable node exists, type/range accepted) and
- * only then write all values into pending. Does not touch committed. */
-zcsr_ui_status zcsr_ui_preset_apply(zcsr_ui_context* ctx,
-                                    const zcsr_ui_preset* preset);
-
-/* Compare presets against the current pending values. Returns the unique
- * matching preset index, or -1 when none match or more than one matches
- * (the -1 case is presented as "custom"). */
-int zcsr_ui_preset_match(const zcsr_ui_preset* presets, size_t preset_count,
-                         const zcsr_ui_context* ctx);
+/* 预设机制（旧链）的函数声明已移除：
+ *   zcsr_ui_preset_apply / zcsr_ui_preset_match 从来没有实现过，
+ *   而且它们签名依赖 ui_panel.h 的 zcsr_ui_context —— 那套运行时同样无实现。
+ * 本文件只保留纯数据类型，供需要描述预设表的地方引用。
+ * 若将来要真正实现预设，应基于 ui_event.h 那一套（ZCSR_UI*）而不是 zcsr_ui_context。
+ */
 
 #ifdef __cplusplus
 }

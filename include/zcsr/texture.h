@@ -1,8 +1,10 @@
 #ifndef ZCSR_TEXTURE_H
 #define ZCSR_TEXTURE_H
-/* Agent 3 (Game Core) — PNG loading (stb_image, single-header) + resource cache (dedupe).
- * Implementer: modules/render. Cache lives in a caller buffer; stb_image is configured to
- * allocate from that buffer (STBI_MALLOC), so no global heap growth. */
+/* PNG 解码后的 CPU 像素描述。
+ *
+ * zcsr_texture_cache_init / zcsr_texture_load 已移除：它们由 modules/render 实现，
+ * 该模块已整体删除；这两个 API 没有跨平台实现，调用方只有那份孤儿测试。
+ * 需要真纹理请走 glrender（zcsr_gl_texture）。 */
 #include <stddef.h>
 #include <stdint.h>
 
@@ -11,11 +13,5 @@ typedef struct {
     int            height;
     const uint8_t* rgba; /* 8-bit RGBA, cache-owned (do not free) */
 } zcsr_texture;
-
-typedef struct zcsr_texture_cache zcsr_texture_cache; /* opaque */
-
-zcsr_texture_cache*  zcsr_texture_cache_init(void* buffer, size_t bytes);
-/* Load a PNG by path. Same path returns the SAME cached texture (no duplicate load). NULL on fail. */
-const zcsr_texture*  zcsr_texture_load(zcsr_texture_cache*, const char* png_path);
 
 #endif /* ZCSR_TEXTURE_H */
