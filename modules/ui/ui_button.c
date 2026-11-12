@@ -38,11 +38,10 @@ ZCSR_Result zcsr_button_set_text(ZCSR_UI* ui, ZCSR_NodeId id, const char* t, uin
     return ZCSR_OK;
 }
 
-ZCSR_Result zcsr_button_set_colors(ZCSR_UI* ui, ZCSR_NodeId id,
-                                   ZCSR_Color n, ZCSR_Color h, ZCSR_Color p, ZCSR_Color d)
-{
-    (void)ui;(void)id;(void)n;(void)h;(void)p;(void)d; return ZCSR_OK;
-}
+/* 注：原 zcsr_button_set_colors(normal/hover/pressed/disabled) 已废弃并删除。
+ * 四态配色是组件语义（状态机 + 视觉主题），属于 UIM 的组件属性域；
+ * 引擎 node 只有单组 bg/text/border + override 标志，无实现载体。
+ * 留一个 (void)arg; return ZCSR_OK 的空 setter 就是假 API，所以直接删。 */
 
 ZCSR_Result zcsr_button_set_enabled(ZCSR_UI* ui, ZCSR_NodeId id, bool e)
 {
