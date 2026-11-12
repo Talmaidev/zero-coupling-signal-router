@@ -1,24 +1,20 @@
 #ifndef ZCSR_SPRITE_H
 #define ZCSR_SPRITE_H
-/* Agent 3 (Game Core) — batch sprite renderer. Submit many sprites, draw them in one flush.
- * Target: render n*10000 (n>0) sprites within the frame budget; bench gate = 200 sprites <1ms.
- * Implementer: modules/render. Draws onto the platform surface. */
+/* Agent 3 (Game Core) — sprite 绘制契约。
+ *
+ * 本文件只剩 GL 路径（zcsr_sprite_asset / zcsr_sprite_instance / zcsr_sprite_draw*）。
+ * 软件渲染的 zcsr_sprite_batch_init/begin/submit/flush 已随 modules/render 一并移除：
+ * 那个模块整体删除，且这四个 API 从未有跨平台实现、调用方为零。 */
 #include "texture.h"
 #include "platform.h"  /* zcsr_rectf */
 #include <stddef.h>
+
 
 typedef struct {
     const zcsr_texture* tex;
     zcsr_rectf          dst;
     /* (uv sub-rect / tint can be added later without breaking ABI) */
 } zcsr_sprite;
-
-typedef struct zcsr_sprite_batch zcsr_sprite_batch; /* opaque; fixed capacity in caller buffer */
-
-zcsr_sprite_batch* zcsr_sprite_batch_init(void* buffer, size_t bytes, zcsr_surface* target);
-void               zcsr_sprite_batch_begin(zcsr_sprite_batch*);
-void               zcsr_sprite_batch_submit(zcsr_sprite_batch*, const zcsr_sprite*);
-void               zcsr_sprite_batch_flush(zcsr_sprite_batch*); /* draw all submitted in one batch */
 
 /* ---- GL sprite component (camera-aware; drives glrender, additive) ------------------
  * NOTE: the instance type is zcsr_sprite_instance — the plain zcsr_sprite name

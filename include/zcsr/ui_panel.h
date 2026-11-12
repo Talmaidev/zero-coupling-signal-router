@@ -105,30 +105,17 @@ typedef struct {
     bool     apply_failed;
 } zcsr_ui_context;
 
-/* Initialize a context over a flat node array and an event storage ring.
- * Node ids must be unique and non-zero. */
-zcsr_ui_status zcsr_ui_init(zcsr_ui_context* ctx,
-                            zcsr_ui_node* nodes, size_t node_count,
-                            zcsr_ui_event* event_storage, size_t event_capacity);
-
-/* Advance the runtime one frame. */
-void zcsr_ui_update(zcsr_ui_context* ctx, const zcsr_ui_input* input);
-
-/* Dequeue the next event; false when the queue is empty. */
-bool zcsr_ui_poll_event(zcsr_ui_context* ctx, zcsr_ui_event* out);
-
-/* Dirty state: editable node whose pending differs from committed. */
-bool zcsr_ui_node_dirty(const zcsr_ui_node* node);
-bool zcsr_ui_any_dirty(const zcsr_ui_context* ctx);
-
-/* Apply protocol. */
-uint32_t zcsr_ui_request_apply(zcsr_ui_context* ctx);
-bool     zcsr_ui_apply_requested(const zcsr_ui_context* ctx, uint32_t* serial);
-void     zcsr_ui_confirm_apply(zcsr_ui_context* ctx, uint32_t serial, bool success);
-
-/* Revert pending to committed; reset pending to initial. */
-void zcsr_ui_cancel_all(zcsr_ui_context* ctx);
-void zcsr_ui_reset_all(zcsr_ui_context* ctx);
+/* 面板运行时（旧链）的函数声明已全部移除：它们从未有过实现，也没有任何调用者。
+ *
+ * 移除的直接原因是一个硬冲突：
+ *   ui_panel.h   -> bool        zcsr_ui_poll_event(zcsr_ui_context*, zcsr_ui_event*)
+ *   ui_event.h   -> ZCSR_Result zcsr_ui_poll_event(ZCSR_UI*, ZCSR_UIEvent*)
+ * 同名不同签名，任何同时 include 两个头的翻译单元都会报 C4031/C4028。
+ * ui.c 实现并实际使用的是 ui_event.h 那一套。
+ *
+ * 本文件到此只保留类型定义（zcsr_ui_status / input / event / event_queue / context），
+ * 供仍依赖这些类型的头文件（如 ui_draw.h）继续编译。要面板运行时请用 ui_event.h。
+ */
 
 #ifdef __cplusplus
 }
