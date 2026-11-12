@@ -23,8 +23,9 @@ typedef union zcsr_l2d_align_probe {
 #define ZCSR_L2D_MAX_ALIGN _Alignof(zcsr_l2d_align_probe)
 
 /* Public contract order: Albedo, Position, Normal, Emissive (HDR). */
+/* G0 Albedo uses hardware sRGB decode: GPU samples return linear RGB. */
 static const zcsr_gl_l2d_format zcsr_l2d_gbuffer_formats[4] = {
-    ZCSR_GL_L2D_FORMAT_RGBA8,
+    ZCSR_GL_L2D_FORMAT_SRGB8_ALPHA8,
     ZCSR_GL_L2D_FORMAT_RGBA16F,
     ZCSR_GL_L2D_FORMAT_RGBA8,
     ZCSR_GL_L2D_FORMAT_RGBA16F
@@ -101,7 +102,12 @@ static size_t zcsr_l2d_capacity_for_quality(zcsr_light_quality q)
 
 static bool zcsr_l2d_quality_implemented(zcsr_light_quality q)
 {
-    return q == ZCSR_LIGHT_QUALITY_LOW || q == ZCSR_LIGHT_QUALITY_HIGH;
+    /* 四档全部可切换，映射到两条真实管线：
+     *   LOW(16 槽) / MEDIUM(32 槽)  → forward 叠加（不建 G-buffer）
+     *   HIGH(64 槽) / ULTRA(64 槽)  → G-buffer deferred
+     * 同一条管线内的两档差异是容量与光/影缓冲分辨率（ULTRA 切档时把
+     * light_scale_pct 提到 100 并默认开 bloom），不是独立着色器分支。 */
+    return zcsr_l2d_valid_quality(q);
 }
 
 static bool zcsr_l2d_add_size(size_t a, size_t b, size_t* out)
@@ -192,18 +198,27 @@ size_t zcsr_light2d_buffer_bytes_required(zcsr_light_quality max_quality)
 static bool zcsr_l2d_validate_light(const zcsr_light* light)
 {
     if (light == NULL) return false;
-    if (light->type != ZCSR_LIGHT_POINT && light->type != ZCSR_LIGHT_PARALLEL) return false;
+    if (light->type != ZCSR_LIGHT_POINT &&
+        light->type != ZCSR_LIGHT_PARALLEL &&
+        light->type != ZCSR_LIGHT_SPOT) return false;
     if (!isfinite(light->x) || !isfinite(light->y) || !isfinite(light->height) ||
         !isfinite(light->radius) || !isfinite(light->decay) ||
         !isfinite(light->dir_x) || !isfinite(light->dir_y) || !isfinite(light->dir_z) ||
+        !isfinite(light->inner_angle) || !isfinite(light->outer_angle) ||
         !isfinite(light->r) || !isfinite(light->g) ||
         !isfinite(light->b) || !isfinite(light->a)) return false;
     if (light->r < 0.0f || light->g < 0.0f || light->b < 0.0f || light->a < 0.0f) return false;
     if (light->radius <= 0.0f || light->decay < 0.0f) return false;
-    if (light->type == ZCSR_LIGHT_PARALLEL) {
+    if (light->type == ZCSR_LIGHT_PARALLEL || light->type == ZCSR_LIGHT_SPOT) {
         const float d2 = light->dir_x * light->dir_x + light->dir_y * light->dir_y +
                          light->dir_z * light->dir_z;
         if (d2 < 1e-12f) return false; /* zero-length direction is meaningless */
+    }
+    if (light->type == ZCSR_LIGHT_SPOT) {
+        /* cone radians: non-negative, inner no wider than outer, within pi/2. */
+        if (light->inner_angle < 0.0f || light->outer_angle < 0.0f) return false;
+        if (light->inner_angle > light->outer_angle) return false;
+        if (light->outer_angle > 1.5707963f) return false;
     }
     return true;
 }
@@ -277,6 +292,11 @@ zcsr_light2d_ctx* zcsr_light2d_create(zcsr_gl_renderer* renderer,
     ctx->options.light_scale_pct = 50;
     ctx->options.bloom = false;
     ctx->options.ray_shadows = false;
+    /* ULTRA 起始档：默认全分辨率光/影缓冲 + bloom（与 set_quality 的切档默认一致） */
+    if (initial_quality == ZCSR_LIGHT_QUALITY_ULTRA) {
+        ctx->options.light_scale_pct = 100;
+        ctx->options.bloom = true;
+    }
     ctx->camera = NULL; /* built-in default until set_camera */
     ctx->occluder_count = 0u;
     ctx->occluder_verts = aligned_buffer + occluders_offset;
@@ -332,10 +352,17 @@ bool zcsr_light2d_set_quality(zcsr_light2d_ctx* ctx, zcsr_light_quality quality)
     if (ctx == NULL || !zcsr_l2d_valid_quality(quality)) return false;
     if (ctx->phase != ZCSR_L2D_PHASE_IDLE && ctx->phase != ZCSR_L2D_PHASE_DONE) return false;
     if (quality > ctx->max_quality || !zcsr_l2d_quality_implemented(quality)) return false;
-    if (quality == ZCSR_LIGHT_QUALITY_HIGH && ctx->gbuffer == ZCSR_GL_L2D_TARGET_INVALID) return false;
+    if ((quality == ZCSR_LIGHT_QUALITY_HIGH || quality == ZCSR_LIGHT_QUALITY_ULTRA)
+        && ctx->gbuffer == ZCSR_GL_L2D_TARGET_INVALID) return false;
     ctx->quality = quality;
     ctx->active_limit = zcsr_l2d_capacity_for_quality(quality);
     ctx->light_count = 0u;
+    /* 切到 ULTRA 时把重开销项提到该档默认：全分辨率光/影缓冲 + bloom。
+     * 切回其它档不主动回退，避免覆盖调用方 set_options 的结果。 */
+    if (quality == ZCSR_LIGHT_QUALITY_ULTRA) {
+        ctx->options.light_scale_pct = 100;
+        ctx->options.bloom = true;
+    }
     return true;
 }
 
@@ -346,7 +373,7 @@ bool zcsr_light2d_begin_geometry(zcsr_light2d_ctx* ctx)
     ctx->light_count = 0u;
     ctx->phase = ZCSR_L2D_PHASE_GEOMETRY;
 
-    if (ctx->quality == ZCSR_LIGHT_QUALITY_HIGH) {
+    if (ctx->quality == ZCSR_LIGHT_QUALITY_HIGH || ctx->quality == ZCSR_LIGHT_QUALITY_ULTRA) {
         if (ctx->gbuffer == ZCSR_GL_L2D_TARGET_INVALID ||
             !zcsr_gl_l2d_state_push(ctx->renderer)) {
             ctx->phase = ZCSR_L2D_PHASE_DONE;
@@ -366,13 +393,13 @@ bool zcsr_light2d_begin_lighting(zcsr_light2d_ctx* ctx)
 {
     if (ctx == NULL || ctx->phase != ZCSR_L2D_PHASE_GEOMETRY) return false;
 
-    if (ctx->quality == ZCSR_LIGHT_QUALITY_LOW) {
+    if (ctx->quality == ZCSR_LIGHT_QUALITY_LOW || ctx->quality == ZCSR_LIGHT_QUALITY_MEDIUM) {
         if (!zcsr_gl_l2d_state_push(ctx->renderer)) {
             ctx->phase = ZCSR_L2D_PHASE_DONE;
             return false;
         }
         ctx->state_saved = true;
-    } else if (ctx->quality == ZCSR_LIGHT_QUALITY_HIGH) {
+    } else if (ctx->quality == ZCSR_LIGHT_QUALITY_HIGH || ctx->quality == ZCSR_LIGHT_QUALITY_ULTRA) {
         if (!zcsr_gl_l2d_bind_default_target(ctx->renderer, ctx->width, ctx->height) ||
             !zcsr_gl_l2d_bind_target_textures(ctx->renderer, ctx->gbuffer,
                                               ZCSR_L2D_FIRST_TEXTURE_UNIT)) {
@@ -691,6 +718,7 @@ static bool zcsr_l2d_draw_high(zcsr_light2d_ctx* ctx)
     for (i = 0u; i < ctx->light_count; ++i) {
         const zcsr_light* light = &ctx->lights[i];
         const int parallel = (light->type == ZCSR_LIGHT_PARALLEL) ? 1 : 0;
+        const int spot = (light->type == ZCSR_LIGHT_SPOT) ? 1 : 0;
         const float px = (light->x - cam->center_x) * ppu + half_w;
         const float py = (light->y - cam->center_y) * ppu + half_h;
         float dir_x = 0.0f;
@@ -722,6 +750,16 @@ static bool zcsr_l2d_draw_high(zcsr_light2d_ctx* ctx)
                     dir_y = 0.0f;
                 }
             }
+        } else if (spot) {
+            /* Normalize the cone aim direction; point falloff still applies. */
+            const float len3 = sqrtf(light->dir_x * light->dir_x +
+                                     light->dir_y * light->dir_y +
+                                     light->dir_z * light->dir_z);
+            if (len3 > 1e-6f) {
+                dir3_x = light->dir_x / len3;
+                dir3_y = light->dir_y / len3;
+                dir3_z = light->dir_z / len3;
+            }
         }
 
         if (ctx->options.shadows && ctx->occluder_count > 0u &&
@@ -749,7 +787,10 @@ static bool zcsr_l2d_draw_high(zcsr_light2d_ctx* ctx)
         draw.dir_x = dir3_x;
         draw.dir_y = dir3_y;
         draw.dir_z = dir3_z;
+        draw.inner_angle = light->inner_angle;
+        draw.outer_angle = light->outer_angle;
         draw.parallel = parallel;
+        draw.spot = spot;
         /* per-light intensity: color rgb x a, like the reference engine's
          * light_color.w x gain */
         draw.cr = light->r * light->a;
@@ -762,11 +803,10 @@ static bool zcsr_l2d_draw_high(zcsr_light2d_ctx* ctx)
 
     if (!zcsr_gl_l2d_lightbuf_end(ctx->renderer)) return false;
 
-    /* Composite to the DEFAULT WINDOW target (lightbuf_end leaves the light
-     * FBO bound — without this rebinding the composite renders into the
-     * accumulation buffer and the window stays cleared): linear-space
-     * lighting, tonemap, gamma — bloom variant when enabled. */
-    if (!zcsr_gl_l2d_bind_default_target(ctx->renderer, ctx->width, ctx->height)) {
+    /* Composite to the engine-owned composite FBO first (lightbuf_end leaves
+     * the light FBO bound). The post-process hook runs after this draw, then
+     * the result is presented to the default window target. */
+    if (!zcsr_gl_l2d_bind_composite_target(ctx->renderer, ctx->width, ctx->height)) {
         return false;
     }
     ok = zcsr_gl_l2d_set_program(ctx->renderer, ctx->options.bloom
@@ -783,6 +823,8 @@ static bool zcsr_l2d_draw_high(zcsr_light2d_ctx* ctx)
     ok = zcsr_gl_l2d_uniform_3f(ctx->renderer, "u_Ambient", 0.03f, 0.03f, 0.03f) && ok;
     ok = zcsr_gl_l2d_bind_light_texture(ctx->renderer, ZCSR_L2D_FIRST_TEXTURE_UNIT + 4) && ok;
     if (ok) ok = zcsr_gl_l2d_draw_fullscreen_quad(ctx->renderer);
+    if (ok) ok = zcsr_gl_l2d_finalize_composite(ctx->renderer,
+                                                 ctx->width, ctx->height);
     return ok;
 }
 
@@ -792,9 +834,9 @@ bool zcsr_light2d_end_lighting(zcsr_light2d_ctx* ctx)
     bool pop_ok = true;
     if (ctx == NULL || ctx->phase != ZCSR_L2D_PHASE_LIGHTING) return false;
 
-    if (ctx->quality == ZCSR_LIGHT_QUALITY_LOW) {
+    if (ctx->quality == ZCSR_LIGHT_QUALITY_LOW || ctx->quality == ZCSR_LIGHT_QUALITY_MEDIUM) {
         ok = zcsr_l2d_draw_low(ctx);
-    } else if (ctx->quality == ZCSR_LIGHT_QUALITY_HIGH) {
+    } else if (ctx->quality == ZCSR_LIGHT_QUALITY_HIGH || ctx->quality == ZCSR_LIGHT_QUALITY_ULTRA) {
         ok = zcsr_l2d_draw_high(ctx);
     } else {
         ok = false;

@@ -13,6 +13,23 @@
 #include "glrender_internal.h"
 #include "zcsr/gl_render_light2d_ext.h"
 
+/* Glad headers for this project don't expose these 3.3+ enums; define locally. */
+#ifndef GL_SRGB8_ALPHA8
+#define GL_SRGB8_ALPHA8 0x8C43
+#endif
+#ifndef GL_FRAMEBUFFER_SRGB
+#define GL_FRAMEBUFFER_SRGB 0x8DB9
+#endif
+#ifndef GL_TEXTURE9
+#define GL_TEXTURE9 0x84C9
+#endif
+#ifndef GL_READ_FRAMEBUFFER
+#define GL_READ_FRAMEBUFFER 0x8CA8
+#endif
+#ifndef GL_DRAW_FRAMEBUFFER
+#define GL_DRAW_FRAMEBUFFER 0x8CA9
+#endif
+
 #include <math.h>
 #include <stddef.h>
 #include <string.h>
@@ -118,15 +135,20 @@ static unsigned int zcsr_l2d_make_deferred_program(void) {
         "uniform sampler2D u_Light;    /* unit 8, accumulated light buffer */\n"
         "uniform vec3 u_Ambient;\n"
         "out vec4 o_color;\n"
+        "vec3 linear_to_srgb(vec3 x){\n"
+        "  x = clamp(x, vec3(0.0), vec3(1.0));\n"
+        "  vec3 low = 12.92 * x;\n"
+        "  vec3 high = 1.055 * pow(x, vec3(1.0/2.4)) - 0.055;\n"
+        "  return mix(high, low, lessThanEqual(x, vec3(0.0031308)));\n"
+        "}\n"
         "void main(){\n"
         "  vec3 albedo = texture(u_Albedo, v_uv).rgb;\n"
         "  vec3 emissive = texture(u_Emissive, v_uv).rgb;\n"
         "  vec3 light = texture(u_Light, v_uv).rgb;\n"
-        "  /* gamma space is for display; compute in linear space, tonemap, go back */\n"
-        "  vec3 albedo_lin = pow(albedo, vec3(2.2));\n"
-        "  vec3 lit = albedo_lin * (emissive + light + u_Ambient);\n"
+        "  /* G0 is GL_SRGB8_ALPHA8: hardware already decodes albedo to linear RGB. */\n"
+        "  vec3 lit = albedo * (emissive + light + u_Ambient);\n"
         "  vec3 mapped = lit / (lit + vec3(1.0));\n"
-        "  o_color = vec4(pow(mapped, vec3(1.0 / 2.2)), 1.0);\n"
+        "  o_color = vec4(linear_to_srgb(mapped), 1.0);\n"
         "}\n";
     return zcsr_l2d_link_program("light2d deferred program link failed", vs, fs);
 }
@@ -171,13 +193,19 @@ static unsigned int zcsr_l2d_make_bloom_program(void) {
         "  vec3 rgb = texture(t, uv).rgb;\n"
         "  return lum * blur + (1.0 - lum) * rgb;\n"
         "}\n"
+        "vec3 linear_to_srgb(vec3 x){\n"
+        "  x = clamp(x, vec3(0.0), vec3(1.0));\n"
+        "  vec3 low = 12.92 * x;\n"
+        "  vec3 high = 1.055 * pow(x, vec3(1.0/2.4)) - 0.055;\n"
+        "  return mix(high, low, lessThanEqual(x, vec3(0.0031308)));\n"
+        "}\n"
         "void main(){\n"
         "  vec3 albedo = texture(u_Albedo, v_uv).rgb;\n"
-        "  vec3 albedo_lin = pow(albedo, vec3(2.2));\n"
-        "  vec3 lit = albedo_lin * (bloom9(u_Emissive, v_uv)\n"
-        "                           + bloom9(u_Light, v_uv) + u_Ambient);\n"
+        "  /* G0 is GL_SRGB8_ALPHA8: hardware already decodes albedo to linear RGB. */\n"
+        "  vec3 lit = albedo * (bloom9(u_Emissive, v_uv)\n"
+        "                       + bloom9(u_Light, v_uv) + u_Ambient);\n"
         "  vec3 mapped = lit / (lit + vec3(1.0));\n"
-        "  o_color = vec4(pow(mapped, vec3(1.0 / 2.2)), 1.0);\n"
+        "  o_color = vec4(linear_to_srgb(mapped), 1.0);\n"
         "}\n";
     return zcsr_l2d_link_program("light2d bloom program link failed", vs, fs);
 }
@@ -224,6 +252,28 @@ static unsigned int zcsr_l2d_make_shadow_program(void) {
     return zcsr_l2d_link_program("light2d shadow program link failed", vs, fs);
 }
 
+static unsigned int zcsr_l2d_make_blit_program(void) {
+    /* Minimal fullscreen textured copy: used to present the composite FBO
+     * to the default framebuffer when glBlitFramebuffer is unavailable. */
+    static const char* vs =
+        ZCSR_GL_GLSL_VERSION
+        "layout(location=0) in vec2 a_pos;\n"
+        "layout(location=1) in vec2 a_uv;\n"
+        "out vec2 v_uv;\n"
+        "void main(){\n"
+        "  gl_Position = vec4(a_pos, 0.0, 1.0);\n"
+        "  v_uv = a_uv;\n"
+        "}\n";
+    static const char* fs =
+        ZCSR_GL_GLSL_VERSION
+        ZCSR_GL_GLSL_FRAGMENT_PRECISION
+        "in vec2 v_uv;\n"
+        "uniform sampler2D u_sampler;\n"
+        "out vec4 o_color;\n"
+        "void main(){ o_color = texture(u_sampler, v_uv); }\n";
+    return zcsr_l2d_link_program("light2d blit program link failed", vs, fs);
+}
+
 static unsigned int zcsr_l2d_make_light_program(void) {
     /* One additive pass per light into the low-res accumulation buffer:
      * pow(1-r/R, decay) * 1/(dist/DIST_SCALE+1) * N.L * (1-shadow) * gain. */
@@ -255,6 +305,9 @@ static unsigned int zcsr_l2d_make_light_program(void) {
         "uniform int u_use_shadow;\n"
         "uniform int u_parallel;\n"   /* 1: parallel light, dir3 drives N.L */
         "uniform vec3 u_dir3;\n"      /* parallel: unit travel direction (3D) */
+        "uniform int u_spot;\n"       /* 1: spot light, cone gates the point falloff */
+        "uniform float u_inner;\n"    /* spot: cone radius (radians) at full power */
+        "uniform float u_outer;\n"    /* spot: cone radius (radians) at zero power */
         "uniform vec2 u_viewpos;\n"
         "uniform vec2 u_shadowres;\n"  /* mask size, for the bias tap step */
         "uniform int u_ray_shadows;\n" /* 1: per-pixel ray test vs u_Boxes */
@@ -322,6 +375,23 @@ static unsigned int zcsr_l2d_make_light_program(void) {
         "    float r = dist / max(u_radius, 1e-4);\n"
         "    atten = pow(clamp(1.0 - r, 0.0, 1.0), u_decay);\n"
         "    atten *= 1.0 / (dist / max(u_dist_scale, 1e-4) + 1.0);\n"
+        "  }\n"
+        "  /* Spot light: gate the point falloff by the cone. The angle between\n"
+        "     the fragment direction and the aim direction must fall inside\n"
+        "     the outer cone; smoothstep between inner and outer for the edge. */\n"
+        "  if (u_spot != 0) {\n"
+        "    float dlen = length(to_light);\n"
+        "    if (dlen < 1e-6) {\n"
+        "      atten = 0.0;\n"
+        "    } else {\n"
+        "      /* light->fragment is the opposite of to_light; compare THAT with\n"
+        "         the aim direction u_dir3 so the cone opens along the aim. */\n"
+        "      vec3 light_to_frag = -to_light / dlen;\n"
+        "      float cos_ang = clamp(dot(light_to_frag, u_dir3), -1.0, 1.0);\n"
+        "      float ang = acos(cos_ang);\n"
+        "      float cone = 1.0 - smoothstep(u_inner, u_outer, ang);\n"
+        "      atten *= cone;\n"
+        "    }\n"
         "  }\n"
         "  /* JoyEngine semantics: PURE N.L in 3D, no base term. Neutral (0,0)\n"
         "     decodes to the up normal (0,0,1) so camera-facing surfaces are lit\n"
@@ -529,6 +599,9 @@ bool zcsr_gl_l2d_init(zcsr_gl_renderer* r) {
     if (!r->l2d_prog_shadow) return false;
     r->l2d_prog_light = zcsr_l2d_make_light_program();
     if (!r->l2d_prog_light) return false;
+    r->l2d_blit_prog = zcsr_l2d_make_blit_program();
+    if (!r->l2d_blit_prog) return false;
+    r->l2d_blit_loc_sampler = glGetUniformLocation(r->l2d_blit_prog, "u_sampler");
     r->l2d_shadow_loc_light = glGetUniformLocation(r->l2d_prog_shadow, "u_light");
     r->l2d_shadow_loc_view = glGetUniformLocation(r->l2d_prog_shadow, "u_view");
     r->l2d_shadow_loc_factor = glGetUniformLocation(r->l2d_prog_shadow, "u_factor");
@@ -553,6 +626,9 @@ bool zcsr_gl_l2d_init(zcsr_gl_renderer* r) {
     r->l2d_light_loc_light_z = glGetUniformLocation(r->l2d_prog_light, "u_light_z");
     r->l2d_light_loc_shadowres = glGetUniformLocation(r->l2d_prog_light, "u_shadowres");
     r->l2d_light_loc_parallel = glGetUniformLocation(r->l2d_prog_light, "u_parallel");
+    r->l2d_light_loc_spot = glGetUniformLocation(r->l2d_prog_light, "u_spot");
+    r->l2d_light_loc_inner = glGetUniformLocation(r->l2d_prog_light, "u_inner");
+    r->l2d_light_loc_outer = glGetUniformLocation(r->l2d_prog_light, "u_outer");
     r->l2d_light_loc_dir3 = glGetUniformLocation(r->l2d_prog_light, "u_dir3");
 
     glGenVertexArrays(1, &r->fsq_vao);
@@ -613,6 +689,9 @@ void zcsr_gl_l2d_destroy(zcsr_gl_renderer* r) {
     if (r->l2d_prog_bloom) glDeleteProgram(r->l2d_prog_bloom);
     if (r->l2d_prog_shadow) glDeleteProgram(r->l2d_prog_shadow);
     if (r->l2d_prog_light) glDeleteProgram(r->l2d_prog_light);
+    if (r->l2d_blit_prog) glDeleteProgram(r->l2d_blit_prog);
+    if (r->l2d_comp_fbo) glDeleteFramebuffers(1, &r->l2d_comp_fbo);
+    if (r->l2d_comp_tex) glDeleteTextures(1, &r->l2d_comp_tex);
     if (r->l2d_light_fbo) glDeleteFramebuffers(1, &r->l2d_light_fbo);
     if (r->l2d_light_tex) glDeleteTextures(1, &r->l2d_light_tex);
     if (r->l2d_shadow_fbo) glDeleteFramebuffers(1, &r->l2d_shadow_fbo);
@@ -724,6 +803,8 @@ bool zcsr_gl_l2d_target_create(zcsr_gl_renderer* renderer,
             iformats[i] = GL_RGBA8;
         } else if (formats[i] == ZCSR_GL_L2D_FORMAT_RGBA16F) {
             iformats[i] = GL_RGBA16F;
+        } else if (formats[i] == ZCSR_GL_L2D_FORMAT_SRGB8_ALPHA8) {
+            iformats[i] = GL_SRGB8_ALPHA8;
         } else {
             return false;
         }
@@ -873,6 +954,10 @@ bool zcsr_gl_l2d_gbuffer_begin(zcsr_gl_renderer* renderer,
     if (!zcsr_gl_make_current(renderer)) return false;
 
     glBindFramebuffer(GL_FRAMEBUFFER, slot->fbo);
+    /* G0 is GL_SRGB8_ALPHA8. Geometry shader writes display-domain albedo values
+     * that must be stored verbatim (hardware decodes on sample, not on write).
+     * Explicitly disable GL_FRAMEBUFFER_SRGB so the driver does not re-encode. */
+    glDisable(GL_FRAMEBUFFER_SRGB);
     /* Draw-buffer order is the contract order: Albedo, Position, Normal, Emissive. */
     glDrawBuffers((GLsizei)slot->attachments, draw_buffers);
     glViewport(0, 0, width, height);
@@ -892,6 +977,9 @@ bool zcsr_gl_l2d_bind_default_target(zcsr_gl_renderer* renderer,
     if (!zcsr_gl_make_current(renderer)) return false;
     /* Public contract: the HIGH composite goes to the default window target only. */
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    /* Default framebuffer is not sRGB-capable (no WGL_ARB_framebuffer_sRGB
+     * pixel format requested). Shader-side linear_to_srgb() handles encoding. */
+    glDisable(GL_FRAMEBUFFER_SRGB);
     glViewport(0, 0, width, height);
     return true;
 }
@@ -1154,6 +1242,115 @@ static bool zcsr_l2d_ensure_light_target(zcsr_gl_renderer* r, int w, int h) {
     return true;
 }
 
+/* Ensures the composite FBO (sRGB-encoded 8-bit result) exists at w x h. */
+static bool zcsr_l2d_ensure_composite_target(zcsr_gl_renderer* r, int w, int h) {
+    unsigned int tex = 0;
+    if (r->l2d_comp_fbo != 0 && r->l2d_comp_tex != 0 &&
+        r->l2d_comp_w == w && r->l2d_comp_h == h) {
+        return true;
+    }
+    glGenTextures(1, &tex);
+    if (tex == 0u) return false;
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    if (r->l2d_comp_fbo == 0u) glGenFramebuffers(1, &r->l2d_comp_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, r->l2d_comp_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tex, 0);
+    static const GLenum draw = GL_COLOR_ATTACHMENT0;
+    glDrawBuffers(1, &draw);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteTextures(1, &tex);
+        return false;
+    }
+    if (r->l2d_comp_tex != 0u) glDeleteTextures(1, &r->l2d_comp_tex);
+    r->l2d_comp_tex = tex;
+    r->l2d_comp_w = w;
+    r->l2d_comp_h = h;
+    return true;
+}
+
+bool zcsr_gl_l2d_bind_composite_target(zcsr_gl_renderer* renderer,
+                                       int width, int height) {
+    if (renderer == NULL || width <= 0 || height <= 0) return false;
+    if (!zcsr_gl_make_current(renderer)) return false;
+    if (!zcsr_l2d_ensure_composite_target(renderer, width, height)) return false;
+    glBindFramebuffer(GL_FRAMEBUFFER, renderer->l2d_comp_fbo);
+    static const GLenum comp_draw = GL_COLOR_ATTACHMENT0;
+    glDrawBuffers(1, &comp_draw);
+    glViewport(0, 0, width, height);
+    /* Composite shader outputs sRGB-encoded values; do not let the FBO
+     * re-encode (the shader already ran linear_to_srgb). */
+    glDisable(GL_FRAMEBUFFER_SRGB);
+    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (st != GL_FRAMEBUFFER_COMPLETE) return false;
+    return true;
+}
+
+bool zcsr_gl_l2d_finalize_composite(zcsr_gl_renderer* renderer,
+                                    int width, int height) {
+    bool hook_ok = false;
+    zcsr_l2d_draw_bindings saved;
+    if (renderer == NULL || width <= 0 || height <= 0) return false;
+    if (!zcsr_gl_make_current(renderer)) return false;
+
+    if (renderer->l2d_post_cb != NULL) {
+        /* Bind default framebuffer so the hook draws directly to screen. */
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, width, height);
+        glDisable(GL_FRAMEBUFFER_SRGB);
+        /* Expose composite texture on unit 9 without disturbing units 4-8. */
+        zcsr_l2d_save_draw_bindings(&saved);
+        glActiveTexture(GL_TEXTURE9);
+        glBindTexture(GL_TEXTURE_2D, renderer->l2d_comp_tex);
+        hook_ok = renderer->l2d_post_cb(renderer, renderer->l2d_comp_tex,
+                                        width, height, renderer->l2d_post_ud);
+        zcsr_l2d_restore_draw_bindings(&saved);
+    }
+
+    if (!hook_ok) {
+        /* No hook (or hook failed): present composite FBO via a textured
+         * fullscreen triangle (glBlitFramebuffer is not in the glad loader). */
+        static const zcsr_l2d_vertex tri[3] = {
+            { -1.0f, -1.0f, 0.0f, 0.0f },
+            {  3.0f, -1.0f, 2.0f, 0.0f },
+            { -1.0f,  3.0f, 0.0f, 2.0f }
+        };
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, width, height);
+        glDisable(GL_FRAMEBUFFER_SRGB);
+        glDisable(GL_BLEND);
+        glUseProgram(renderer->l2d_blit_prog);
+        if (renderer->l2d_blit_loc_sampler >= 0)
+            glUniform1i(renderer->l2d_blit_loc_sampler, 9);
+        zcsr_l2d_save_draw_bindings(&saved);
+        glActiveTexture(GL_TEXTURE9);
+        glBindTexture(GL_TEXTURE_2D, renderer->l2d_comp_tex);
+        glBindVertexArray(renderer->fsq_vao);
+        glBindBuffer(GL_ARRAY_BUFFER, renderer->fsq_vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_DYNAMIC_DRAW);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        zcsr_l2d_restore_draw_bindings(&saved);
+    }
+    return true;
+}
+
+bool zcsr_gl_l2d_set_post_process_hook(zcsr_gl_renderer* renderer,
+                                       zcsr_l2d_post_process_fn callback,
+                                       void* userdata) {
+    if (renderer == NULL) return false;
+    if (!zcsr_gl_make_current(renderer)) return false;
+    renderer->l2d_post_cb = callback;
+    renderer->l2d_post_ud = userdata;
+    return true;
+}
+
 bool zcsr_gl_l2d_shadow_begin(zcsr_gl_renderer* renderer,
                               int mask_w, int mask_h,
                               int view_w, int view_h,
@@ -1399,6 +1596,15 @@ bool zcsr_gl_l2d_light_emit(zcsr_gl_renderer* renderer,
     }
     if (renderer->l2d_light_loc_dir3 >= 0) {
         glUniform3f(renderer->l2d_light_loc_dir3, light->dir_x, light->dir_y, light->dir_z);
+    }
+    if (renderer->l2d_light_loc_spot >= 0) {
+        glUniform1i(renderer->l2d_light_loc_spot, light->spot ? 1 : 0);
+    }
+    if (renderer->l2d_light_loc_inner >= 0) {
+        glUniform1f(renderer->l2d_light_loc_inner, light->inner_angle);
+    }
+    if (renderer->l2d_light_loc_outer >= 0) {
+        glUniform1f(renderer->l2d_light_loc_outer, light->outer_angle);
     }
 
     if (light->parallel) {
