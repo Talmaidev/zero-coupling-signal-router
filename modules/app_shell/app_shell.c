@@ -18,7 +18,7 @@
  * settings overlay -> close -> exit).
  */
 #include "zcsr/app_shell.h"
-#include "zcsr/ui_modern_settings.h"
+#include "zcsr/ui_game_settings.h"
 #include "zcsr/platform.h"
 #include "zcsr/gl_render.h"
 #include "zcsr/input.h"
@@ -79,7 +79,7 @@ static const char* res_opts[]     = { "1280x720", "1600x900", "1920x1080", "2560
 static const char* refresh_opts[] = { "60Hz", "75Hz", "120Hz", "144Hz", "165Hz", "240Hz" };
 static const char* fps_opts[]     = { "30", "60", "120", "144", "Unlimited" };
 
-static zcsr_ms_item g_video[V_COUNT];
+static zcsr_game_settings_item g_video[V_COUNT];
 
 enum {
     G_PRESET = 0,
@@ -99,7 +99,7 @@ static const char* aa_opts[]      = { "Off", "FXAA", "TAA", "MSAA 2x", "MSAA 4x"
 static const char* effect_opts[]  = { "Low", "Medium", "High" };
 static const char* post_opts[]    = { "Off", "Low", "Medium", "High" };
 
-static zcsr_ms_item g_graphics[G_COUNT];
+static zcsr_game_settings_item g_graphics[G_COUNT];
 
 enum {
     A_MASTER = 0,
@@ -115,7 +115,7 @@ enum {
 static const char* outdev_opts[] = { "Default", "Speakers", "Headphones" };
 static const char* indev_opts[]  = { "Default", "Microphone", "Line In" };
 
-static zcsr_ms_item g_audio[A_COUNT];
+static zcsr_game_settings_item g_audio[A_COUNT];
 
 /* Interface tab: shell-owned look-and-feel of the settings overlay itself. */
 enum {
@@ -124,7 +124,7 @@ enum {
     I_COUNT,
 };
 
-static zcsr_ms_item g_interface[I_COUNT];
+static zcsr_game_settings_item g_interface[I_COUNT];
 
 static char g_display_names[8][64];
 static const char* g_display_opts[8];
@@ -152,85 +152,85 @@ static void init_items(void) {
     memset(g_audio, 0, sizeof(g_audio));
     memset(g_interface, 0, sizeof(g_interface));
 
-    g_video[V_DISPLAY] = (zcsr_ms_item){
+    g_video[V_DISPLAY] = (zcsr_game_settings_item){
         .label="Display", .description="Select the monitor for output.",
-        .type=ZCSR_MS_DROPDOWN, .options=g_display_opts, .option_count=g_display_count, .value=0 };
-    g_video[V_MODE] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_DROPDOWN, .options=g_display_opts, .option_count=g_display_count, .value=0 };
+    g_video[V_MODE] = (zcsr_game_settings_item){
         .label="Display Mode", .description="Windowed: normal window (taskbar, Alt-Tab). Borderless: covers the whole monitor without a frame. Fullscreen: exclusive fullscreen.",
-        .type=ZCSR_MS_DROPDOWN, .options=mode_opts, .option_count=3, .value=0 };
-    g_video[V_RESOLUTION] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_DROPDOWN, .options=mode_opts, .option_count=3, .value=0 };
+    g_video[V_RESOLUTION] = (zcsr_game_settings_item){
         .label="Resolution", .description="Window client resolution (applies in Windowed mode).",
-        .type=ZCSR_MS_DROPDOWN, .options=res_opts, .option_count=5, .value=0 };
-    g_video[V_REFRESH] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_DROPDOWN, .options=res_opts, .option_count=5, .value=0 };
+    g_video[V_REFRESH] = (zcsr_game_settings_item){
         .label="Refresh Rate", .description="Preferred display refresh rate.",
-        .type=ZCSR_MS_DROPDOWN, .options=refresh_opts, .option_count=6, .value=0 };
-    g_video[V_VSYNC] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_DROPDOWN, .options=refresh_opts, .option_count=6, .value=0 };
+    g_video[V_VSYNC] = (zcsr_game_settings_item){
         .label="V-Sync", .description="Synchronize the frame rate with the display.",
-        .type=ZCSR_MS_TOGGLE, .toggle_value=true };
-    g_video[V_FRAMELIMIT] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_TOGGLE, .toggle_value=true };
+    g_video[V_FRAMELIMIT] = (zcsr_game_settings_item){
         .label="Frame Rate Limit", .description="Cap the maximum frame rate. Unlimited removes the cap.",
-        .type=ZCSR_MS_DROPDOWN, .options=fps_opts, .option_count=5, .value=4 };
-    g_video[V_BRIGHTNESS] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_DROPDOWN, .options=fps_opts, .option_count=5, .value=4 };
+    g_video[V_BRIGHTNESS] = (zcsr_game_settings_item){
         .label="Brightness", .description="Adjust overall screen brightness.",
-        .type=ZCSR_MS_SLIDER, .min=0.0f,.max=100.0f,.step=1.0f,.slider_value=50.0f };
-    g_video[V_SEP_COMBAT] = (zcsr_ms_item){
-        .label="--- Combat View ---", .type=ZCSR_MS_SEPARATOR };
-    g_video[V_FOV] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_SLIDER, .min=0.0f,.max=100.0f,.step=1.0f,.slider_value=50.0f };
+    g_video[V_SEP_COMBAT] = (zcsr_game_settings_item){
+        .label="--- Combat View ---", .type=ZCSR_GAME_SETTINGS_SEPARATOR };
+    g_video[V_FOV] = (zcsr_game_settings_item){
         .label="Default FOV", .description="Field of view in degrees.",
-        .type=ZCSR_MS_SLIDER, .min=60.0f,.max=120.0f,.step=1.0f,.slider_value=90.0f };
-    g_video[V_SHARPNESS] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_SLIDER, .min=60.0f,.max=120.0f,.step=1.0f,.slider_value=90.0f };
+    g_video[V_SHARPNESS] = (zcsr_game_settings_item){
         .label="Sharpness", .description="Post-process sharpening filter strength.",
-        .type=ZCSR_MS_SLIDER, .min=0.0f,.max=100.0f,.step=1.0f,.slider_value=50.0f };
+        .type=ZCSR_GAME_SETTINGS_SLIDER, .min=0.0f,.max=100.0f,.step=1.0f,.slider_value=50.0f };
 
-    g_graphics[G_PRESET] = (zcsr_ms_item){
+    g_graphics[G_PRESET] = (zcsr_game_settings_item){
         .label="Quality Preset", .description="Global graphics quality preset.",
-        .type=ZCSR_MS_DROPDOWN, .options=preset_opts, .option_count=4, .value=2 };
-    g_graphics[G_TEXTURE] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_DROPDOWN, .options=preset_opts, .option_count=4, .value=2 };
+    g_graphics[G_TEXTURE] = (zcsr_game_settings_item){
         .label="Texture Quality", .description="Texture resolution and filtering quality.",
-        .type=ZCSR_MS_DROPDOWN, .options=tex_opts, .option_count=4, .value=2 };
-    g_graphics[G_SHADOW] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_DROPDOWN, .options=tex_opts, .option_count=4, .value=2 };
+    g_graphics[G_SHADOW] = (zcsr_game_settings_item){
         .label="Shadow Quality", .description="Shadow map resolution and filtering.",
-        .type=ZCSR_MS_DROPDOWN, .options=shadow_opts, .option_count=4, .value=2 };
-    g_graphics[G_AA] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_DROPDOWN, .options=shadow_opts, .option_count=4, .value=2 };
+    g_graphics[G_AA] = (zcsr_game_settings_item){
         .label="Anti-Aliasing", .description="Smooths jagged edges.",
-        .type=ZCSR_MS_DROPDOWN, .options=aa_opts, .option_count=5, .value=1 };
-    g_graphics[G_EFFECTS] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_DROPDOWN, .options=aa_opts, .option_count=5, .value=1 };
+    g_graphics[G_EFFECTS] = (zcsr_game_settings_item){
         .label="Effects Quality", .description="Particle effects and weather visual quality.",
-        .type=ZCSR_MS_DROPDOWN, .options=effect_opts, .option_count=3, .value=1 };
-    g_graphics[G_POST] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_DROPDOWN, .options=effect_opts, .option_count=3, .value=1 };
+    g_graphics[G_POST] = (zcsr_game_settings_item){
         .label="Post Processing", .description="Bloom, depth of field, color grading.",
-        .type=ZCSR_MS_DROPDOWN, .options=post_opts, .option_count=4, .value=1 };
-    g_graphics[G_VIEWDIST] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_DROPDOWN, .options=post_opts, .option_count=4, .value=1 };
+    g_graphics[G_VIEWDIST] = (zcsr_game_settings_item){
         .label="View Distance", .description="Maximum distance at which objects render.",
-        .type=ZCSR_MS_SLIDER, .min=10.0f,.max=100.0f,.step=1.0f,.slider_value=70.0f };
+        .type=ZCSR_GAME_SETTINGS_SLIDER, .min=10.0f,.max=100.0f,.step=1.0f,.slider_value=70.0f };
 
-    g_audio[A_MASTER] = (zcsr_ms_item){
+    g_audio[A_MASTER] = (zcsr_game_settings_item){
         .label="Master Volume", .description="Overall audio output volume.",
-        .type=ZCSR_MS_SLIDER, .min=0.0f,.max=100.0f,.step=1.0f,.slider_value=80.0f };
-    g_audio[A_MUSIC] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_SLIDER, .min=0.0f,.max=100.0f,.step=1.0f,.slider_value=80.0f };
+    g_audio[A_MUSIC] = (zcsr_game_settings_item){
         .label="Music Volume", .description="Background music volume.",
-        .type=ZCSR_MS_SLIDER, .min=0.0f,.max=100.0f,.step=1.0f,.slider_value=60.0f };
-    g_audio[A_SFX] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_SLIDER, .min=0.0f,.max=100.0f,.step=1.0f,.slider_value=60.0f };
+    g_audio[A_SFX] = (zcsr_game_settings_item){
         .label="SFX Volume", .description="Sound effects volume.",
-        .type=ZCSR_MS_SLIDER, .min=0.0f,.max=100.0f,.step=1.0f,.slider_value=90.0f };
-    g_audio[A_VOICE] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_SLIDER, .min=0.0f,.max=100.0f,.step=1.0f,.slider_value=90.0f };
+    g_audio[A_VOICE] = (zcsr_game_settings_item){
         .label="Voice Volume", .description="Voice chat and character dialogue volume.",
-        .type=ZCSR_MS_SLIDER, .min=0.0f,.max=100.0f,.step=1.0f,.slider_value=100.0f };
-    g_audio[A_SEP_DEV] = (zcsr_ms_item){
-        .label="--- Devices ---", .type=ZCSR_MS_SEPARATOR };
-    g_audio[A_OUTPUT] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_SLIDER, .min=0.0f,.max=100.0f,.step=1.0f,.slider_value=100.0f };
+    g_audio[A_SEP_DEV] = (zcsr_game_settings_item){
+        .label="--- Devices ---", .type=ZCSR_GAME_SETTINGS_SEPARATOR };
+    g_audio[A_OUTPUT] = (zcsr_game_settings_item){
         .label="Output Device", .description="Audio output device.",
-        .type=ZCSR_MS_DROPDOWN, .options=outdev_opts, .option_count=3, .value=0 };
-    g_audio[A_INPUT] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_DROPDOWN, .options=outdev_opts, .option_count=3, .value=0 };
+    g_audio[A_INPUT] = (zcsr_game_settings_item){
         .label="Input Device", .description="Microphone / audio input device.",
-        .type=ZCSR_MS_DROPDOWN, .options=indev_opts, .option_count=3, .value=0 };
+        .type=ZCSR_GAME_SETTINGS_DROPDOWN, .options=indev_opts, .option_count=3, .value=0 };
 
-    g_interface[I_OPACITY] = (zcsr_ms_item){
+    g_interface[I_OPACITY] = (zcsr_game_settings_item){
         .label="Settings Opacity", .description="How opaque the settings overlay panel is over the page. Takes effect on Apply.",
-        .type=ZCSR_MS_SLIDER, .min=30.0f,.max=100.0f,.step=5.0f,.slider_value=100.0f };
-    g_interface[I_DIM] = (zcsr_ms_item){
+        .type=ZCSR_GAME_SETTINGS_SLIDER, .min=30.0f,.max=100.0f,.step=5.0f,.slider_value=100.0f };
+    g_interface[I_DIM] = (zcsr_game_settings_item){
         .label="Background Dim", .description="How dark the page behind the settings overlay is. Takes effect on Apply.",
-        .type=ZCSR_MS_SLIDER, .min=0.0f,.max=90.0f,.step=1.0f,.slider_value=62.0f };
+        .type=ZCSR_GAME_SETTINGS_SLIDER, .min=0.0f,.max=90.0f,.step=1.0f,.slider_value=62.0f };
 }
 
 /* ================================================================== */
@@ -246,7 +246,7 @@ static zcsr_surface*     w_surface  = NULL;
 static zcsr_gl_renderer* w_renderer = NULL;
 static zcsr_input*       w_input    = NULL;
 static zcsr_input_ext*   w_inputext = NULL;
-static zcsr_ms*          w_settings = NULL;
+static zcsr_game_settings*          w_settings = NULL;
 
 /* Mouse-position bridge for modules (read-only). Lets a module follow the cursor
  * without changing the zcsr_window_module callback ABI. */
@@ -390,7 +390,7 @@ static void reset_defaults(void) {
     g_interface[I_OPACITY].slider_value = 100.0f;
     g_interface[I_DIM].slider_value = 62.0f;
 
-    zcsr_ms_reset(w_settings);
+    zcsr_game_settings_reset(w_settings);
     printf("[reset] defaults restored\n");
 }
 
@@ -422,10 +422,10 @@ static void open_settings_overlay(void) {
 
 static void close_settings(bool apply) {
     if (apply) {
-        zcsr_ms_apply(w_settings);
+        zcsr_game_settings_apply(w_settings);
         apply_settings();
     } else {
-        zcsr_ms_cancel(w_settings);
+        zcsr_game_settings_cancel(w_settings);
     }
     w_settings_open = false;
     printf("[shell] settings closed (%s)\n", apply ? "applied" : "cancelled");
@@ -509,8 +509,8 @@ static void render_settings_overlay(zcsr_gl_renderer* r) {
     if (w_panel_tex == 0) {
         /* fallback: flush the page, then render the panel directly (no translucency) */
         zcsr_gl_flush(r);
-        zcsr_ms_set_bounds(w_settings, px, py, pw, ph);
-        zcsr_ms_render(w_settings, r);
+        zcsr_game_settings_set_bounds(w_settings, px, py, pw, ph);
+        zcsr_game_settings_render(w_settings, r);
         return;
     }
 
@@ -522,10 +522,10 @@ static void render_settings_overlay(zcsr_gl_renderer* r) {
     zcsr_gl_flush(r);
 
     /* 3) panel -> offscreen texture (rendered from (0,0,pw,ph); queue is empty here) */
-    zcsr_ms_set_bounds(w_settings, 0, 0, pw, ph);
+    zcsr_game_settings_set_bounds(w_settings, 0, 0, pw, ph);
     zcsr_gl_set_target(r, w_panel_tex);
     zcsr_gl_fill_rect(r, 0.0f, 0.0f, (float)pw, (float)ph, 0.0f, 0.0f, 0.0f, 1.0f);
-    zcsr_ms_render(w_settings, r);
+    zcsr_game_settings_render(w_settings, r);
     zcsr_gl_flush(r);
     zcsr_gl_set_target(r, 0);
 
@@ -544,7 +544,7 @@ static void render_settings_overlay(zcsr_gl_renderer* r) {
 /* ================================================================== */
 int zcsr_window_main(const zcsr_window_module* modules, int module_count,
                      int argc, char** argv) {
-    static zcsr_ms_tab tabs[4];
+    static zcsr_game_settings_tab tabs[4];
     int i;
 
     w_autoquit = (argc > 1 && argv != NULL && argv[1] != NULL &&
@@ -590,12 +590,12 @@ int zcsr_window_main(const zcsr_window_module* modules, int module_count,
     zcsr_surface_get_client_size(w_surface, &w_cw, &w_ch);
     if (w_cw <= 0 || w_ch <= 0) { w_cw = SHELL_W; w_ch = SHELL_H; }
 
-    tabs[0] = (zcsr_ms_tab){ .name="Video",     .items=g_video,     .count=V_COUNT };
-    tabs[1] = (zcsr_ms_tab){ .name="Graphics",  .items=g_graphics,  .count=G_COUNT };
-    tabs[2] = (zcsr_ms_tab){ .name="Audio",     .items=g_audio,     .count=A_COUNT };
-    tabs[3] = (zcsr_ms_tab){ .name="Interface", .items=g_interface, .count=I_COUNT };
-    w_settings = zcsr_ms_create(settings_buf, sizeof(settings_buf),
-        &(zcsr_ms_config){
+    tabs[0] = (zcsr_game_settings_tab){ .name="Video",     .items=g_video,     .count=V_COUNT };
+    tabs[1] = (zcsr_game_settings_tab){ .name="Graphics",  .items=g_graphics,  .count=G_COUNT };
+    tabs[2] = (zcsr_game_settings_tab){ .name="Audio",     .items=g_audio,     .count=A_COUNT };
+    tabs[3] = (zcsr_game_settings_tab){ .name="Interface", .items=g_interface, .count=I_COUNT };
+    w_settings = zcsr_game_settings_create(settings_buf, sizeof(settings_buf),
+        &(zcsr_game_settings_config){
             .tabs        = tabs,
             .tab_count   = 4,
             .x           = 200,
@@ -644,7 +644,7 @@ int zcsr_window_main(const zcsr_window_module* modules, int module_count,
             local.x = mst.x - px;
             local.y = mst.y - py;
             {
-                int maction = zcsr_ms_update_mouse(w_settings, &local);
+                int maction = zcsr_game_settings_update_mouse(w_settings, &local);
                 if (maction == 1) close_settings(true);
                 else if (maction == -1) close_settings(false);
             }
@@ -687,7 +687,7 @@ int zcsr_window_main(const zcsr_window_module* modules, int module_count,
             if (w_settings_open) {
                 if (ev.key == 'R' || ev.key == 'r') { reset_defaults(); continue; }
                 {
-                    int result = zcsr_ms_handle_key(w_settings, ev.key, ev.action);
+                    int result = zcsr_game_settings_handle_key(w_settings, ev.key, ev.action);
                     if (result == 1) close_settings(true);
                     else if (result == -1) close_settings(false);
                 }
@@ -765,7 +765,7 @@ cleanup:
         }
     }
     if (w_panel_tex != 0) zcsr_gl_texture_destroy(w_renderer, w_panel_tex);
-    if (w_settings) zcsr_ms_destroy(w_settings);
+    if (w_settings) zcsr_game_settings_destroy(w_settings);
     if (w_inputext) zcsr_input_ext_shutdown(w_inputext);
     if (w_renderer) zcsr_gl_destroy(w_renderer);
     if (w_surface) zcsr_surface_destroy(w_surface);
