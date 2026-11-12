@@ -138,7 +138,7 @@ static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
     (void)input;
     (void)window;
 }
-#elif defined(__linux__)
+#elif defined(__linux__) && defined(ZCSR_LINUX_BACKEND_WAYLAND)
 #include <time.h>
 #include <wayland-client.h>
 #include <string.h>
@@ -216,6 +216,48 @@ static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
      * Here we only propagate the close flag from xdg_toplevel::close. */
     if (!input || !window) return;
     if (zcsr_platform_wayland_take_close(window)) {
+        input->close_requested = true;
+        zcsr_record_close(window);
+    }
+}
+
+#elif defined(__linux__) && defined(ZCSR_LINUX_BACKEND_X11)
+#include <time.h>
+#include <string.h>
+
+/* platform_x11.c 内部访问器（与 Wayland 分支同一零耦合约定：只 extern，
+ * 不引入 modules/platform 的头）。 */
+extern bool zcsr_platform_x11_next_key(zcsr_surface* s, unsigned int* keycode, int* is_down);
+extern bool zcsr_platform_x11_take_close(zcsr_surface* s);
+extern bool zcsr_platform_x11_is_focused(const zcsr_surface* s);
+
+uint64_t zcsr_clock_now_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return ((uint64_t)ts.tv_sec * 1000000000ull) + (uint64_t)ts.tv_nsec;
+}
+
+static void zcsr_input_platform_init(zcsr_input* input, zcsr_surface* window) {
+    (void)input; (void)window;   /* X11 没有需要注册的监听器：事件由平台泵入环 */
+}
+
+static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
+    unsigned int keycode = 0;
+    int down = 0;
+    if (!input || !window) return;
+
+    while (zcsr_platform_x11_next_key(window, &keycode, &down)) {
+        /* X11 keycode 与引擎 Linux 侧约定同域（evdev + 8），直接透传。 */
+        zcsr_input_record_key(input, (zcsr_keycode)keycode,
+                              down ? ZCSR_KEY_DOWN : ZCSR_KEY_UP);
+    }
+
+    /* 失焦时清空按下表，避免 Alt-Tab 之后按键粘住。 */
+    if (!zcsr_platform_x11_is_focused(window)) {
+        memset(input->key_down, 0, sizeof(input->key_down));
+    }
+
+    if (zcsr_platform_x11_take_close(window)) {
         input->close_requested = true;
         zcsr_record_close(window);
     }

@@ -141,33 +141,106 @@ if(UNIX AND NOT APPLE)
 
   find_package(PkgConfig REQUIRED)
 
-  # ---- Wayland client + xdg-shell protocol generation ----
+  # ---- 窗口后端探测：X11/GLX 与 Wayland/EGL 各一套，选中的那套才参与编译 ----
   pkg_check_modules(WAYLAND_CLIENT wayland-client)
   find_program(WAYLAND_SCANNER wayland-scanner)
   find_file(XDG_SHELL_XML NAMES xdg-shell.xml
       PATHS /usr/share/wayland-protocols/stable/xdg-shell)
+  pkg_check_modules(X11 x11)
+  find_package(OpenGL)          # X11/GLX 需要 libGL（GLVND 的 OpenGL::OpenGL）
 
+  set(ZCSR_LINUX_HAS_WAYLAND FALSE)
   if(WAYLAND_CLIENT_FOUND AND WAYLAND_SCANNER AND XDG_SHELL_XML)
-  add_custom_command(
-      OUTPUT ${CMAKE_BINARY_DIR}/gen/xdg-shell-client-protocol.h
-             ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c
-      COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/gen
-      COMMAND ${WAYLAND_SCANNER} client-header
-              ${XDG_SHELL_XML} ${CMAKE_BINARY_DIR}/gen/xdg-shell-client-protocol.h
-      COMMAND ${WAYLAND_SCANNER} private-code
-              ${XDG_SHELL_XML} ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c
-      DEPENDS ${XDG_SHELL_XML}
-      VERBATIM)
-  target_sources(zcsr_platform PRIVATE
-      modules/platform/platform_wayland.c
-      ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c)
-  target_include_directories(zcsr_platform PRIVATE
-      ${CMAKE_BINARY_DIR}/gen
-      ${WAYLAND_CLIENT_INCLUDE_DIRS})
-  target_compile_definitions(zcsr_platform PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
-  target_link_libraries(zcsr_platform PUBLIC ${WAYLAND_CLIENT_LIBRARIES} m)
+    set(ZCSR_LINUX_HAS_WAYLAND TRUE)
+  endif()
+  set(ZCSR_LINUX_HAS_X11 FALSE)
+  if(X11_FOUND AND OpenGL_FOUND)
+    set(ZCSR_LINUX_HAS_X11 TRUE)
+  endif()
+
+  # AUTO：两套都装时优先 X11 —— X11 客户端在纯 X11 会话和 Wayland 桌面的
+  # XWayland 里都能跑，覆盖面比 Wayland-only 大。指定 WAYLAND/X11 可强制。
+  set(ZCSR_LINUX_WINDOW_BACKEND "auto" CACHE STRING
+      "Linux window backend: auto | x11 | wayland | none")
+  set_property(CACHE ZCSR_LINUX_WINDOW_BACKEND PROPERTY STRINGS auto x11 wayland none)
+
+  set(ZCSR_LINUX_BACKEND "none")
+  if(ZCSR_LINUX_WINDOW_BACKEND STREQUAL "x11")
+    if(NOT ZCSR_LINUX_HAS_X11)
+      message(FATAL_ERROR "ZCSR_LINUX_WINDOW_BACKEND=x11 但缺 X11/GL 开发包（libx11-dev + libgl1-mesa-dev）")
+    endif()
+    set(ZCSR_LINUX_BACKEND "x11")
+  elseif(ZCSR_LINUX_WINDOW_BACKEND STREQUAL "wayland")
+    if(NOT ZCSR_LINUX_HAS_WAYLAND)
+      message(FATAL_ERROR "ZCSR_LINUX_WINDOW_BACKEND=wayland 但缺 wayland-client / wayland-scanner / xdg-shell.xml")
+    endif()
+    set(ZCSR_LINUX_BACKEND "wayland")
+  elseif(ZCSR_LINUX_WINDOW_BACKEND STREQUAL "none")
+    set(ZCSR_LINUX_BACKEND "none")
+  else() # auto
+    if(ZCSR_LINUX_HAS_X11)
+      set(ZCSR_LINUX_BACKEND "x11")
+    elseif(ZCSR_LINUX_HAS_WAYLAND)
+      set(ZCSR_LINUX_BACKEND "wayland")
+    endif()
+  endif()
+  message(STATUS "Linux window backend: ${ZCSR_LINUX_BACKEND} (x11=${ZCSR_LINUX_HAS_X11} wayland=${ZCSR_LINUX_HAS_WAYLAND})")
+
+  if(ZCSR_LINUX_BACKEND STREQUAL "x11")
+    target_sources(zcsr_platform PRIVATE modules/platform/platform_x11.c)
+    target_compile_definitions(zcsr_platform PRIVATE ZCSR_LINUX_BACKEND_X11)
+    target_link_libraries(zcsr_platform PUBLIC ${X11_LIBRARIES} m)
+
+    target_compile_definitions(zcsr_input PRIVATE ZCSR_LINUX_BACKEND_X11)
+    target_compile_definitions(zcsr_inputext PRIVATE ZCSR_LINUX_BACKEND_X11)
+    target_link_libraries(zcsr_input PUBLIC ${X11_LIBRARIES})
+    target_link_libraries(zcsr_inputext PUBLIC ${X11_LIBRARIES})
+
+    target_compile_definitions(zcsr_glrender PRIVATE ZCSR_LINUX_BACKEND_X11)
+    target_include_directories(zcsr_glrender PRIVATE ${X11_INCLUDE_DIRS})
+    target_link_libraries(zcsr_glrender PUBLIC ${X11_LIBRARIES} OpenGL::OpenGL m)
+  elseif(ZCSR_LINUX_BACKEND STREQUAL "wayland")
+    add_custom_command(
+        OUTPUT ${CMAKE_BINARY_DIR}/gen/xdg-shell-client-protocol.h
+               ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/gen
+        COMMAND ${WAYLAND_SCANNER} client-header
+                ${XDG_SHELL_XML} ${CMAKE_BINARY_DIR}/gen/xdg-shell-client-protocol.h
+        COMMAND ${WAYLAND_SCANNER} private-code
+                ${XDG_SHELL_XML} ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c
+        DEPENDS ${XDG_SHELL_XML}
+        VERBATIM)
+    target_sources(zcsr_platform PRIVATE
+        modules/platform/platform_wayland.c
+        ${CMAKE_BINARY_DIR}/gen/xdg-shell-protocol.c)
+    target_include_directories(zcsr_platform PRIVATE
+        ${CMAKE_BINARY_DIR}/gen
+        ${WAYLAND_CLIENT_INCLUDE_DIRS})
+    target_compile_definitions(zcsr_platform PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
+    target_link_libraries(zcsr_platform PUBLIC ${WAYLAND_CLIENT_LIBRARIES} m)
+
+    target_compile_definitions(zcsr_input PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
+    target_compile_definitions(zcsr_inputext PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
+    target_include_directories(zcsr_input PRIVATE ${CMAKE_BINARY_DIR}/gen ${WAYLAND_CLIENT_INCLUDE_DIRS})
+    target_include_directories(zcsr_inputext PRIVATE ${CMAKE_BINARY_DIR}/gen ${WAYLAND_CLIENT_INCLUDE_DIRS})
+    target_link_libraries(zcsr_input PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
+    target_link_libraries(zcsr_inputext PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
+
+    pkg_check_modules(WAYLAND_EGL wayland-egl)
+    pkg_check_modules(EGL egl)
+    target_compile_definitions(zcsr_glrender PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
+    target_include_directories(zcsr_glrender PRIVATE
+        ${CMAKE_BINARY_DIR}/gen
+        ${WAYLAND_CLIENT_INCLUDE_DIRS}
+        ${WAYLAND_EGL_INCLUDE_DIRS}
+        ${EGL_INCLUDE_DIRS})
+    target_link_libraries(zcsr_glrender PUBLIC
+        ${WAYLAND_CLIENT_LIBRARIES}
+        ${WAYLAND_EGL_LIBRARIES}
+        ${EGL_LIBRARIES}
+        OpenGL::OpenGL m)
   else()
-  message(STATUS "Linux: Wayland 窗口后端未启用（缺 wayland-client / wayland-scanner / xdg-shell.xml），库仍按 headless 构建")
+    message(STATUS "Linux: 无窗口后端（headless）—— 库与纯 CPU 测试仍可构建")
   endif()
 
   # ---- PipeWire audio ----
@@ -185,31 +258,6 @@ if(UNIX AND NOT APPLE)
   message(STATUS "Linux: PipeWire 音频后端未启用（缺 libpipewire-0.3 / libspa-0.2），audiomix 保持静音实现")
   endif()
 
-  if(WAYLAND_CLIENT_FOUND AND WAYLAND_SCANNER AND XDG_SHELL_XML)
-  # ---- input / inputext: Wayland wl_keyboard / wl_pointer ----
-  target_compile_definitions(zcsr_input PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
-  target_compile_definitions(zcsr_inputext PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
-  target_include_directories(zcsr_input PRIVATE ${CMAKE_BINARY_DIR}/gen ${WAYLAND_CLIENT_INCLUDE_DIRS})
-  target_include_directories(zcsr_inputext PRIVATE ${CMAKE_BINARY_DIR}/gen ${WAYLAND_CLIENT_INCLUDE_DIRS})
-  target_link_libraries(zcsr_input PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
-  target_link_libraries(zcsr_inputext PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
-
-  # ---- glrender: EGL on Wayland ----
-  pkg_check_modules(WAYLAND_EGL wayland-egl)
-  pkg_check_modules(EGL egl)
-  find_package(OpenGL)
-  target_compile_definitions(zcsr_glrender PRIVATE ZCSR_LINUX_BACKEND_WAYLAND)
-  target_include_directories(zcsr_glrender PRIVATE
-      ${CMAKE_BINARY_DIR}/gen
-      ${WAYLAND_CLIENT_INCLUDE_DIRS}
-      ${WAYLAND_EGL_INCLUDE_DIRS}
-      ${EGL_INCLUDE_DIRS})
-  target_link_libraries(zcsr_glrender PUBLIC
-      ${WAYLAND_CLIENT_LIBRARIES}
-      ${WAYLAND_EGL_LIBRARIES}
-      ${EGL_LIBRARIES}
-      OpenGL::OpenGL m)
-  endif()
 elseif(WIN32)
   # GL 1.1 entry points (textures, glDrawArrays, ...) live in opengl32; the WGL/DC calls
   # (ChoosePixelFormat / SetPixelFormat / SwapBuffers / GetDC / ReleaseDC) live in gdi32. The
