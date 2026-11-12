@@ -21,7 +21,8 @@ typedef uint32_t zcsr_gl_l2d_target;
 
 typedef enum zcsr_gl_l2d_format {
     ZCSR_GL_L2D_FORMAT_RGBA8 = 1,
-    ZCSR_GL_L2D_FORMAT_RGBA16F = 2
+    ZCSR_GL_L2D_FORMAT_RGBA16F = 2,
+    ZCSR_GL_L2D_FORMAT_SRGB8_ALPHA8 = 3
 } zcsr_gl_l2d_format;
 
 typedef enum zcsr_gl_l2d_program {
@@ -37,6 +38,31 @@ typedef enum zcsr_gl_l2d_blend_mode {
     ZCSR_GL_L2D_BLEND_OPAQUE = 0,
     ZCSR_GL_L2D_BLEND_ADDITIVE = 1
 } zcsr_gl_l2d_blend_mode;
+
+/* Post-process hook: called after the composite shader has written the
+ * tonemapped sRGB result to the engine-owned composite FBO. The callback
+ * receives the composite texture (already bound to texture unit 9), the
+ * frame dimensions, and the game userdata. The callback must bind its own
+ * shader and draw a fullscreen quad; the engine blits the result to the
+ * default framebuffer after the callback returns. GL state (program, VAO,
+ * blend, active texture) is restored by the engine after the callback.
+ * The composite texture must not be deleted or re-bound by the callback.
+ * Returns true on success; false aborts the frame and blits the raw
+ * composite texture instead. Not called from any thread other than the
+ * render thread. */
+typedef struct zcsr_gl_renderer zcsr_gl_renderer;
+typedef bool (*zcsr_l2d_post_process_fn)(zcsr_gl_renderer* renderer,
+                                         unsigned int composite_tex,
+                                         int width,
+                                         int height,
+                                         void* userdata);
+
+/* Register (or clear with NULL) the post-process hook. The hook is invoked
+ * every frame after composite. Setting a new hook replaces the previous
+ * one; the engine does not retain the userdata after a NULL set. */
+bool zcsr_gl_l2d_set_post_process_hook(zcsr_gl_renderer* renderer,
+                                       zcsr_l2d_post_process_fn callback,
+                                       void* userdata);
 
 /* Save/restore all renderer state touched by this extension: target, viewport,
  * scissor, active program, texture bindings and blend state. The stack is
@@ -73,6 +99,21 @@ bool zcsr_gl_l2d_gbuffer_begin(zcsr_gl_renderer* renderer,
                                int width,
                                int height);
 bool zcsr_gl_l2d_bind_default_target(zcsr_gl_renderer* renderer,
+                                    int width,
+                                    int height);
+
+/* Bind the engine-owned composite FBO as the render target. The composite
+ * shader must draw its sRGB-encoded result here; the FBO does not re-encode.
+ * Used internally by modules/light2d before the deferred/bloom draw. */
+bool zcsr_gl_l2d_bind_composite_target(zcsr_gl_renderer* renderer,
+                                       int width,
+                                       int height);
+
+/* After the composite shader has drawn to the composite FBO, run the
+ * registered post-process hook (if any) and then present the result to
+ * the default framebuffer. Without a hook the composite FBO is blitted
+ * directly. Called by modules/light2d at the end of a HIGH frame. */
+bool zcsr_gl_l2d_finalize_composite(zcsr_gl_renderer* renderer,
                                     int width,
                                     int height);
 bool zcsr_gl_l2d_bind_target_textures(zcsr_gl_renderer* renderer,
@@ -165,7 +206,9 @@ typedef struct zcsr_gl_l2d_light_draw {
     float wx, wy, height;
     float radius, decay;
     float dir_x, dir_y, dir_z;
+    float inner_angle, outer_angle;
     int   parallel;
+    int   spot;
     float cr, cg, cb;
     int   use_shadow;
 } zcsr_gl_l2d_light_draw;

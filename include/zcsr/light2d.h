@@ -22,7 +22,8 @@ typedef enum zcsr_light_quality {
 
 typedef enum zcsr_light_type {
     ZCSR_LIGHT_POINT = 0,     /* radial falloff from a world position */
-    ZCSR_LIGHT_PARALLEL = 1   /* fixed travel direction, no falloff */
+    ZCSR_LIGHT_PARALLEL = 1,  /* fixed travel direction, no falloff */
+    ZCSR_LIGHT_SPOT = 2       /* point light restricted to a cone */
 } zcsr_light_type;
 
 /*
@@ -47,7 +48,10 @@ typedef struct zcsr_light {
     float height;
     float radius;
     float decay;
-    float dir_x, dir_y, dir_z; /* parallel: normalized travel direction */
+    float dir_x, dir_y, dir_z; /* parallel: normalized travel direction;
+                                  spot: normalized cone aim direction */
+    float inner_angle;         /* spot: full cone radius (radians) at full power */
+    float outer_angle;         /* spot: full cone radius (radians) at zero power */
     zcsr_light_type type;
     float r;
     float g;
@@ -80,11 +84,12 @@ void zcsr_light2d_get_camera(const zcsr_light2d_ctx* ctx, zcsr_camera* out);
 zcsr_gl_l2d_target zcsr_light2d_gbuffer_handle(const zcsr_light2d_ctx* ctx);
 
 /*
- * `max_quality` reserves caller-buffer capacity only and may be MEDIUM or ULTRA
- * to reserve the larger light-slot capacity (LOW 16 / MEDIUM 32 / HIGH and
- * ULTRA 64); those strategies are not implemented. Only LOW and HIGH are
- * implemented: `initial_quality` and set_quality() accept LOW/HIGH and reject
- * MEDIUM/ULTRA.
+ * 四档全部可切换（LOW / MEDIUM / HIGH / ULTRA），映射到两条真实管线：
+ *   LOW（16 槽）/ MEDIUM（32 槽）  → forward 叠加路径，不建 G-buffer；
+ *   HIGH（64 槽）/ ULTRA（64 槽）  → G-buffer deferred 路径。
+ * 同一路径内的两档差异是槽容量与光/影缓冲分辨率：切到 ULTRA 时
+ * light_scale_pct 默认提到 100、bloom 默认开（之后可用 set_options 覆盖）。
+ * `max_quality` 决定 caller 缓冲容量：LOW 16 / MEDIUM 32 / HIGH 64 / ULTRA 64。
  * The caller buffer must remain alive and exclusively owned by this context
  * until zcsr_light2d_destroy() returns.
  */
@@ -106,8 +111,9 @@ void zcsr_light2d_destroy(zcsr_light2d_ctx* ctx);
  */
 bool zcsr_light2d_resize(zcsr_light2d_ctx* ctx, int width, int height);
 
-/* Runtime strategy switching is valid only between frames. Unsupported
- * MEDIUM/ULTRA requests return false and leave the active quality unchanged. */
+/* Runtime strategy switching is valid only between frames. Requests above the
+ * context's max_quality, or HIGH/ULTRA without a G-buffer, return false and
+ * leave the active quality unchanged. */
 bool zcsr_light2d_set_quality(zcsr_light2d_ctx* ctx,
                               zcsr_light_quality quality);
 
