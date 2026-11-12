@@ -64,6 +64,13 @@ void zcsr_gl_submit(zcsr_gl_renderer*, const zcsr_gl_sprite*);
 void zcsr_gl_flush(zcsr_gl_renderer*);
 void zcsr_gl_submit_batch(zcsr_gl_renderer*, const zcsr_gl_sprite* sprites, size_t count);
 
+/* Scissor (clip rectangle), UI convention: top-left origin, exclusive.
+ * w<=0 or h<=0 disables the test. Coordinates are clamped to the current
+ * render target; y is flipped internally because GL's origin is bottom-left.
+ * Pair every "on" with zcsr_gl_scissor_off — leaving it enabled clips later draws. */
+void zcsr_gl_scissor(zcsr_gl_renderer*, int x, int y, int w, int h);
+void zcsr_gl_scissor_off(zcsr_gl_renderer*);
+
 /* Offscreen render-to-texture: set the draw target (0 = back buffer / window). */
 void zcsr_gl_set_target(zcsr_gl_renderer*, zcsr_gl_texture target_or_zero);
 
