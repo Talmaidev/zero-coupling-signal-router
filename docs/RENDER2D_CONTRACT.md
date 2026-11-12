@@ -515,3 +515,89 @@ uv_st[8] = (a.u0,a.v0), (a.u1,a.v0), (a.u1,a.v1), (a.u0,a.v1)
 
 **不开放的扩展**：tilemap、动画帧、九宫格、图集旋转、premultiplied alpha、
 Sprite 实例化直进 G-buffer。这些保持 UNSUPPORTED 记录（§1-§9），不在本接口预留槽位。
+
+---
+
+## 15. 自定义扩展边界（v1.4 实现落地）
+
+本节记录游戏层可以通过哪些接口定制引擎行为，以及四个候选扩展点的
+当前状态。原则：核心稳定，扩展按需；现有接口优先；回调必须定义调用时机、
+资源所有权、失败处理和 GL 状态恢复责任，否则不进公共 API。
+
+### 15.1 游戏层已经能做的自定义（SUPPORTED）
+
+- 纹理：host 自己 `zcsr_gl_texture_create` 创建/上传/销毁，引擎只持有句柄。
+- 几何：`geo_face` / `geo_tex_face` / `geo_nmap_face` 提交任意世界空间凸四边形。
+- 光照：每盏光的位置/半径/decay/颜色/高度独立填，类型 POINT/PARALLEL/SPOT。
+- 质量：`zcsr_light2d_set_options` 独立开关 shadows/normals/ray_shadows/bloom/gain/scale_pct。
+- 相机：`set_center` / `set_zoom` / `set_viewport`。
+- 后处理：`zcsr_gl_l2d_set_post_process_hook` 注册全屏回调（见 15.2-1）。
+- Sprite 进 G-buffer：`zcsr_sprite_draw_lit`（§14.4）。
+- HUD/透明：路径 A `zcsr_sprite_draw` / `zcsr_gl_submit`。
+- 资源组织：文件/图集/包加载完全在引擎外，引擎不关心数据从哪来。
+
+### 15.2 四个候选扩展点的状态
+
+**1. 自定义后处理 hook（CRT/色偏/扫描线）—— SUPPORTED**
+- 接口：`zcsr_gl_l2d_set_post_process_hook(ctx, callback, userdata)`。
+- 合成现在先写进引擎拥有的合成 FBO（`l2d_comp_tex`，GL_RGBA8），不再直接
+  画默认 framebuffer 0。回调触发时该纹理绑在 unit 9，回调从它采样做全屏效果。
+- 责任边界：
+  - 调用时机：合成完成、写默认 framebuffer 之前，每帧至多一次。
+  - 资源所有权：合成纹理由引擎创建/持有/销毁，回调不得删除或重分配。
+  - 输出目标：回调负责把结果写回默认 framebuffer（此时已绑 0）。
+  - GL 状态：回调可改 shader/纹理单元/framebuffer，返回后引擎不依赖其状态；
+    回调必须自己保证输出已落屏。
+  - 失败处理：回调返回 false 或未注册时，引擎用 blit program 直复制原始合成。
+  - 线程：仅在渲染线程、GL current 时调用，不可重入。
+- 限制：合成纹理是 LDR GL_RGBA8，不保留 HDR 信息供任意 bloom 算法；
+  视口尺寸随引擎 viewport，window resize 由引擎重建。
+
+**2. 自定义光类型（spot/area light）—— SPOT 已 SUPPORTED，其余 PROPOSED**
+- 已落地：`ZCSR_LIGHT_SPOT = 2`，`zcsr_light` 加 `inner_angle/outer_angle`（弧度），
+  锥心方向复用 `dir_x/y/z`（提交时归一化）。
+- 光照 shader 用 `acos(dot(frag_dir, aim_dir))` 求锥角，`smoothstep(inner, outer)`
+  在内外锥间衰减，锥外归零；点光衰减公式保持不变，cone 是乘在它上面的门控。
+- 未落地（area/圆柱光等）：PROPOSED，不预留高位枚举，不加 custom_light_cb。
+  新光类型若需要不同 shader/阴影算法，先定义数据结构与 pass，再按最小扩展新增。
+  能由现有光组合表达的，游戏层自己组合。
+
+**3. 自定义几何（法线贴图 quad）—— SUPPORTED**
+- 接口：`zcsr_gl_l2d_geo_nmap_face`（albedo + normal 两张纹理 + 面法线 + 切线）。
+- 顶点格式 11 float：pos3 + normal3 + tangent3 + uv2，独立 program/VAO/VBO，
+  现有 `geo_face` / `geo_tex_face` 行为完全不变。
+- FS 对 tangent 做 Gram-Schmidt 重新正交化，构建 TBN，把切线空间法线
+  （`tex*2-1`）变换到世界空间写 G2。
+- 切线约定：调用方给的 `tangent_xyz` 是单位世界向量，与法线贴图 +U 方向对齐。
+- 法线贴图是数据纹理不是颜色：按普通 GL_RGBA 创建、shader 原样采样，
+  不走 sRGB 解码。alpha cutout 规则与 `geo_tex_face` 相同（<0.5 discard）。
+
+**4. 资源加载回调（zip/网络流纹理）—— UNSUPPORTED（不进 Light2D API）**
+- 原因：文件/zip/网络读取是资源层职责，不是渲染器职责。
+  游戏层读文件→解码成像素→调现有 `zcsr_gl_texture_create`，这条路已经通了。
+- 重新评估条件：要做统一资源流时，在资源层定义 Reader/Stream 契约，
+  不为 Light2D 单独做混合入口。
+
+### 15.3 明确不做的事（当前阶段）
+
+- 脚本语言运行时（Lua/Woolang）
+- 材质节点编辑器
+- 通用插件注册/动态加载
+- Vulkan/Metal 后端
+- 自定义 shader 图
+- 空函数指针占位
+
+这些不是永久禁止，是没有足够理由在当前阶段做。
+未来只有真实游戏需求触及边界时，才按最小扩展原则新增接口。
+
+## 16. UI / 文字 / HUD 的渲染归属（v1.5）
+
+- UI、文字、HUD 永远走路径 A immediate forward batch（zcsr_gl_fill_rect /
+  zcsr_gl_draw_text / zcsr_font_atlas_draw_text），由宿主在 light2d 合成到默认
+  framebuffer 之后提交，最后统一 flush + present。
+- 禁止把 UI / 文字 / HUD 提交进 light2d 的 G-buffer（G0/G1/G2/G3）或光照 pass。
+  它们不参与延迟光照，也不该被光线调制。
+- 重开销项（ray_shadows、bloom、light_scale_pct=100、高 gain）只挂在 HIGH / ULTRA
+  档；LOW 档默认全关、走高性能路径。切档时这些项随之开关，不是永久开。
+- 字体默认 TTF（Inter），通过 font_atlas 注入 UI 后端；未注入时回退内置 8x8
+  bitmap font，老 test 不受影响。
