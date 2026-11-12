@@ -625,7 +625,50 @@ void zcsr_pump_mouse(
     in->mouse_btn_released = 0;
 }
 
-#elif !defined(__linux__)
+#elif defined(__linux__) && defined(ZCSR_LINUX_BACKEND_X11)
+
+/* platform_x11.c 内部访问器：X11 的指针/按键状态由平台泵维护，
+ * 这里只读取快照并把滚轮一次性取走（与 Win32 的 wheel_accum 语义一致）。 */
+extern bool zcsr_platform_x11_mouse_state(zcsr_surface* s, int* x, int* y,
+                                          unsigned int* buttons, int* wheel);
+extern int  zcsr_platform_x11_take_wheel(zcsr_surface* s);
+
+void zcsr_scan_gamepads(zcsr_input_ext* in) { (void)in; }
+void zcsr_close_gamepads(zcsr_input_ext* in) { (void)in; }
+void zcsr_select_mouse_events(zcsr_surface* window) { (void)window; }
+void zcsr_pump_gamepads(zcsr_input_ext* in) { (void)in; }
+
+void zcsr_pump_mouse(zcsr_input_ext* in, zcsr_surface* window) {
+    int mx = 0, my = 0;
+    unsigned int buttons = 0;
+    int rim = 0;
+    if (!in) return;
+
+    if (!window || !zcsr_platform_x11_mouse_state(window, &mx, &my, &buttons, &rim)) {
+        in->mouse.dx = 0;
+        in->mouse.dy = 0;
+        in->mouse.wheel = 0;
+        in->mouse.buttons = 0;
+        return;
+    }
+
+    in->mouse.dx = mx - in->mouse.x;
+    in->mouse.dy = my - in->mouse.y;
+    in->mouse.x = mx;
+    in->mouse.y = my;
+
+    /* X11 平台用 (1u << button_number) 存掩码，button 1/2/3 = 左/中/右：
+     *   1<<1 = 2 → 左键，1<<2 = 4 → 中键，1<<3 = 8 → 右键。
+     * 引擎枚举是 LEFT=1 / RIGHT=2 / MIDDLE=4，这里做一次语义映射。 */
+    in->mouse.buttons = (uint8_t)((buttons & 2u  ? ZCSR_MOUSE_LEFT   : 0)
+                                | (buttons & 8u  ? ZCSR_MOUSE_RIGHT  : 0)
+                                | (buttons & 4u  ? ZCSR_MOUSE_MIDDLE : 0));
+
+    in->mouse.wheel = zcsr_platform_x11_take_wheel(window);
+    (void)rim;
+}
+
+#else
 
 void zcsr_scan_gamepads(zcsr_input_ext* in) { (void)in; }
 void zcsr_close_gamepads(zcsr_input_ext* in) { (void)in; }

@@ -55,6 +55,23 @@ struct zcsr_surface {
     zcsr_window_mode mode;
     bool  configured;
     bool  close_requested;
+
+    /* X11 objects — same void* / 整数约定；platform_x11.c 负责转型。 */
+    void*         x_display;   /* Display*     */
+    unsigned long x_window;    /* Window (XID) */
+    int           x_screen;
+    long          x_atom_wm_delete;
+    bool          x_mapped;
+    bool          x_focused;
+    unsigned long x_cursor_blank;         /* 隐藏指针用的 1×1 光标 */
+    int           x_mouse_x, x_mouse_y;   /* 客户区坐标 */
+    unsigned int  x_mouse_buttons;        /* 按键掩码   */
+    unsigned int  x_buttons_latch;        /* 两次 pump 之间按下的边沿（读一次后清） */
+    int           x_wheel;                /* 累计滚轮刻度 */
+    /* 按键事件环：平台泵入，input 模块泵出。 */
+    enum { ZCSR_X11_KEY_RING = 64 };
+    struct { unsigned int keycode; int down; } x_keys[ZCSR_X11_KEY_RING];
+    int x_key_head, x_key_tail;
 #elif defined(__APPLE__)
     void* ns_window;
     /* 窗口状态：create 默认 BORDERLESS（与 Win32 一致），set_mode 才会切换。
