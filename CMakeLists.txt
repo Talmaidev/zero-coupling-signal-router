@@ -9,7 +9,11 @@ set(CMAKE_C_STANDARD 11)          # C11/C17 — no C++
 set(CMAKE_C_STANDARD_REQUIRED ON)
 # Warning flags differ by toolchain: GCC/Clang use -Wall -Wextra -Wpedantic; MSVC uses /W4.
 if(MSVC)
-  add_compile_options(/W4 /experimental:c11atomics) # audiomix uses C11 <stdatomic.h>
+  # /utf-8: 仓库内 249 个源文件全部是严格 UTF-8 无 BOM（含 settings_panel.h 的中文界面
+  # 文案"[应用]""[显示模式]"）。MSVC 默认按当前 ANSI 代码页解释源文件，非中文 Windows
+  # 与英文 Windows 上这些字面量会变成乱码；/utf-8 让源码按 UTF-8 解释，源码与运行时
+  # 字面量在三平台一致。
+  add_compile_options(/W4 /utf-8 /experimental:c11atomics) # audiomix uses C11 <stdatomic.h>
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS) # fopen/strncpy/... are fine here, not C4996
 else()
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -33,13 +37,13 @@ endif()
 
 # --- Shared interface contracts: the ONLY include surface modules may use ---
 add_library(zcsr_contracts INTERFACE)
-target_include_directories(zcsr_contracts INTERFACE ${CMAKE_SOURCE_DIR}/include)
+target_include_directories(zcsr_contracts INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # --- Each module compiles independently, seeing ONLY the contracts (zero-coupling) ---
 function(zcsr_module name)
-  file(GLOB SRC CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/modules/${name}/*.c)
+  file(GLOB SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/modules/${name}/*.c)
   if(APPLE)
-    file(GLOB MSRC CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/modules/${name}/*.m)
+    file(GLOB MSRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/modules/${name}/*.m)
     list(APPEND SRC ${MSRC})
   endif()
   add_library(zcsr_${name} STATIC ${SRC})
@@ -58,7 +62,10 @@ zcsr_module(platform)  # Agent 5
 # --- Task #7: Classic 2D Game Core extension (zero-coupling, builds on the contracts above) ---
 zcsr_module(input)     # Game Core Agent 1 — input / window / 60FPS timer
 zcsr_module(audio)     # Game Core Agent 2 — WAV audio (signals only)
-zcsr_module(render)    # Game Core Agent 3 — PNG (stb_image) + batch sprite renderer
+# zcsr_module(render)  # 已删除：PNG 解码归 modules/image（同样 vendor stb_image），
+#                       批渲染归 modules/glrender + modules/sprite。
+#                       原 modules/render 全仓零引用（仅 android_main.c 里一个同名局部变量
+#                       zcsr_renderer_storage，不是该模块的 API），故整目录移除。
 zcsr_module(gamelogic) # Game Core Agent 4 — AABB collision + binary save/load
 
 # --- Engine extension (Game-Usable Core): additive, zero-coupling, optional next to the above ---
@@ -66,6 +73,8 @@ zcsr_module(glrender)  # Engine-ext Agent 1 — OpenGL 3.3 renderer (vendors gla
 zcsr_module(audiomix)  # Engine-ext Agent 2 — multi-channel WAV mixer (coexists w/ single-stream audio)
 zcsr_module(inputext)  # Engine-ext Agent 3 — mouse + gamepad (additive to keyboard input)
 zcsr_module(light2d)   # Light2D additive lighting (no GL calls; drives glrender via gl_render_light2d_ext.h)
+target_link_libraries(zcsr_light2d PUBLIC zcsr_glrender)
+target_include_directories(zcsr_light2d PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/glad/include)
 zcsr_module(image)     # Engine-ext Agent — decode→RGBA32 + offline CPU processing (separated from rendering; vendors stb_image)
 zcsr_module(atlas)     # Texture atlas shelf-packing + region table (pure logic, no GL)
 zcsr_module(culling)   # Viewport culling: linear + uniform grid (pure logic, no GL)
@@ -74,6 +83,15 @@ if(UNIX AND NOT APPLE)
   target_link_libraries(zcsr_font PUBLIC m)  # stb_truetype uses sqrt/floor/ceil/fmod/pow
 endif()
 zcsr_module(music)     # Streaming music player (OGG/MP3, depends on audiomix)
+zcsr_module(ui)        # Generic UI runtime (node/input/focus/apply/preset/draw-list + GL backend)
+zcsr_module(app_shell) # App shell: window skeleton + main menu + settings overlay
+zcsr_module(camera)    # 2.5D orthographic camera (world units + shear)
+zcsr_module(sprite)     # Lit sprite renderer (uses G-buffer from light2d)
+zcsr_module(runtime_viewport) # Engine-Owned Runtime Viewport (Contain Fit + 坐标变换)
+zcsr_module(file_service) # Unified File Service + VFS/Mount + Win32(file_win32.c) / POSIX(file_posix.c) backends
+zcsr_module(resource)      # Resource Manager + Handle + Generation + Cache
+target_link_libraries(zcsr_app_shell PUBLIC
+    zcsr_glrender zcsr_platform zcsr_input zcsr_inputext zcsr_ui)
 # Per-backend system libs are added by the implementer when each backend lands, e.g.:
 #   glrender: opengl32+gdi32 (Win) / GL+X11 (Linux, find_package(OpenGL)) / -framework OpenGL (mac)
 #   audiomix: (Win WASAPI: ole32) / ALSA (Linux: find_package(ALSA), asound) / -framework AudioToolbox,AudioUnit (mac)
@@ -96,8 +114,8 @@ else()
   )
 endif()
 # --- glrender: vendored minimal glad loader compiles on every platform ---------------------
-target_sources(zcsr_glrender PRIVATE ${CMAKE_SOURCE_DIR}/third_party/glad/src/glad.c)
-target_include_directories(zcsr_glrender PRIVATE ${CMAKE_SOURCE_DIR}/third_party/glad/include)
+target_sources(zcsr_glrender PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/glad/src/glad.c)
+target_include_directories(zcsr_glrender PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/glad/include)
 
 # music depends on audiomix (stream channels)
 target_link_libraries(zcsr_music PUBLIC zcsr_audiomix)
@@ -204,276 +222,8 @@ if(APPLE)
   )
 endif()
 
-# --- Agent 6: Integration & Validation (architecture/review owned) ---
-add_executable(zcsr_demo  integration/demo.c)
-foreach(exe zcsr_demo)
-  target_link_libraries(${exe} PRIVATE
-    zcsr_core zcsr_signal zcsr_hsm zcsr_overlay zcsr_platform)
-endforeach()
-
-if(APPLE AND TARGET zcsr_demo)
-  set_target_properties(zcsr_demo PROPERTIES
-    MACOSX_BUNDLE TRUE
-    MACOSX_BUNDLE_INFO_PLIST
-      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Info.plist.in"
-    MACOSX_BUNDLE_BUNDLE_NAME "zcsr_demo"
-    MACOSX_BUNDLE_GUI_IDENTIFIER "org.zcsr.demo"
-    MACOSX_BUNDLE_BUNDLE_VERSION "1"
-    MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
-    MACOSX_BUNDLE_COPYRIGHT "Copyright ZCSR contributors"
-  )
-endif()
-
-if(APPLE)
-  add_executable(verify_macos
-    "${CMAKE_CURRENT_SOURCE_DIR}/integration/verify_macos.c"
-  )
-  target_link_libraries(verify_macos PRIVATE
-    zcsr_audiomix
-  )
-endif()
-
-# --- Tests ---
-enable_testing()
-add_executable(zcsr_test_signal tests/test_signal.c)
-target_link_libraries(zcsr_test_signal PRIVATE zcsr_signal zcsr_contracts)
-add_test(NAME signal_router COMMAND zcsr_test_signal)
-
-add_executable(test_core tests/test_core.c)
-target_link_libraries(test_core PRIVATE zcsr_core)
-add_test(NAME core COMMAND test_core)
-
-add_executable(test_log tests/test_log.c)
-target_link_libraries(test_log PRIVATE zcsr_core)
-add_test(NAME log COMMAND test_log)
-
-add_executable(test_platform tests/test_platform.c)
-target_link_libraries(test_platform PRIVATE zcsr_platform)
-add_test(NAME platform_api COMMAND test_platform)
-add_executable(test_overlay tests/test_overlay.c)
-target_link_libraries(test_overlay PRIVATE zcsr_overlay zcsr_platform)
-add_test(NAME overlay COMMAND test_overlay)
-
-add_executable(test_hsm tests/test_hsm.c)
-target_link_libraries(test_hsm PRIVATE zcsr_hsm zcsr_core)  # hsm persists into the core state buffer
-add_test(NAME hsm COMMAND test_hsm)
-
-add_executable(test_state_reuse tests/test_state_reuse.c)
-target_link_libraries(test_state_reuse PRIVATE zcsr_core)
-add_test(NAME state_reuse COMMAND test_state_reuse)
-
-add_executable(test_integration tests/test_integration.c)
-target_link_libraries(test_integration PRIVATE zcsr_overlay zcsr_hsm zcsr_core zcsr_signal zcsr_platform)
-add_test(NAME integration COMMAND test_integration)
-
-add_executable(test_gamelogic tests/test_gamelogic.c)
-target_link_libraries(test_gamelogic PRIVATE zcsr_gamelogic)
-add_test(NAME gamelogic COMMAND test_gamelogic)
-
-add_executable(test_input tests/test_input.c)
-target_link_libraries(test_input PRIVATE zcsr_input zcsr_platform)  # input uses platform accessors
-add_test(NAME input COMMAND test_input)
-
-add_executable(test_render tests/test_render.c)
-target_link_libraries(test_render PRIVATE zcsr_render zcsr_platform)  # render uses platform accessors
-add_test(NAME render COMMAND test_render)
-
-add_executable(test_audio tests/test_audio.c)
-target_link_libraries(test_audio PRIVATE zcsr_audio zcsr_signal)
-add_test(NAME audio COMMAND test_audio)
-
-add_executable(test_glrender tests/test_glrender.c)
-target_link_libraries(test_glrender PRIVATE zcsr_glrender zcsr_platform)
-add_test(NAME glrender COMMAND test_glrender)
-
-add_executable(test_audiomix tests/test_audiomix.c)
-target_link_libraries(test_audiomix PRIVATE zcsr_audiomix zcsr_signal)
-add_test(NAME audiomix COMMAND test_audiomix)
-
-add_executable(test_inputext tests/test_inputext.c)
-target_link_libraries(test_inputext PRIVATE zcsr_inputext zcsr_platform)
-add_test(NAME inputext COMMAND test_inputext)
-
-add_executable(test_image tests/test_image.c)
-target_link_libraries(test_image PRIVATE zcsr_image)
-add_test(NAME image COMMAND test_image)
-
-add_executable(test_font tests/test_font.c)
-target_link_libraries(test_font PRIVATE zcsr_font)
-add_test(NAME font COMMAND test_font)
-
-add_executable(test_music_logic tests/test_music_logic.c)
-target_link_libraries(test_music_logic PRIVATE zcsr_music)
-add_test(NAME music_logic COMMAND test_music_logic)
-
-# test_music_codec directly tests third-party decoders (minimp3 + stb_vorbis),
-# does NOT link zcsr_music library. Compiles impl files separately to avoid
-# static symbol collisions (both define get_bits).
-add_executable(test_music_codec
-    tests/test_music_codec.c
-    modules/music/minimp3_impl.c
-    modules/music/vorbis_impl.c)
-target_include_directories(test_music_codec PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
-if(UNIX AND NOT APPLE)
-  target_link_libraries(test_music_codec PRIVATE m)  # stb_vorbis uses log/exp/pow/sin/cos
-endif()
-add_test(NAME music_codec COMMAND test_music_codec WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-
-add_executable(test_atlas tests/test_atlas.c)
-target_link_libraries(test_atlas PRIVATE zcsr_atlas)
-add_test(NAME atlas COMMAND test_atlas)
-
-add_executable(test_culling tests/test_culling.c)
-target_link_libraries(test_culling PRIVATE zcsr_culling)
-add_test(NAME culling COMMAND test_culling)
-
-# Light2D v1 math contract (pure CPU: camera projection + segment-vs-prism).
-# camera.c compiles in directly — the module has no lib target yet (it is
-# currently baked into the executables that use it).
-add_executable(test_light2d_math
-    tests/test_light2d_math.c
-    modules/camera/camera.c)
-target_link_libraries(test_light2d_math PRIVATE zcsr_contracts)
-add_test(NAME light2d_math COMMAND test_light2d_math)
-
-add_executable(test_state tests/test_state.c)
-target_link_libraries(test_state PRIVATE zcsr_glrender zcsr_platform)
-add_test(NAME state_sort COMMAND test_state)
-
-# Worst-case GPU throughput bench (adversarial textures / blend modes). Not a ctest.
-add_executable(zcsr_glrender_worst_bench integration/bench_worst.c)
-target_link_libraries(zcsr_glrender_worst_bench PRIVATE zcsr_glrender zcsr_platform)
-
-# Text rendering demo (real 8x8 bitmap font verification). Not a ctest.
-add_executable(zcsr_text_demo integration/text_demo.c)
-target_link_libraries(zcsr_text_demo PRIVATE zcsr_glrender zcsr_platform)
-
-# Light2D demo (LOW forward-additive vs HIGH deferred G-buffer; SPACE toggles). Not a ctest.
-# The demo's tiny albedo-rect program reuses the vendored glad pointers zcsr_gl_create loads.
-add_executable(zcsr_light2d_demo integration/light2d_demo.c)
-target_include_directories(zcsr_light2d_demo PRIVATE ${CMAKE_SOURCE_DIR}/third_party/glad/include)
-target_link_libraries(zcsr_light2d_demo PRIVATE
-    zcsr_light2d zcsr_glrender zcsr_platform zcsr_input)
-# 2D world-space infrastructure (camera + sprite component), compiled straight
-# into the executables for now — no zcsr_<name> lib target yet.
-target_sources(zcsr_light2d_demo PRIVATE
-    ${CMAKE_SOURCE_DIR}/modules/camera/camera.c
-    ${CMAKE_SOURCE_DIR}/modules/sprite/sprite.c)
-
-# Integration skeleton: window.c/h is the standalone shell (black home screen with
-# category buttons + built-in settings overlay; standard contract id pending), and
-# testmain.c is the entry that plugs test modules (light2d) into it.
-# "autoquit" argument runs a headless self-test. Interactive, not a ctest.
-add_executable(zcsr_test
-    integration/testmain.c
-    integration/window.c
-    integration/modern_settings_ui.c)
-target_include_directories(zcsr_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/integration
-    ${CMAKE_SOURCE_DIR}/third_party/glad/include)
-target_link_libraries(zcsr_test PRIVATE
-    zcsr_light2d zcsr_glrender zcsr_platform zcsr_input zcsr_inputext)
-# 2D world-space infrastructure (camera + sprite component), compiled straight
-# into the executables for now — no zcsr_<name> lib target yet.
-target_sources(zcsr_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/modules/camera/camera.c
-    ${CMAKE_SOURCE_DIR}/modules/sprite/sprite.c)
-
-# Window/platform API functional test (modes, resize, multi-display, DPI, callbacks). Not a ctest.
-add_executable(zcsr_window_demo integration/demo_window.c)
-target_link_libraries(zcsr_window_demo PRIVATE zcsr_glrender zcsr_platform zcsr_input)
-
-# Generic menu UI demo (reusable menu component + interactive test). Not a ctest.
-add_executable(zcsr_menu_demo integration/demo_menu.c integration/menu_ui.c)
-target_include_directories(zcsr_menu_demo PRIVATE integration)
-target_link_libraries(zcsr_menu_demo PRIVATE zcsr_glrender zcsr_platform zcsr_input)
-
-# Game settings panel demo (display + graphics options, applies to platform API). Not a ctest.
-add_executable(zcsr_settings_demo integration/demo_settings.c integration/settings_ui.c)
-target_include_directories(zcsr_settings_demo PRIVATE integration)
-target_link_libraries(zcsr_settings_demo PRIVATE zcsr_glrender zcsr_platform zcsr_input)
-
-# Modern game settings panel demo (tabs + mouse + real dropdowns + three window modes). Not a ctest.
-add_executable(zcsr_modern_settings_demo integration/demo_modern_settings.c integration/modern_settings_ui.c)
-target_include_directories(zcsr_modern_settings_demo PRIVATE integration)
-target_link_libraries(zcsr_modern_settings_demo PRIVATE zcsr_glrender zcsr_platform zcsr_input zcsr_inputext)
-
-# Aim trainer (FPS aiming practice tool)
-add_executable(zcsr_aim_trainer integration/demo_aim_trainer.c)
-target_link_libraries(zcsr_aim_trainer PRIVATE zcsr_glrender zcsr_platform zcsr_input zcsr_inputext)
-
-# TrueType font rendering demo
-add_executable(zcsr_font_demo integration/demo_font.c)
-target_link_libraries(zcsr_font_demo PRIVATE zcsr_font zcsr_glrender zcsr_platform zcsr_input)
-
-# Atlas end-to-end bench (unpacked vs packed). Not a ctest.
-add_executable(zcsr_atlas_bench integration/bench_atlas.c)
-target_link_libraries(zcsr_atlas_bench PRIVATE zcsr_glrender zcsr_atlas zcsr_platform)
-
-# Instanced rendering bench (legacy vs instanced). Not a ctest.
-add_executable(zcsr_inst_bench integration/bench_inst.c)
-target_link_libraries(zcsr_inst_bench PRIVATE zcsr_glrender zcsr_platform)
-
-# Culling bench (linear vs grid across view sizes). Pure CPU, headless. Not a ctest.
-add_executable(zcsr_culling_bench integration/bench_culling.c)
-target_link_libraries(zcsr_culling_bench PRIVATE zcsr_culling)
-
-# Input + HSM CPU baseline (is_down queries, hsm dispatch). Pure CPU, headless. Not a ctest.
-add_executable(zcsr_input_hsm_bench integration/bench_input_hsm.c)
-target_link_libraries(zcsr_input_hsm_bench PRIVATE zcsr_input zcsr_hsm zcsr_core zcsr_platform)
-
-# 2048 game demo (reuses game_core bitboard logic). Interactive, not a ctest.
-add_executable(zcsr_2048_demo integration/demo_2048.c integration/game_core.c)
-target_include_directories(zcsr_2048_demo PRIVATE integration)
-target_link_libraries(zcsr_2048_demo PRIVATE
-    zcsr_platform zcsr_glrender zcsr_input zcsr_hsm zcsr_core zcsr_audiomix zcsr_signal)
-
-# Windows backend verification (WASAPI + XInput + mouse). Interactive, not a ctest.
-add_executable(zcsr_verify_windows integration/verify_windows.c)
-target_link_libraries(zcsr_verify_windows PRIVATE zcsr_audiomix zcsr_inputext zcsr_platform)
-
-# Minimal audiomix smoke test (3-second beep). Interactive, not a ctest.
-add_executable(zcsr_audio_smoke integration/audio_smoke_test.c)
-target_link_libraries(zcsr_audio_smoke PRIVATE zcsr_audiomix zcsr_signal)
-
-# Offline image-bake throughput (chroma-key / variant / palette). Informational, not a ctest gate
-# (load-time bakes, not a per-frame budget); pure CPU, runs headless.
-add_executable(zcsr_image_bench integration/bench_image.c)
-target_link_libraries(zcsr_image_bench PRIVATE zcsr_image)
-
-# Optional Box2D physics demo (only built when ZCSR_ENABLE_BOX2D=ON; desktop only)
-if(ZCSR_ENABLE_BOX2D)
-  if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    if(NOT ANDROID)
-      add_executable(demo_physics integration/demo_physics.c)
-      target_link_libraries(demo_physics PRIVATE
-        zcsr_platform zcsr_glrender zcsr_input zcsr_audiomix zcsr_signal box2d::box2d)
-      target_compile_features(demo_physics PRIVATE c_std_11)
-    endif()
-  endif()
-endif()
-
 # --- Zero-coupling guard: fail if a module includes another module ---
 add_custom_target(check_coupling
-  COMMAND ${CMAKE_SOURCE_DIR}/tools/check_no_cross_includes.sh
-  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_no_cross_includes.sh
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   COMMENT "Verifying no cross-module includes")
-
-# --- A2: embed PerMonitorV2 DPI manifest into every Windows executable ---
-if(WIN32)
-  enable_language(RC)
-  get_property(ZCSR_ALL_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
-  foreach(target_name IN LISTS ZCSR_ALL_TARGETS)
-    get_target_property(target_type "${target_name}" TYPE)
-    if(target_type STREQUAL "EXECUTABLE")
-      target_sources(
-        "${target_name}"
-        PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/windows/zcsr.rc"
-      )
-      # Disable CMake's default auto-generated manifest so the RC-embedded
-      # PerMonitorV2 manifest is the only one (avoids LNK1123 duplicate resource).
-      set_target_properties("${target_name}" PROPERTIES LINK_FLAGS "/MANIFEST:NO")
-    endif()
-  endforeach()
-endif()
