@@ -87,6 +87,11 @@ struct zcsr_game_settings {
     int         item_node_count;
     ZCSR_NodeId btn_node[3];
     ZCSR_NodeId root_node;
+
+    /* 外部几何覆盖（编辑器接管某个控件的 node 矩形后，公式布局不再覆盖它）。 */
+    uint8_t tab_override[MS_MAX_TABS];
+    uint8_t item_override[MS_MAX_ITEMS];
+    uint8_t btn_override[3];
 };
 
 /* ---- 颜色 ---- */
@@ -290,7 +295,7 @@ static void ms_sync_nodes(zcsr_game_settings* s) {
     for (int t = 0; t < s->tab_count && t < MS_MAX_TABS; t++) {
         float tw = text_w(s->tabs[t].name, scale) + 32.0f;
         ZCSR_Rect r = { cx, (float)s->y + 4.0f, tw, (float)(MS_TAB_BAR_H - 8) };
-        zcsr_node_set_rect(s->ui, s->tab_node[t], &r);
+        if (!s->tab_override[t]) zcsr_node_set_rect(s->ui, s->tab_node[t], &r);
         cx += tw + 4.0f;
     }
 
@@ -305,7 +310,8 @@ static void ms_sync_nodes(zcsr_game_settings* s) {
                 (float)s->content_w,
                 (float)s->item_height
             };
-            zcsr_node_set_rect(s->ui, s->item_node[base + i], &r);
+            if (!s->item_override[base + i])
+                zcsr_node_set_rect(s->ui, s->item_node[base + i], &r);
         }
     }
 
@@ -313,9 +319,9 @@ static void ms_sync_nodes(zcsr_game_settings* s) {
     ZCSR_Rect b0 = { (float)(s->x + s->width - MS_PAD - MS_BTN_W), by, MS_BTN_W, MS_BTN_H };
     ZCSR_Rect b1 = { (float)(s->x + s->width - MS_PAD - MS_BTN_W * 2 - 12), by, MS_BTN_W, MS_BTN_H };
     ZCSR_Rect b2 = { (float)(s->x + MS_PAD), by, MS_BTN_W, MS_BTN_H };
-    zcsr_node_set_rect(s->ui, s->btn_node[0], &b0);
-    zcsr_node_set_rect(s->ui, s->btn_node[1], &b1);
-    zcsr_node_set_rect(s->ui, s->btn_node[2], &b2);
+    if (!s->btn_override[0]) zcsr_node_set_rect(s->ui, s->btn_node[0], &b0);
+    if (!s->btn_override[1]) zcsr_node_set_rect(s->ui, s->btn_node[1], &b1);
+    if (!s->btn_override[2]) zcsr_node_set_rect(s->ui, s->btn_node[2], &b2);
 }
 
 /* ---- recompute layout from current x/y/width/height (call after resize) ---- */
@@ -424,23 +430,23 @@ zcsr_game_settings* zcsr_game_settings_create(void* buf, size_t bytes, const zcs
         ucfg.viewport_height      = (float)s->height;
 
         if (zcsr_ui_create(&ucfg, &s->ui) == ZCSR_OK && s->ui) {
-            (void)zcsr_node_create(s->ui, 0, 0, &s->root_node);
+            (void)zcsr_node_create(s->ui, ZCSR_COMPONENT_PANEL, ZCSR_NODE_INVALID, &s->root_node);
             int used = 0;
             for (int t = 0; t < s->tab_count; t++) {
                 if (t < MS_MAX_TABS) {
                     s->item_node_base[t] = used;
-                    (void)zcsr_node_create(s->ui, 0, s->root_node, &s->tab_node[t]);
+                    (void)zcsr_node_create(s->ui, ZCSR_COMPONENT_BUTTON, s->root_node, &s->tab_node[t]);
                 }
                 for (int i = 0; i < s->tabs[t].count; i++) {
                     if (used < MS_MAX_ITEMS) {
-                        (void)zcsr_node_create(s->ui, 0, s->root_node, &s->item_node[used]);
+                        (void)zcsr_node_create(s->ui, ZCSR_COMPONENT_PANEL, s->root_node, &s->item_node[used]);
                         used++;
                     }
                 }
             }
             s->item_node_count = used;
             for (int b = 0; b < 3; b++)
-                (void)zcsr_node_create(s->ui, 0, s->root_node, &s->btn_node[b]);
+                (void)zcsr_node_create(s->ui, ZCSR_COMPONENT_BUTTON, s->root_node, &s->btn_node[b]);
             ms_sync_nodes(s);
         }
     }
@@ -1063,3 +1069,114 @@ void zcsr_game_settings_reset(zcsr_game_settings* s) {
 
 bool zcsr_game_settings_is_dirty(const zcsr_game_settings* s) { return s ? s->dirty : false; }
 int  zcsr_game_settings_active_tab(const zcsr_game_settings* s) { return s ? s->active_tab : -1; }
+
+/* ---- 编辑器接入：外部几何覆盖 ---- */
+static bool write_node_rect(zcsr_game_settings* s, ZCSR_NodeId id, const zcsr_game_settings_rect* r) {
+    ZCSR_Rect rr;
+    if (!s || !s->ui || !r || (uint32_t)id == 0u) return false;
+    rr.x = r->x; rr.y = r->y; rr.width = r->w; rr.height = r->h;
+    return zcsr_node_set_rect(s->ui, id, &rr) == ZCSR_OK;
+}
+
+bool zcsr_game_settings_override_tab(zcsr_game_settings* s, int tab_index,
+                                     const zcsr_game_settings_rect* rect) {
+    if (!s || tab_index < 0 || tab_index >= s->tab_count || tab_index >= MS_MAX_TABS) return false;
+    if (!rect) {
+        s->tab_override[tab_index] = 0;
+        ms_sync_nodes(s);
+        return true;
+    }
+    if (!write_node_rect(s, s->tab_node[tab_index], rect)) return false;
+    s->tab_override[tab_index] = 1;
+    return true;
+}
+
+bool zcsr_game_settings_override_item(zcsr_game_settings* s, int tab_index, int item_index,
+                                      const zcsr_game_settings_rect* rect) {
+    if (!s || tab_index < 0 || tab_index >= s->tab_count || tab_index >= MS_MAX_TABS) return false;
+    if (item_index < 0 || item_index >= s->tabs[tab_index].count) return false;
+    int flat = s->item_node_base[tab_index] + item_index;
+    if (flat < 0 || flat >= s->item_node_count || flat >= MS_MAX_ITEMS) return false;
+    if (!rect) {
+        s->item_override[flat] = 0;
+        ms_sync_nodes(s);
+        return true;
+    }
+    if (!write_node_rect(s, s->item_node[flat], rect)) return false;
+    s->item_override[flat] = 1;
+    return true;
+}
+
+bool zcsr_game_settings_override_button(zcsr_game_settings* s, int button_index,
+                                        const zcsr_game_settings_rect* rect) {
+    if (!s || button_index < 0 || button_index >= 3) return false;
+    if (!rect) {
+        s->btn_override[button_index] = 0;
+        ms_sync_nodes(s);
+        return true;
+    }
+    if (!write_node_rect(s, s->btn_node[button_index], rect)) return false;
+    s->btn_override[button_index] = 1;
+    return true;
+}
+
+int zcsr_game_settings_tab_count(const zcsr_game_settings* s) { return s ? s->tab_count : 0; }
+
+const char* zcsr_game_settings_tab_name(const zcsr_game_settings* s, int tab_index) {
+    if (!s || tab_index < 0 || tab_index >= s->tab_count) return NULL;
+    return s->tabs[tab_index].name;
+}
+
+int zcsr_game_settings_item_count(const zcsr_game_settings* s, int tab_index) {
+    if (!s || tab_index < 0 || tab_index >= s->tab_count) return 0;
+    return s->tabs[tab_index].count;
+}
+
+const char* zcsr_game_settings_item_label(const zcsr_game_settings* s, int tab_index, int item_index) {
+    if (!s || tab_index < 0 || tab_index >= s->tab_count) return NULL;
+    if (item_index < 0 || item_index >= s->tabs[tab_index].count) return NULL;
+    return s->tabs[tab_index].items[item_index].label;
+}
+
+const char* zcsr_game_settings_button_name(int button_index) {
+    switch (button_index) {
+        case 0: return "Apply";
+        case 1: return "Cancel";
+        case 2: return "Reset";
+        default: return NULL;
+    }
+}
+bool zcsr_game_settings_get_tab_rect(const zcsr_game_settings* s, int tab_index,
+                                     zcsr_game_settings_rect* out) {
+    ms_rect r;
+    if (!s || !out || tab_index < 0 || tab_index >= s->tab_count || tab_index >= MS_MAX_TABS) return false;
+    r = tab_rect(s, tab_index);
+    *out = (zcsr_game_settings_rect){ r.x, r.y, r.w, r.h };
+    return true;
+}
+
+bool zcsr_game_settings_get_item_rect(const zcsr_game_settings* s, int tab_index, int item_index,
+                                      zcsr_game_settings_rect* out) {
+    ms_rect r;
+    ZCSR_Rect nr;
+    int flat;
+    if (!s || !out || tab_index < 0 || tab_index >= s->tab_count) return false;
+    if (item_index < 0 || item_index >= s->tabs[tab_index].count) return false;
+    flat = s->item_node_base[tab_index] + item_index;
+
+    if (flat < 0 || flat >= s->item_node_count || flat >= MS_MAX_ITEMS) return false;
+    if (!s->ui || (uint32_t)s->item_node[flat] == 0u) return false;
+    if (zcsr_node_get_rect(s->ui, s->item_node[flat], &nr) != ZCSR_OK) return false;
+    r.x = nr.x; r.y = nr.y; r.w = nr.width; r.h = nr.height;
+    *out = (zcsr_game_settings_rect){ r.x, r.y, r.w, r.h };
+    return true;
+}
+
+bool zcsr_game_settings_get_button_rect(const zcsr_game_settings* s, int button_index,
+                                        zcsr_game_settings_rect* out) {
+    ms_rect r;
+    if (!s || !out || button_index < 0 || button_index >= 3) return false;
+    r = button_rect(s, button_index);
+    *out = (zcsr_game_settings_rect){ r.x, r.y, r.w, r.h };
+    return true;
+}

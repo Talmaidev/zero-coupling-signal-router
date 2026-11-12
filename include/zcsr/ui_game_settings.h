@@ -145,6 +145,36 @@ bool zcsr_game_settings_is_dirty(const zcsr_game_settings* s);
 /* 当前激活标签页索引. */
 int  zcsr_game_settings_active_tab(const zcsr_game_settings* s);
 
+/* ---- 编辑器接入：外部几何覆盖 ----
+ * 页面内部每个 tab / 每个设置项 / 每个底部按钮都是一个独立 node，公式布局每帧把
+ * 结果写进 node 的 local_rect。编辑器（或任何宿主）可以接管其中任意一项：
+ * 传 rect 后公式布局不再覆盖它，传 NULL 把布局交还公式。
+ * item 用 (tab_index, item_index) 定位，item_index 是该标签页内的序号。
+ * 返回 false 表示索引越界或面板为空。 */
+typedef struct { float x, y, w, h; } zcsr_game_settings_rect;
+
+bool zcsr_game_settings_override_tab(zcsr_game_settings* s, int tab_index,
+                                     const zcsr_game_settings_rect* rect);
+bool zcsr_game_settings_override_item(zcsr_game_settings* s, int tab_index, int item_index,
+                                      const zcsr_game_settings_rect* rect);
+bool zcsr_game_settings_override_button(zcsr_game_settings* s, int button_index,
+                                        const zcsr_game_settings_rect* rect);
+
+/* 只读枚举：宿主按控件建镜像节点时需要知道有哪些控件、叫什么。 */
+int         zcsr_game_settings_tab_count(const zcsr_game_settings* s);
+const char* zcsr_game_settings_tab_name(const zcsr_game_settings* s, int tab_index);
+int         zcsr_game_settings_item_count(const zcsr_game_settings* s, int tab_index);
+const char* zcsr_game_settings_item_label(const zcsr_game_settings* s, int tab_index, int item_index);
+const char* zcsr_game_settings_button_name(int button_index); /* 0=Apply 1=Cancel 2=Reset */
+
+/* 读取控件当前矩形（几何权威在 node 里，覆盖后的值也会被读到）。 */
+bool zcsr_game_settings_get_tab_rect(const zcsr_game_settings* s, int tab_index,
+                                     zcsr_game_settings_rect* out);
+bool zcsr_game_settings_get_item_rect(const zcsr_game_settings* s, int tab_index, int item_index,
+                                      zcsr_game_settings_rect* out);
+bool zcsr_game_settings_get_button_rect(const zcsr_game_settings* s, int button_index,
+                                        zcsr_game_settings_rect* out);
+
 #ifdef __cplusplus
 }
 #endif
