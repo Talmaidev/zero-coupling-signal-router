@@ -21,9 +21,13 @@
 #  include <GLES3/gl3.h>
 #elif defined(__linux__) && !defined(__ANDROID__)
 #  include "glad/glad.h"
-#  include <EGL/egl.h>
-#  include <EGL/eglext.h>
-#  include <wayland-egl.h>
+#  if defined(ZCSR_LINUX_BACKEND_X11)
+#    include <GL/glx.h>          /* X11/GLX：直接用 libGL 的 GLX 入口 */
+#  else
+#    include <EGL/egl.h>
+#    include <EGL/eglext.h>
+#    include <wayland-egl.h>
+#  endif
 #elif defined(_WIN32)
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
@@ -255,10 +259,19 @@ struct zcsr_gl_renderer {
     EGLContext ctx;
     bool egl_initialized;
 #elif defined(__linux__) && !defined(__ANDROID__)
+#  if defined(ZCSR_LINUX_BACKEND_X11)
+    /* X11/GLX：Display* 与 XID 以裸类型保存，后端文件负责一致性。 */
+    void*         glx_display;   /* Display* */
+    unsigned long glx_window;    /* Window   */
+    GLXContext    glx_context;
+    GLXFBConfig   glx_fbconfig;
+    int           glx_swap_interval_set;
+#  else
     EGLDisplay egl_display;
     EGLSurface egl_surface;
     EGLContext egl_context;
     struct wl_egl_window* egl_window;
+#  endif
 #elif defined(_WIN32)
     HWND  hwnd;
     HDC   hdc;

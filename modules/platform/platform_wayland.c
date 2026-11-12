@@ -19,9 +19,9 @@
  *   - native_handle 返回 wl_surface*，native_display 返回 wl_display*（供 EGL）。
  */
 
-/* This file is auto-globbed by zcsr_module() on every platform. Gate the entire
- * translation unit so non-Wayland builds see an empty file (no wayland headers). */
-#if defined(__linux__) && !defined(__ANDROID__)
+/* 只有 CMake 选中 Wayland 后端时才参与编译。X11 构建里本文件被剔除，
+ * 由 platform_x11.c 提供同名符号 —— 两者不能同时编译。 */
+#if defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_LINUX_BACKEND_WAYLAND)
 
 #include "platform_internal.h"
 
@@ -316,11 +316,11 @@ float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
     (void)s; return 1.0f;
 }
 
-#endif /* defined(__linux__) && !defined(__ANDROID__) */
+#endif /* defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_LINUX_BACKEND_WAYLAND) */
 
-/* 本文件在 Windows / macOS / Android 上整文件被守卫剔除，MSVC 会报
- * C4206（translation unit is empty）；配 /WX 时直接构建失败。
+/* 本文件在 Windows / macOS / Android / Linux-X11 构建上整文件被守卫剔除，
+ * MSVC 会报 C4206（translation unit is empty）；配 /WX 时直接构建失败。
  * 给一个无副作用的外部链接 typedef 保持 TU 非空，与 file_posix.c 的处理一致。 */
-#if !defined(__linux__) || defined(__ANDROID__)
+#if !(defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_LINUX_BACKEND_WAYLAND))
 typedef int zcsr_platform_wayland_unused_tu_;
 #endif
