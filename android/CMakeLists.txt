@@ -42,6 +42,11 @@ add_library(zcsr_phase0 SHARED
     "${ZCSR_ROOT}/modules/glrender/glrender_instanced.c"
     "${ZCSR_ROOT}/modules/glrender/glrender_text.c"
     "${ZCSR_ROOT}/modules/glrender/glrender_platform_egl.c"
+    # 2.5D light2d 管线：zcsr_gl_create 会调 zcsr_gl_l2d_init，core 的 destroy 调
+    # zcsr_gl_l2d_geo_cleanup。二者分别定义在 light2d_ext.c 与 l2d_geo.c，此前
+    # 这份 Android 源清单漏掉了它们，NDK 链接直接 undefined symbol。
+    "${ZCSR_ROOT}/modules/glrender/glrender_light2d_ext.c"
+    "${ZCSR_ROOT}/modules/glrender/glrender_l2d_geo.c"
     "${ZCSR_ROOT}/modules/audiomix/audiomix.c"
     "${ZCSR_ROOT}/modules/font/font.c"
     "${ZCSR_ROOT}/modules/font/stb_truetype_impl.c"
