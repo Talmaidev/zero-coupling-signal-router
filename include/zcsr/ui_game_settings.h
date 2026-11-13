@@ -175,6 +175,16 @@ bool zcsr_game_settings_get_item_rect(const zcsr_game_settings* s, int tab_index
 bool zcsr_game_settings_get_button_rect(const zcsr_game_settings* s, int button_index,
                                         zcsr_game_settings_rect* out);
 
+/* ---- 布局持久化：编辑器退出编辑态时把"人改过的几何"落盘 ----
+ * 只写被 override 的控件（公式位置不写，保持随窗口自适应）。
+ * 文件格式是纯文本，一行一个控件：
+ *   tab  <tab_index> <x> <y> <w> <h>
+ *   item <tab_index> <item_index> <x> <y> <w> <h>
+ *   btn  <button_index> <x> <y> <w> <h>
+ * load 逐行调用对应的 override_*，所以载入后的布局立即生效；缺失文件返回 false。 */
+bool zcsr_game_settings_save_overrides(const zcsr_game_settings* s, const char* path);
+bool zcsr_game_settings_load_overrides(zcsr_game_settings* s, const char* path);
+
 #ifdef __cplusplus
 }
 #endif

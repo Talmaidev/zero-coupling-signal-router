@@ -9,6 +9,7 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 
 /* 8x8 bitmap font, ASCII 32-126 (95 glyphs). Each glyph = 8 bytes, 1 bit per pixel.
@@ -248,4 +249,40 @@ bool zcsr_gl_font_from_file(zcsr_gl_renderer* r, const char* path, int pixel_hei
 
     r->font_atlas = atlas;
     return true;
+}/* 追加到 glrender_text.c 末尾：默认字体解析 + 纹理过滤默认值 */
+
+bool zcsr_gl_font_default(zcsr_gl_renderer* r, int pixel_height, void* buffer, size_t bytes) {
+    static const char* const candidates[] = {
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+        "C:\\Windows\\Fonts\\tahoma.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        NULL
+    };
+    const char* env;
+    int i;
+
+    if (!r || !buffer) return false;
+
+    env = getenv("ZCSR_FONT_TTF");
+    if (env && env[0]) return zcsr_gl_font_from_file(r, env, pixel_height, buffer, bytes);
+
+    for (i = 0; candidates[i]; ++i) {
+        FILE* probe = fopen(candidates[i], "rb");
+        if (!probe) continue;
+        fclose(probe);
+        if (zcsr_gl_font_from_file(r, candidates[i], pixel_height, buffer, bytes)) return true;
+    }
+    return false;
+}
+
+void zcsr_gl_set_texture_filter_default(zcsr_gl_renderer* r, bool linear) {
+    if (r) r->default_filter_linear = linear;
+}
+
+bool zcsr_gl_get_texture_filter_default(const zcsr_gl_renderer* r) {
+    return r ? r->default_filter_linear : false;
 }

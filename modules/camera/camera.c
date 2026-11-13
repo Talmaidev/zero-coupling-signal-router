@@ -3,6 +3,7 @@
 #include "zcsr/camera.h"
 
 #include <stddef.h> /* NULL */
+#include <math.h>
 
 /* Divisions go through a guarded scale so a caller-broken zoom can never
  * produce inf/NaN coordinates. */
@@ -92,4 +93,26 @@ float zcsr_camera_world_to_px_size(const zcsr_camera* c, float world_size)
 {
     if (c == NULL) return world_size;
     return world_size * c->px_per_unit;
+}
+/* ---- pitch <-> shear -------------------------------------------------------
+ * height_shear stays the single authoritative constant; pitch is a friendlier
+ * way to tune "how high the camera looks". k = cot(pitch):
+ *   pitch 90 -> k 0 (top-down), 63.4 -> k 0.5 (old debug look), 45 -> k 1. */
+void zcsr_camera_set_pitch_deg(zcsr_camera* c, float pitch_deg)
+{
+    float rad;
+    if (c == NULL) return;
+    if (pitch_deg < 20.0f) pitch_deg = 20.0f;
+    if (pitch_deg > 90.0f) pitch_deg = 90.0f;
+    rad = pitch_deg * 3.14159265358979323846f / 180.0f;
+    c->height_shear = cosf(rad) / sinf(rad);
+}
+
+float zcsr_camera_get_pitch_deg(const zcsr_camera* c)
+{
+    float k;
+    if (c == NULL) return 90.0f;
+    k = c->height_shear;
+    if (k <= 0.000001f) return 90.0f;
+    return atan2f(1.0f, k) * 180.0f / 3.14159265358979323846f;
 }

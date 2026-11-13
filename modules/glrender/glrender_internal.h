@@ -134,6 +134,9 @@ struct zcsr_gl_renderer {
     unsigned int font_tex;
     /* Optional TTF text backend (see zcsr_gl_set_font_atlas). NULL = built-in 8x8 bitmap. */
     struct zcsr_font_atlas* font_atlas;
+    /* Default sampling for textures created through zcsr_gl_texture_create
+     * (driven by a game setting such as "Texture Quality"). */
+    bool default_filter_linear;
     unsigned int fbo;
     zcsr_gl_texture target;
     int uniform_view;

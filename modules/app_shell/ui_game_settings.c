@@ -1179,4 +1179,68 @@ bool zcsr_game_settings_get_button_rect(const zcsr_game_settings* s, int button_
     r = button_rect(s, button_index);
     *out = (zcsr_game_settings_rect){ r.x, r.y, r.w, r.h };
     return true;
+}/* ---- 布局持久化 ------------------------------------------------------------
+ * 编辑器退出编辑态时调用 save，把"人改过的几何"写成纯文本；下次启动 load 回来。
+ * 只写被 override 的控件，公式布局保持随窗口自适应。 */
+bool zcsr_game_settings_save_overrides(const zcsr_game_settings* s, const char* path)
+{
+    FILE* f;
+    int t, i, flat, written = 0;
+
+    if (!s || !path) return false;
+    f = fopen(path, "wb");
+    if (!f) return false;
+
+    flat = 0;
+    for (t = 0; t < s->tab_count; ++t) {
+        zcsr_game_settings_rect r;
+        if (s->tab_override[t] && zcsr_game_settings_get_tab_rect(s, t, &r)) {
+            fprintf(f, "tab %d %.2f %.2f %.2f %.2f\n", t, r.x, r.y, r.w, r.h);
+            ++written;
+        }
+        for (i = 0; i < s->tabs[t].count && flat < MS_MAX_ITEMS; ++i, ++flat) {
+            if (s->item_override[flat] &&
+                zcsr_game_settings_get_item_rect(s, t, i, &r)) {
+                fprintf(f, "item %d %d %.2f %.2f %.2f %.2f\n", t, i, r.x, r.y, r.w, r.h);
+                ++written;
+            }
+        }
+    }
+    for (i = 0; i < 3; ++i) {
+        zcsr_game_settings_rect r;
+        if (s->btn_override[i] && zcsr_game_settings_get_button_rect(s, i, &r)) {
+            fprintf(f, "btn %d %.2f %.2f %.2f %.2f\n", i, r.x, r.y, r.w, r.h);
+            ++written;
+        }
+    }
+    fclose(f);
+    return written > 0;   /* 空文件 = 没东西可存，调用方据此提示"nothing to save" */
+}
+
+bool zcsr_game_settings_load_overrides(zcsr_game_settings* s, const char* path)
+{
+    FILE* f;
+    char kind[8];
+    int a = 0, b = 0, applied = 0;
+    zcsr_game_settings_rect r;
+
+    if (!s || !path) return false;
+    f = fopen(path, "rb");
+    if (!f) return false;
+    while (fscanf(f, "%7s", kind) == 1) {
+        if (strcmp(kind, "tab") == 0) {
+            if (fscanf(f, "%d %f %f %f %f", &a, &r.x, &r.y, &r.w, &r.h) != 5) break;
+            if (zcsr_game_settings_override_tab(s, a, &r)) ++applied;
+        } else if (strcmp(kind, "item") == 0) {
+            if (fscanf(f, "%d %d %f %f %f %f", &a, &b, &r.x, &r.y, &r.w, &r.h) != 6) break;
+            if (zcsr_game_settings_override_item(s, a, b, &r)) ++applied;
+        } else if (strcmp(kind, "btn") == 0) {
+            if (fscanf(f, "%d %f %f %f %f", &a, &r.x, &r.y, &r.w, &r.h) != 5) break;
+            if (zcsr_game_settings_override_button(s, a, &r)) ++applied;
+        } else {
+            break;
+        }
+    }
+    fclose(f);
+    return applied > 0;
 }
