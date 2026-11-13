@@ -29,6 +29,25 @@ typedef enum {
     ZCSR_LOG_FATAL = 5,
 } zcsr_log_level;
 
+/* Level order is part of the public contract: filters use `<` comparisons and
+ * callers persist the numeric value. Freeze it at compile time. */
+_Static_assert(ZCSR_LOG_TRACE == 0, "log level ABI: TRACE must stay 0");
+_Static_assert(ZCSR_LOG_DEBUG == 1, "log level ABI: DEBUG must stay 1");
+_Static_assert(ZCSR_LOG_INFO  == 2, "log level ABI: INFO must stay 2");
+_Static_assert(ZCSR_LOG_WARN  == 3, "log level ABI: WARN must stay 3");
+_Static_assert(ZCSR_LOG_ERROR == 4, "log level ABI: ERROR must stay 4");
+_Static_assert(ZCSR_LOG_FATAL == 5, "log level ABI: FATAL must stay 5");
+
+/* Lets the compiler validate every call site's format string and argument
+ * types against the printf rules (GCC/Clang). MSVC has no equivalent hook for
+ * user functions and expands this to nothing. */
+#if defined(__GNUC__) || defined(__clang__)
+#  define ZCSR_PRINTF_FORMAT(fmt_index, first_arg) \
+    __attribute__((format(printf, fmt_index, first_arg)))
+#else
+#  define ZCSR_PRINTF_FORMAT(fmt_index, first_arg)
+#endif
+
 /* Callback invoked for every message at or above the current minimum level.
  * `tag` is never NULL (a stable default is supplied by the logger), and `msg`
  * is a NUL-terminated, already-formatted string. */
@@ -56,6 +75,6 @@ void zcsr_log_write(
     zcsr_log_level level,
     const char* tag,
     const char* fmt,
-    ...);
+    ...) ZCSR_PRINTF_FORMAT(3, 4);
 
 #endif /* ZCSR_LOG_H */

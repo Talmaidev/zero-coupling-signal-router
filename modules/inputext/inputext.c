@@ -39,7 +39,7 @@ void zcsr_close_gamepads(zcsr_input_ext* in) {
     }
 }
 
-void zcsr_select_mouse_events(zcsr_surface* window) { (void)window; }
+void zcsr_select_mouse_events(zcsr_input_ext* in, zcsr_surface* window) { (void)in; (void)window; }
 
 void zcsr_pump_mouse(zcsr_input_ext* in, zcsr_surface* window) {
     (void)window;
@@ -635,7 +635,7 @@ extern int  zcsr_platform_x11_take_wheel(zcsr_surface* s);
 
 void zcsr_scan_gamepads(zcsr_input_ext* in) { (void)in; }
 void zcsr_close_gamepads(zcsr_input_ext* in) { (void)in; }
-void zcsr_select_mouse_events(zcsr_surface* window) { (void)window; }
+void zcsr_select_mouse_events(zcsr_input_ext* in, zcsr_surface* window) { (void)in; (void)window; }
 void zcsr_pump_gamepads(zcsr_input_ext* in) { (void)in; }
 
 void zcsr_pump_mouse(zcsr_input_ext* in, zcsr_surface* window) {
@@ -672,7 +672,7 @@ void zcsr_pump_mouse(zcsr_input_ext* in, zcsr_surface* window) {
 
 void zcsr_scan_gamepads(zcsr_input_ext* in) { (void)in; }
 void zcsr_close_gamepads(zcsr_input_ext* in) { (void)in; }
-void zcsr_select_mouse_events(zcsr_surface* window) { (void)window; }
+void zcsr_select_mouse_events(zcsr_input_ext* in, zcsr_surface* window) { (void)in; (void)window; }
 void zcsr_pump_gamepads(zcsr_input_ext* in) { (void)in; }
 void zcsr_pump_mouse(zcsr_input_ext* in, zcsr_surface* window) {
     if (in) {
@@ -710,11 +710,7 @@ void zcsr_input_ext_pump(
     if (!in) return;
 
     if (window && (!in->initialized || in->surface != window)) {
-#if defined(_WIN32)
         zcsr_select_mouse_events(in, window);
-#else
-        zcsr_select_mouse_events(window);
-#endif
 
         in->surface = window;
         in->initialized = true;
