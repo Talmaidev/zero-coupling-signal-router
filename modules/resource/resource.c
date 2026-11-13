@@ -201,9 +201,9 @@ zcsr_resource_handle_t zcsr_resource_load(
     entry->metadata.size = (uint32_t)data_size;
     entry->metadata.version = 1;
 
-    /* 安全复制路径，保证 NUL 终止 */
-    strncpy(entry->metadata.path, path, ZCSR_MAX_PATH_LEN);
-    entry->metadata.path[ZCSR_MAX_PATH_LEN] = '\0';
+    /* 安全复制路径，保证 NUL 终止（数组长度恰为 ZCSR_MAX_PATH_LEN） */
+    strncpy(entry->metadata.path, path, ZCSR_MAX_PATH_LEN - 1);
+    entry->metadata.path[ZCSR_MAX_PATH_LEN - 1] = '\0';
 
     entry->data = data;
     entry->data_size = data_size;
