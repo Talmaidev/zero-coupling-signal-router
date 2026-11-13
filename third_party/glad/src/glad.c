@@ -43,6 +43,12 @@ PFNGLBLENDFUNCSEPARATEPROC glad_glBlendFuncSeparate;
 PFNGLBLENDEQUATIONSEPARATEPROC glad_glBlendEquationSeparate;
 PFNGLDRAWBUFFERSPROC glad_glDrawBuffers;
 PFNGLCLEARBUFFERFVPROC glad_glClearBufferfv;
+PFNGLGENRENDERBUFFERSPROC glad_glGenRenderbuffers;
+PFNGLBINDRENDERBUFFERPROC glad_glBindRenderbuffer;
+PFNGLRENDERBUFFERSTORAGEMULTISAMPLESCENIC glad_glRenderbufferStorageMultisample;
+PFNGLFRAMEBUFFERRENDERBUFFERPROC glad_glFramebufferRenderbuffer;
+PFNGLBLITFRAMEBUFFERPROC glad_glBlitFramebuffer;
+PFNGLDELETEBUFFERSPROC_RB glad_glDeleteRenderbuffers;
 
 typedef union {
     GLADgenericproc generic;
@@ -89,9 +95,16 @@ typedef union {
     PFNGLBLENDEQUATIONSEPARATEPROC glBlendEquationSeparate;
     PFNGLDRAWBUFFERSPROC glDrawBuffers;
     PFNGLCLEARBUFFERFVPROC glClearBufferfv;
+    PFNGLGENRENDERBUFFERSPROC glGenRenderbuffers;
+    PFNGLBINDRENDERBUFFERPROC glBindRenderbuffer;
+    PFNGLRENDERBUFFERSTORAGEMULTISAMPLESCENIC glRenderbufferStorageMultisample;
+    PFNGLFRAMEBUFFERRENDERBUFFERPROC glFramebufferRenderbuffer;
+    PFNGLBLITFRAMEBUFFERPROC glBlitFramebuffer;
+    PFNGLDELETEBUFFERSPROC_RB glDeleteRenderbuffers;
 } zcsr_glad_proc;
 
 #define ZCSR_LOAD(name) do { zcsr_glad_proc p; p.generic = load(#name); glad_##name = p.name; if (!glad_##name) return 0; } while (0)
+#define ZCSR_LOAD_SOFT(name) do { zcsr_glad_proc p; p.generic = load(#name); glad_##name = p.name; } while (0)
 
 int gladLoadGLLoader(GLADloadproc load) {
     if (!load) return 0;
@@ -138,6 +151,12 @@ int gladLoadGLLoader(GLADloadproc load) {
     ZCSR_LOAD(glBlendEquationSeparate);
     ZCSR_LOAD(glDrawBuffers);
     ZCSR_LOAD(glClearBufferfv);
+    ZCSR_LOAD(glGenRenderbuffers);
+    ZCSR_LOAD(glBindRenderbuffer);
+    ZCSR_LOAD(glRenderbufferStorageMultisample);
+    ZCSR_LOAD(glFramebufferRenderbuffer);
+    ZCSR_LOAD(glBlitFramebuffer);
+    ZCSR_LOAD(glDeleteRenderbuffers);
     return 1;
 }
 

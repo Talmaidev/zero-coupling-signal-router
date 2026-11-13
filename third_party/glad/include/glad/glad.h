@@ -150,6 +150,30 @@ typedef ptrdiff_t GLintptr;
 #ifndef GL_COLOR_ATTACHMENT3
 #define GL_COLOR_ATTACHMENT3 0x8CE3
 #endif
+#ifndef GL_FRAMEBUFFER_SRGB
+#define GL_FRAMEBUFFER_SRGB 0x8DB9
+#endif
+#ifndef GL_MULTISAMPLE
+#define GL_MULTISAMPLE 0x809D
+#endif
+#ifndef GL_MAX_SAMPLES
+#define GL_MAX_SAMPLES 0x8D57
+#endif
+#ifndef GL_RENDERBUFFER
+#define GL_RENDERBUFFER 0x8D41
+#endif
+#ifndef GL_READ_FRAMEBUFFER
+#define GL_READ_FRAMEBUFFER 0x8CA8
+#endif
+#ifndef GL_DRAW_FRAMEBUFFER
+#define GL_DRAW_FRAMEBUFFER 0x8CA9
+#endif
+#ifndef GL_COLOR_BUFFER_BIT
+#define GL_COLOR_BUFFER_BIT 0x00004000
+#endif
+#ifndef GL_NEAREST
+#define GL_NEAREST 0x2600
+#endif
 
 /* Function-pointer typedefs for the GL 2.0+ subset used below (Khronos signatures). */
 typedef void (GLAPIENTRY *PFNGLGENVERTEXARRAYSPROC)(GLsizei n, GLuint* arrays);
@@ -203,6 +227,19 @@ typedef void (GLAPIENTRY *PFNGLBLENDEQUATIONSEPARATEPROC)(GLenum modeRGB, GLenum
 typedef void (GLAPIENTRY *PFNGLDRAWBUFFERSPROC)(GLsizei n, const GLenum* bufs);
 typedef void (GLAPIENTRY *PFNGLCLEARBUFFERFVPROC)(GLenum buffer, GLint drawbuffer,
                                                   const GLfloat* value);
+/* MSAA composite resolve (Khronos signatures). */
+typedef void (GLAPIENTRY *PFNGLGENRENDERBUFFERSPROC)(GLsizei n, GLuint* renderbuffers);
+typedef void (GLAPIENTRY *PFNGLBINDRENDERBUFFERPROC)(GLenum target, GLuint renderbuffer);
+typedef void (GLAPIENTRY *PFNGLRENDERBUFFERSTORAGEMULTISAMPLESCENIC)(GLenum target, GLsizei samples,
+                                                                   GLenum internalformat,
+                                                                   GLsizei width, GLsizei height);
+typedef void (GLAPIENTRY *PFNGLFRAMEBUFFERRENDERBUFFERPROC)(GLenum target, GLenum attachment,
+                                                           GLenum renderbuffertarget,
+                                                           GLuint renderbuffer);
+typedef void (GLAPIENTRY *PFNGLBLITFRAMEBUFFERPROC)(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
+                                                    GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1,
+                                                    GLbitfield mask, GLenum filter);
+typedef void (GLAPIENTRY *PFNGLDELETEBUFFERSPROC_RB)(GLsizei n, const GLuint* renderbuffers);
 #endif /* !__APPLE__ */
 
 #ifdef __cplusplus
@@ -256,6 +293,12 @@ extern PFNGLBLENDFUNCSEPARATEPROC glad_glBlendFuncSeparate;
 extern PFNGLBLENDEQUATIONSEPARATEPROC glad_glBlendEquationSeparate;
 extern PFNGLDRAWBUFFERSPROC glad_glDrawBuffers;
 extern PFNGLCLEARBUFFERFVPROC glad_glClearBufferfv;
+extern PFNGLGENRENDERBUFFERSPROC glad_glGenRenderbuffers;
+extern PFNGLBINDRENDERBUFFERPROC glad_glBindRenderbuffer;
+extern PFNGLRENDERBUFFERSTORAGEMULTISAMPLESCENIC glad_glRenderbufferStorageMultisample;
+extern PFNGLFRAMEBUFFERRENDERBUFFERPROC glad_glFramebufferRenderbuffer;
+extern PFNGLBLITFRAMEBUFFERPROC glad_glBlitFramebuffer;
+extern PFNGLDELETEBUFFERSPROC_RB glad_glDeleteRenderbuffers;
 
 #ifdef __cplusplus
 }
@@ -306,5 +349,11 @@ extern PFNGLCLEARBUFFERFVPROC glad_glClearBufferfv;
 #define glBlendEquationSeparate glad_glBlendEquationSeparate
 #define glDrawBuffers glad_glDrawBuffers
 #define glClearBufferfv glad_glClearBufferfv
+#define glGenRenderbuffers glad_glGenRenderbuffers
+#define glBindRenderbuffer glad_glBindRenderbuffer
+#define glRenderbufferStorageMultisample glad_glRenderbufferStorageMultisample
+#define glFramebufferRenderbuffer glad_glFramebufferRenderbuffer
+#define glBlitFramebuffer glad_glBlitFramebuffer
+#define glDeleteRenderbuffers glad_glDeleteRenderbuffers
 
 #endif /* ZCSR_THIRD_PARTY_GLAD_H */

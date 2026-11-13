@@ -225,6 +225,11 @@ struct zcsr_gl_renderer {
     unsigned int l2d_comp_fbo;
     unsigned int l2d_comp_tex;
     int l2d_comp_w, l2d_comp_h;
+    /* MSAA：场景画进多重采样 renderbuffer，finalize 时 blit 解析到 comp_tex。 */
+    unsigned int l2d_msaa_fbo;
+    unsigned int l2d_msaa_rb;
+    int l2d_msaa_samples;      /* 0/2/4，0=关 */
+    int l2d_msaa_w, l2d_msaa_h;
     unsigned int l2d_blit_prog;  /* simple textured fullscreen copy */
     int l2d_blit_loc_sampler;
     zcsr_l2d_post_process_fn l2d_post_cb;

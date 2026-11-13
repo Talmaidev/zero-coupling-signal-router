@@ -690,6 +690,8 @@ void zcsr_gl_l2d_destroy(zcsr_gl_renderer* r) {
     if (r->l2d_prog_shadow) glDeleteProgram(r->l2d_prog_shadow);
     if (r->l2d_prog_light) glDeleteProgram(r->l2d_prog_light);
     if (r->l2d_blit_prog) glDeleteProgram(r->l2d_blit_prog);
+    if (r->l2d_msaa_fbo) glDeleteFramebuffers(1, &r->l2d_msaa_fbo);
+    if (r->l2d_msaa_rb && glDeleteRenderbuffers) glDeleteRenderbuffers(1, &r->l2d_msaa_rb);
     if (r->l2d_comp_fbo) glDeleteFramebuffers(1, &r->l2d_comp_fbo);
     if (r->l2d_comp_tex) glDeleteTextures(1, &r->l2d_comp_tex);
     if (r->l2d_light_fbo) glDeleteFramebuffers(1, &r->l2d_light_fbo);
@@ -1242,6 +1244,59 @@ static bool zcsr_l2d_ensure_light_target(zcsr_gl_renderer* r, int w, int h) {
     return true;
 }
 
+/* 多重采样颜色目标：只在 composite 尺寸/采样数变化时重建。
+ * 任何一步失败都把 l2d_msaa_samples 归零，退回无 MSAA 路径，不静默花屏。 */
+static bool zcsr_l2d_ensure_msaa_target(zcsr_gl_renderer* r, int w, int h) {
+    GLuint rb = 0, fbo = 0;
+    GLint max_samples = 0;
+    if (r->l2d_msaa_samples <= 1) return true;
+    if (glGenRenderbuffers == NULL || glBindRenderbuffer == NULL ||
+        glRenderbufferStorageMultisample == NULL ||
+        glFramebufferRenderbuffer == NULL) {
+        r->l2d_msaa_samples = 0;
+        return true;
+    }
+    if (r->l2d_msaa_fbo != 0u && r->l2d_msaa_rb != 0u &&
+        r->l2d_msaa_w == w && r->l2d_msaa_h == h) {
+        return true;
+    }
+    glGetIntegerv(GL_MAX_SAMPLES, &max_samples);
+    if (max_samples < 2) { r->l2d_msaa_samples = 0; return true; }
+    if (r->l2d_msaa_samples > max_samples) r->l2d_msaa_samples = max_samples;
+
+    glGenRenderbuffers(1, &rb);
+    if (rb == 0u) { r->l2d_msaa_samples = 0; return true; }
+    glBindRenderbuffer(GL_RENDERBUFFER, rb);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, r->l2d_msaa_samples,
+                                     GL_RGBA8, w, h);
+    if (glGetError() != GL_NO_ERROR) {
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+        glDeleteRenderbuffers(1, &rb);
+        r->l2d_msaa_samples = 0;
+        return true;
+    }
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              GL_RENDERBUFFER, rb);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fbo);
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+        glDeleteRenderbuffers(1, &rb);
+        r->l2d_msaa_samples = 0;
+        return true;
+    }
+    if (r->l2d_msaa_fbo != 0u) glDeleteFramebuffers(1, &r->l2d_msaa_fbo);
+    if (r->l2d_msaa_rb != 0u) glDeleteRenderbuffers(1, &r->l2d_msaa_rb);
+    r->l2d_msaa_fbo = fbo;
+    r->l2d_msaa_rb = rb;
+    r->l2d_msaa_w = w;
+    r->l2d_msaa_h = h;
+    printf("[gl] msaa target %dx%d samples=%d\n", w, h, r->l2d_msaa_samples);
+    return true;
+}
+
 /* Ensures the composite FBO (sRGB-encoded 8-bit result) exists at w x h. */
 static bool zcsr_l2d_ensure_composite_target(zcsr_gl_renderer* r, int w, int h) {
     unsigned int tex = 0;
@@ -1273,7 +1328,7 @@ static bool zcsr_l2d_ensure_composite_target(zcsr_gl_renderer* r, int w, int h) 
     r->l2d_comp_tex = tex;
     r->l2d_comp_w = w;
     r->l2d_comp_h = h;
-    return true;
+    return zcsr_l2d_ensure_msaa_target(r, w, h);
 }
 
 bool zcsr_gl_l2d_bind_composite_target(zcsr_gl_renderer* renderer,
@@ -1281,7 +1336,10 @@ bool zcsr_gl_l2d_bind_composite_target(zcsr_gl_renderer* renderer,
     if (renderer == NULL || width <= 0 || height <= 0) return false;
     if (!zcsr_gl_make_current(renderer)) return false;
     if (!zcsr_l2d_ensure_composite_target(renderer, width, height)) return false;
-    glBindFramebuffer(GL_FRAMEBUFFER, renderer->l2d_comp_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER,
+                      (renderer->l2d_msaa_samples > 1 && renderer->l2d_msaa_fbo != 0u)
+                          ? renderer->l2d_msaa_fbo
+                          : renderer->l2d_comp_fbo);
     static const GLenum comp_draw = GL_COLOR_ATTACHMENT0;
     glDrawBuffers(1, &comp_draw);
     glViewport(0, 0, width, height);
@@ -1293,12 +1351,35 @@ bool zcsr_gl_l2d_bind_composite_target(zcsr_gl_renderer* renderer,
     return true;
 }
 
+bool zcsr_gl_l2d_set_msaa(zcsr_gl_renderer* renderer, int samples) {
+    if (renderer == NULL) return false;
+    if (samples != 0 && samples != 2 && samples != 4 && samples != 8) return false;
+    if (samples > 1 && (glGenRenderbuffers == NULL || glBlitFramebuffer == NULL)) {
+        return false;   /* 当前上下文没有多重采样入口，调用方保留"未生效"。 */
+    }
+    if (!zcsr_gl_make_current(renderer)) return false;
+    renderer->l2d_msaa_samples = samples;
+    renderer->l2d_msaa_w = 0;
+    renderer->l2d_msaa_h = 0;
+    return true;
+}
+
 bool zcsr_gl_l2d_finalize_composite(zcsr_gl_renderer* renderer,
                                     int width, int height) {
     bool hook_ok = false;
     zcsr_l2d_draw_bindings saved;
     if (renderer == NULL || width <= 0 || height <= 0) return false;
     if (!zcsr_gl_make_current(renderer)) return false;
+
+    /* MSAA 解析：多重采样 renderbuffer -> comp 纹理（后续 hook/present 仍读 comp_tex）。 */
+    if (renderer->l2d_msaa_samples > 1 && renderer->l2d_msaa_fbo != 0u &&
+        renderer->l2d_comp_fbo != 0u) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, renderer->l2d_msaa_fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, renderer->l2d_comp_fbo);
+        glBlitFramebuffer(0, 0, width, height, 0, 0, width, height,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, renderer->l2d_comp_fbo);
+    }
 
     if (renderer->l2d_post_cb != NULL) {
         /* Bind default framebuffer so the hook draws directly to screen. */

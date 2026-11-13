@@ -86,6 +86,19 @@ int         zcsr_mix_play_ex(zcsr_mixer*, const char* id, float volume, bool loo
 /* 0..1；非法入参返回 false，不改已有值。 */
 bool        zcsr_mix_set_master_gain(zcsr_mixer*, float gain);
 bool        zcsr_mix_set_bus_gain(zcsr_mixer*, int bus, float gain);
+
+/* 输出设备枚举（设置页 Output Device 的数据源）。
+ * id 是不透明端点 ID，name 是系统友好名；is_default 标记当前默认设备。
+ * 返回写入条数；不支持枚举的后端返回 0。 */
+#define ZCSR_MIX_DEVICE_ID_CAP   256
+#define ZCSR_MIX_DEVICE_NAME_CAP 128
+typedef struct {
+    char id[ZCSR_MIX_DEVICE_ID_CAP];
+    char name[ZCSR_MIX_DEVICE_NAME_CAP];
+    int  is_default;
+} zcsr_mix_device_info;
+
+int         zcsr_mix_list_output_devices(zcsr_mix_device_info* out, int max);
 void        zcsr_mix_stop_channel(zcsr_mixer*, int channel);
 
 /* Slots to connect to a zcsr/signal.h router (zcsr_slot_fn shape). payload = sound id.
