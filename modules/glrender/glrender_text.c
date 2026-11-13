@@ -1,0 +1,325 @@
+/* glrender_text.c — real 8x8 bitmap font text rendering (ASCII 32-126).
+ * Font data: font8x8_basic, Public Domain, Marcel Sondaar / IBM VGA fonts,
+ * curated by Daniel Hepper (https://github.com/dhepper/font8x8).
+ * Uses sprite's zcsr_gl_push_quad_uv + zcsr_gl_record_draw with font atlas texture.
+ */
+#include "glrender_internal.h"
+#include "zcsr/font.h"
+#include "zcsr/font_atlas.h"
+
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+
+/* 8x8 bitmap font, ASCII 32-126 (95 glyphs). Each glyph = 8 bytes, 1 bit per pixel.
+ * LSB = leftmost pixel. Defined here (non-static) so glrender_core.c can build the atlas. */
+const uint8_t zcsr_font8x8[95][8] = {
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   /* 32 space */
+    { 0x18, 0x3C, 0x3C, 0x18, 0x18, 0x00, 0x18, 0x00},   /* 33 ! */
+    { 0x36, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   /* 34 " */
+    { 0x36, 0x36, 0x7F, 0x36, 0x7F, 0x36, 0x36, 0x00},   /* 35 # */
+    { 0x0C, 0x3E, 0x03, 0x1E, 0x30, 0x1F, 0x0C, 0x00},   /* 36 $ */
+    { 0x00, 0x63, 0x33, 0x18, 0x0C, 0x66, 0x63, 0x00},   /* 37 % */
+    { 0x1C, 0x36, 0x1C, 0x6E, 0x3B, 0x33, 0x6E, 0x00},   /* 38 & */
+    { 0x06, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00},   /* 39 ' */
+    { 0x18, 0x0C, 0x06, 0x06, 0x06, 0x0C, 0x18, 0x00},   /* 40 ( */
+    { 0x06, 0x0C, 0x18, 0x18, 0x18, 0x0C, 0x06, 0x00},   /* 41 ) */
+    { 0x00, 0x66, 0x3C, 0xFF, 0x3C, 0x66, 0x00, 0x00},   /* 42 * */
+    { 0x00, 0x0C, 0x0C, 0x3F, 0x0C, 0x0C, 0x00, 0x00},   /* 43 + */
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x06},   /* 44 , */
+    { 0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x00, 0x00},   /* 45 - */
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x00},   /* 46 . */
+    { 0x60, 0x30, 0x18, 0x0C, 0x06, 0x03, 0x01, 0x00},   /* 47 / */
+    { 0x3E, 0x63, 0x73, 0x7B, 0x6F, 0x67, 0x3E, 0x00},   /* 48 0 */
+    { 0x0C, 0x0E, 0x0C, 0x0C, 0x0C, 0x0C, 0x3F, 0x00},   /* 49 1 */
+    { 0x1E, 0x33, 0x30, 0x1C, 0x06, 0x33, 0x3F, 0x00},   /* 50 2 */
+    { 0x1E, 0x33, 0x30, 0x1C, 0x30, 0x33, 0x1E, 0x00},   /* 51 3 */
+    { 0x38, 0x3C, 0x36, 0x33, 0x7F, 0x30, 0x78, 0x00},   /* 52 4 */
+    { 0x3F, 0x03, 0x1F, 0x30, 0x30, 0x33, 0x1E, 0x00},   /* 53 5 */
+    { 0x1C, 0x06, 0x03, 0x1F, 0x33, 0x33, 0x1E, 0x00},   /* 54 6 */
+    { 0x3F, 0x33, 0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x00},   /* 55 7 */
+    { 0x1E, 0x33, 0x33, 0x1E, 0x33, 0x33, 0x1E, 0x00},   /* 56 8 */
+    { 0x1E, 0x33, 0x33, 0x3E, 0x30, 0x18, 0x0E, 0x00},   /* 57 9 */
+    { 0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C, 0x00},   /* 58 : */
+    { 0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C, 0x06},   /* 59 ; */
+    { 0x18, 0x0C, 0x06, 0x03, 0x06, 0x0C, 0x18, 0x00},   /* 60 < */
+    { 0x00, 0x00, 0x3F, 0x00, 0x00, 0x3F, 0x00, 0x00},   /* 61 = */
+    { 0x06, 0x0C, 0x18, 0x30, 0x18, 0x0C, 0x06, 0x00},   /* 62 > */
+    { 0x1E, 0x33, 0x30, 0x18, 0x0C, 0x00, 0x0C, 0x00},   /* 63 ? */
+    { 0x3E, 0x63, 0x7B, 0x7B, 0x7B, 0x03, 0x1E, 0x00},   /* 64 @ */
+    { 0x0C, 0x1E, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x00},   /* 65 A */
+    { 0x3F, 0x66, 0x66, 0x3E, 0x66, 0x66, 0x3F, 0x00},   /* 66 B */
+    { 0x3C, 0x66, 0x03, 0x03, 0x03, 0x66, 0x3C, 0x00},   /* 67 C */
+    { 0x1F, 0x36, 0x66, 0x66, 0x66, 0x36, 0x1F, 0x00},   /* 68 D */
+    { 0x7F, 0x46, 0x16, 0x1E, 0x16, 0x46, 0x7F, 0x00},   /* 69 E */
+    { 0x7F, 0x46, 0x16, 0x1E, 0x16, 0x06, 0x0F, 0x00},   /* 70 F */
+    { 0x3C, 0x66, 0x03, 0x03, 0x73, 0x66, 0x7C, 0x00},   /* 71 G */
+    { 0x33, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x33, 0x00},   /* 72 H */
+    { 0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00},   /* 73 I */
+    { 0x78, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1E, 0x00},   /* 74 J */
+    { 0x67, 0x66, 0x36, 0x1E, 0x36, 0x66, 0x67, 0x00},   /* 75 K */
+    { 0x0F, 0x06, 0x06, 0x06, 0x46, 0x66, 0x7F, 0x00},   /* 76 L */
+    { 0x63, 0x77, 0x7F, 0x7F, 0x6B, 0x63, 0x63, 0x00},   /* 77 M */
+    { 0x63, 0x67, 0x6F, 0x7B, 0x73, 0x63, 0x63, 0x00},   /* 78 N */
+    { 0x1C, 0x36, 0x63, 0x63, 0x63, 0x36, 0x1C, 0x00},   /* 79 O */
+    { 0x3F, 0x66, 0x66, 0x3E, 0x06, 0x06, 0x0F, 0x00},   /* 80 P */
+    { 0x1E, 0x33, 0x33, 0x33, 0x3B, 0x1E, 0x38, 0x00},   /* 81 Q */
+    { 0x3F, 0x66, 0x66, 0x3E, 0x36, 0x66, 0x67, 0x00},   /* 82 R */
+    { 0x1E, 0x33, 0x07, 0x0E, 0x38, 0x33, 0x1E, 0x00},   /* 83 S */
+    { 0x3F, 0x2D, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00},   /* 84 T */
+    { 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x3F, 0x00},   /* 85 U */
+    { 0x33, 0x33, 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x00},   /* 86 V */
+    { 0x63, 0x63, 0x63, 0x6B, 0x7F, 0x77, 0x63, 0x00},   /* 87 W */
+    { 0x63, 0x63, 0x36, 0x1C, 0x1C, 0x36, 0x63, 0x00},   /* 88 X */
+    { 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x0C, 0x1E, 0x00},   /* 89 Y */
+    { 0x7F, 0x63, 0x31, 0x18, 0x4C, 0x66, 0x7F, 0x00},   /* 90 Z */
+    { 0x1E, 0x06, 0x06, 0x06, 0x06, 0x06, 0x1E, 0x00},   /* 91 [ */
+    { 0x03, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x40, 0x00},   /* 92 \ */
+    { 0x1E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1E, 0x00},   /* 93 ] */
+    { 0x08, 0x1C, 0x36, 0x63, 0x00, 0x00, 0x00, 0x00},   /* 94 ^ */
+    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF},   /* 95 _ */
+    { 0x0C, 0x0C, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00},   /* 96 ` */
+    { 0x00, 0x00, 0x1E, 0x30, 0x3E, 0x33, 0x6E, 0x00},   /* 97 a */
+    { 0x07, 0x06, 0x06, 0x3E, 0x66, 0x66, 0x3B, 0x00},   /* 98 b */
+    { 0x00, 0x00, 0x1E, 0x33, 0x03, 0x33, 0x1E, 0x00},   /* 99 c */
+    { 0x38, 0x30, 0x30, 0x3e, 0x33, 0x33, 0x6E, 0x00},   /* 100 d */
+    { 0x00, 0x00, 0x1E, 0x33, 0x3f, 0x03, 0x1E, 0x00},   /* 101 e */
+    { 0x1C, 0x36, 0x06, 0x0f, 0x06, 0x06, 0x0F, 0x00},   /* 102 f */
+    { 0x00, 0x00, 0x6E, 0x33, 0x33, 0x3E, 0x30, 0x1F},   /* 103 g */
+    { 0x07, 0x06, 0x36, 0x6E, 0x66, 0x66, 0x67, 0x00},   /* 104 h */
+    { 0x0C, 0x00, 0x0E, 0x0C, 0x0C, 0x0C, 0x1E, 0x00},   /* 105 i */
+    { 0x30, 0x00, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1E},   /* 106 j */
+    { 0x07, 0x06, 0x66, 0x36, 0x1E, 0x36, 0x67, 0x00},   /* 107 k */
+    { 0x0E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00},   /* 108 l */
+    { 0x00, 0x00, 0x33, 0x7F, 0x7F, 0x6B, 0x63, 0x00},   /* 109 m */
+    { 0x00, 0x00, 0x1F, 0x33, 0x33, 0x33, 0x33, 0x00},   /* 110 n */
+    { 0x00, 0x00, 0x1E, 0x33, 0x33, 0x33, 0x1E, 0x00},   /* 111 o */
+    { 0x00, 0x00, 0x3B, 0x66, 0x66, 0x3E, 0x06, 0x0F},   /* 112 p */
+    { 0x00, 0x00, 0x6E, 0x33, 0x33, 0x3E, 0x30, 0x78},   /* 113 q */
+    { 0x00, 0x00, 0x3B, 0x6E, 0x66, 0x06, 0x0F, 0x00},   /* 114 r */
+    { 0x00, 0x00, 0x3E, 0x03, 0x1E, 0x30, 0x1F, 0x00},   /* 115 s */
+    { 0x08, 0x0C, 0x3E, 0x0C, 0x0C, 0x2C, 0x18, 0x00},   /* 116 t */
+    { 0x00, 0x00, 0x33, 0x33, 0x33, 0x33, 0x6E, 0x00},   /* 117 u */
+    { 0x00, 0x00, 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x00},   /* 118 v */
+    { 0x00, 0x00, 0x63, 0x6B, 0x7F, 0x7F, 0x36, 0x00},   /* 119 w */
+    { 0x00, 0x00, 0x63, 0x36, 0x1C, 0x36, 0x63, 0x00},   /* 120 x */
+    { 0x00, 0x00, 0x33, 0x33, 0x33, 0x3E, 0x30, 0x1F},   /* 121 y */
+    { 0x00, 0x00, 0x3F, 0x19, 0x0C, 0x26, 0x3F, 0x00},   /* 122 z */
+    { 0x38, 0x0C, 0x0C, 0x07, 0x0C, 0x0C, 0x38, 0x00},   /* 123 { */
+    { 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x18, 0x00},   /* 124 | */
+    { 0x07, 0x0C, 0x0C, 0x38, 0x0C, 0x0C, 0x07, 0x00},   /* 125 } */
+    { 0x6E, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   /* 126 ~ */
+};
+
+void zcsr_gl_draw_text(zcsr_gl_renderer* r, const char* utf8, float x, float y, float scale,
+                       float cr, float cg, float cb, float ca) {
+    float pen;
+    float glyph_size, advance, line_advance;
+    const unsigned char* p;
+    size_t first = 0;
+    int started = 0;
+    if (!r || !utf8 || scale <= 0.0f) return;
+
+    /* Game-supplied TTF path: baseline origin, real per-glyph bearings and advances.
+     * The caller's (x,y) is a top-left cell origin (the bitmap font contract), so lift it
+     * to a baseline by the font ascent before handing over.
+     *
+     * 关键：字形是按 pixel_height 光栅化的一次性位图。用 1.4 / 0.6 这种分数缩放去采样，
+     * 等于在缩放一张已经烘好的位图 —— 越缩越糊（之前"字体反而更模糊"就是这个）。
+     * 因此这里把缩放吸附到整数倍：1.4 -> 1、0.6 -> 1、2.4 -> 2。要更大的字就传更大
+     * 的整数倍，由调用方决定，而不是让采样器去猜。 */
+    if (r->font_atlas) {
+        zcsr_font_metrics_info m;
+        float snapped = roundf(scale);
+        float baseline_y = y;
+        if (snapped < 1.0f) snapped = 1.0f;
+        if (zcsr_font_atlas_get_metrics((const zcsr_font_atlas*)r->font_atlas, &m))
+            baseline_y = y + m.ascent * snapped;
+        zcsr_font_draw_text((zcsr_font_atlas*)r->font_atlas, utf8, x, baseline_y, snapped,
+                            cr, cg, cb, ca);
+        return;
+    }
+    if (!r->font_tex) return;
+
+    /* Small-font pixel alignment: when scale < 1.0, glyph geometry and pen
+     * positions are fractional (e.g. scale=0.8 -> 6.4px glyphs, 7.2px step).
+     * Under GL_NEAREST, each glyph lands on a different sub-pixel phase and
+     * loses different strokes, making text look like wrong characters.
+     * Round all geometry to integer pixels so every glyph shares the same
+     * raster phase. scale >= 1.0 keeps original sub-pixel behavior. */
+    if (scale < 1.0f) {
+        glyph_size   = floorf(8.0f * scale + 0.5f);
+        advance      = floorf(9.0f * scale + 0.5f);
+        line_advance = floorf(9.0f * scale + 0.5f);
+        x = floorf(x + 0.5f);
+        y = floorf(y + 0.5f);
+        if (glyph_size < 1.0f) return;  /* too small to display anything */
+    } else {
+        glyph_size   = 8.0f * scale;
+        advance      = 9.0f * scale;
+        line_advance = 9.0f * scale;
+    }
+    pen = x;
+
+    for (p = (const unsigned char*)utf8; *p; ++p) {
+        unsigned char ch = *p;
+        int idx, col, row;
+        float u0, v0, u1, v1;
+        if (ch == '\n') {
+            pen = x;
+            y += line_advance;
+            continue;
+        }
+        if (ch < 32u || ch > 126u) continue;  /* ASCII only; non-ASCII skipped (no tofu) */
+        if (r->vertex_count + 6u > ZCSR_GL_MAX_VERTICES) break;
+        idx = ch - 32;
+        col = idx % 16;
+        row = idx / 16;
+        u0 = (float)col / 16.0f;
+        v0 = (float)row / 8.0f;
+        u1 = (float)(col + 1) / 16.0f;
+        v1 = (float)(row + 1) / 8.0f;
+        if (!started) { first = r->vertex_count; started = 1; }
+        zcsr_gl_push_quad_uv(r, (zcsr_rectf){ pen, y, glyph_size, glyph_size }, 0.0f,
+                             u0, v0, u1, v1, cr, cg, cb, ca, ZCSR_MOD_MULTIPLY, 0.0f);
+        pen += advance;
+    }
+    if (started) {
+        zcsr_gl_record_draw(r, r->font_tex, first, r->vertex_count - first);
+    }
+}
+
+/* ---- Optional TTF backend ------------------------------------------------------- */
+
+void zcsr_gl_set_font_atlas(zcsr_gl_renderer* r, struct zcsr_font_atlas* atlas) {
+    if (!r) return;
+    r->font_atlas = atlas;
+}
+
+struct zcsr_font_atlas* zcsr_gl_get_font_atlas(zcsr_gl_renderer* r) {
+    return r ? r->font_atlas : NULL;
+}
+
+static unsigned char* gt_align(unsigned char* p, size_t a) {
+    uintptr_t v = (uintptr_t)p;
+    return (unsigned char*)((v + a - 1u) & ~(uintptr_t)(a - 1u));
+}
+
+size_t zcsr_gl_font_buffer_bytes_required(size_t ttf_len) {
+    /* ttf bytes + font instance arena + atlas arena, each aligned to 16. */
+    return ttf_len + 64u
+         + zcsr_font_buffer_bytes_required(ttf_len)
+         + zcsr_font_atlas_buffer_bytes_required() + 64u;
+}
+
+bool zcsr_gl_font_from_file(zcsr_gl_renderer* r, const char* path, int pixel_height,
+                            void* buffer, size_t bytes) {
+    FILE* fp;
+    long size;
+    unsigned char* base = (unsigned char*)buffer;
+    unsigned char* ttf;
+    unsigned char* font_arena;
+    size_t font_arena_bytes;
+    unsigned char* atlas_arena;
+    zcsr_font* font;
+    zcsr_font_atlas* atlas;
+
+    if (!r || !path || !buffer || bytes == 0u || pixel_height <= 0) return false;
+
+    fp = fopen(path, "rb");
+    if (!fp) return false;
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return false; }
+    size = ftell(fp);
+    if (size <= 0) { fclose(fp); return false; }
+    if ((size_t)size + 64u > bytes) { fclose(fp); return false; }
+    rewind(fp);
+
+    ttf = base;
+    if (fread(ttf, 1u, (size_t)size, fp) != (size_t)size) { fclose(fp); return false; }
+    fclose(fp);
+
+    font_arena = gt_align(ttf + (size_t)size, 16u);
+    font_arena_bytes = zcsr_font_buffer_bytes_required((size_t)size);
+    if ((unsigned char*)font_arena + font_arena_bytes > base + bytes) return false;
+
+    font = zcsr_font_load(ttf, (size_t)size, pixel_height, font_arena, font_arena_bytes);
+    if (!font) return false;
+
+    atlas_arena = gt_align(font_arena + font_arena_bytes, 16u);
+    if ((unsigned char*)atlas_arena + zcsr_font_atlas_buffer_bytes_required() > base + bytes)
+        return false;
+
+    atlas = zcsr_font_atlas_create(r, font, atlas_arena,
+                                   zcsr_font_atlas_buffer_bytes_required());
+    if (!atlas) return false;
+
+    r->font_atlas = atlas;
+    return true;
+}/* 追加到 glrender_text.c 末尾：默认字体解析 + 纹理过滤默认值 */
+
+bool zcsr_gl_font_default(zcsr_gl_renderer* r, int pixel_height, void* buffer, size_t bytes) {
+    static const char* const candidates[] = {
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+        "C:\\Windows\\Fonts\\tahoma.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        NULL
+    };
+    const char* env;
+    int i;
+
+    if (!r || !buffer) return false;
+
+    env = getenv("ZCSR_FONT_TTF");
+    if (env && env[0]) return zcsr_gl_font_from_file(r, env, pixel_height, buffer, bytes);
+
+    for (i = 0; candidates[i]; ++i) {
+        FILE* probe = fopen(candidates[i], "rb");
+        if (!probe) continue;
+        fclose(probe);
+        if (zcsr_gl_font_from_file(r, candidates[i], pixel_height, buffer, bytes)) return true;
+    }
+    return false;
+}
+
+void zcsr_gl_set_texture_filter_default(zcsr_gl_renderer* r, bool linear) {
+    if (r) r->default_filter_linear = linear;
+}
+
+bool zcsr_gl_set_texture_quality(zcsr_gl_renderer* r, int level) {
+    if (!r) return false;
+    if (level < 0) level = 0;
+    if (level > 2) level = 2;
+    r->tex_quality = level;
+    r->default_filter_linear = (level >= 1);
+    /* 已创建的纹理也重设采样，否则设置页改完只有“之后新建的”纹理变化。 */
+    if (zcsr_gl_make_current(r)) {
+        GLint f = (level >= 1) ? GL_LINEAR : GL_NEAREST;
+        GLint minf = f;
+        for (int i = 0; i < ZCSR_GL_MAX_TEXTURES; ++i) {
+            zcsr_gl_tex_entry* e = &r->textures[i];
+            if (!e->in_use || e->id == 0u) continue;
+            glBindTexture(GL_TEXTURE_2D, e->id);
+            if (level >= 2 && glGenerateMipmap != NULL) {
+                glGenerateMipmap(GL_TEXTURE_2D);
+                minf = GL_LINEAR_MIPMAP_LINEAR;
+            }
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minf);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, f);
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+    return true;
+}
+
+int zcsr_gl_get_texture_quality(const zcsr_gl_renderer* r) {
+    return r ? r->tex_quality : 0;
+}
+
+bool zcsr_gl_get_texture_filter_default(const zcsr_gl_renderer* r) {
+    return r ? r->default_filter_linear : false;
+}
