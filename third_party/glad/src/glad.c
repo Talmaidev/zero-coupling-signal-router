@@ -32,6 +32,24 @@ PFNGLBINDFRAMEBUFFERPROC glad_glBindFramebuffer;
 PFNGLFRAMEBUFFERTEXTURE2DPROC glad_glFramebufferTexture2D;
 PFNGLCHECKFRAMEBUFFERSTATUSPROC glad_glCheckFramebufferStatus;
 PFNGLDELETEFRAMEBUFFERSPROC glad_glDeleteFramebuffers;
+PFNGLVERTEXATTRIBDIVISORPROC glad_glVertexAttribDivisor;
+PFNGLDRAWELEMENTSINSTANCEDPROC glad_glDrawElementsInstanced;
+PFNGLUNIFORM1FPROC glad_glUniform1f;
+PFNGLUNIFORM3FPROC glad_glUniform3f;
+PFNGLUNIFORM4FPROC glad_glUniform4f;
+PFNGLUNIFORM4FVPROC glad_glUniform4fv;
+PFNGLBLENDEQUATIONPROC glad_glBlendEquation;
+PFNGLBLENDFUNCSEPARATEPROC glad_glBlendFuncSeparate;
+PFNGLBLENDEQUATIONSEPARATEPROC glad_glBlendEquationSeparate;
+PFNGLDRAWBUFFERSPROC glad_glDrawBuffers;
+PFNGLCLEARBUFFERFVPROC glad_glClearBufferfv;
+PFNGLGENRENDERBUFFERSPROC glad_glGenRenderbuffers;
+PFNGLBINDRENDERBUFFERPROC glad_glBindRenderbuffer;
+PFNGLRENDERBUFFERSTORAGEMULTISAMPLESCENIC glad_glRenderbufferStorageMultisample;
+PFNGLFRAMEBUFFERRENDERBUFFERPROC glad_glFramebufferRenderbuffer;
+PFNGLBLITFRAMEBUFFERPROC glad_glBlitFramebuffer;
+PFNGLDELETEBUFFERSPROC_RB glad_glDeleteRenderbuffers;
+PFNGLGENERATEMIPMAPPROC glad_glGenerateMipmap;
 
 typedef union {
     GLADgenericproc generic;
@@ -67,9 +85,28 @@ typedef union {
     PFNGLFRAMEBUFFERTEXTURE2DPROC glFramebufferTexture2D;
     PFNGLCHECKFRAMEBUFFERSTATUSPROC glCheckFramebufferStatus;
     PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers;
+    PFNGLVERTEXATTRIBDIVISORPROC glVertexAttribDivisor;
+    PFNGLDRAWELEMENTSINSTANCEDPROC glDrawElementsInstanced;
+    PFNGLUNIFORM1FPROC glUniform1f;
+    PFNGLUNIFORM3FPROC glUniform3f;
+    PFNGLUNIFORM4FPROC glUniform4f;
+    PFNGLUNIFORM4FVPROC glUniform4fv;
+    PFNGLBLENDEQUATIONPROC glBlendEquation;
+    PFNGLBLENDFUNCSEPARATEPROC glBlendFuncSeparate;
+    PFNGLBLENDEQUATIONSEPARATEPROC glBlendEquationSeparate;
+    PFNGLDRAWBUFFERSPROC glDrawBuffers;
+    PFNGLCLEARBUFFERFVPROC glClearBufferfv;
+    PFNGLGENRENDERBUFFERSPROC glGenRenderbuffers;
+    PFNGLBINDRENDERBUFFERPROC glBindRenderbuffer;
+    PFNGLRENDERBUFFERSTORAGEMULTISAMPLESCENIC glRenderbufferStorageMultisample;
+    PFNGLFRAMEBUFFERRENDERBUFFERPROC glFramebufferRenderbuffer;
+    PFNGLBLITFRAMEBUFFERPROC glBlitFramebuffer;
+    PFNGLDELETEBUFFERSPROC_RB glDeleteRenderbuffers;
+    PFNGLGENERATEMIPMAPPROC glGenerateMipmap;
 } zcsr_glad_proc;
 
 #define ZCSR_LOAD(name) do { zcsr_glad_proc p; p.generic = load(#name); glad_##name = p.name; if (!glad_##name) return 0; } while (0)
+#define ZCSR_LOAD_SOFT(name) do { zcsr_glad_proc p; p.generic = load(#name); glad_##name = p.name; } while (0)
 
 int gladLoadGLLoader(GLADloadproc load) {
     if (!load) return 0;
@@ -105,6 +142,23 @@ int gladLoadGLLoader(GLADloadproc load) {
     ZCSR_LOAD(glFramebufferTexture2D);
     ZCSR_LOAD(glCheckFramebufferStatus);
     ZCSR_LOAD(glDeleteFramebuffers);
+    ZCSR_LOAD(glVertexAttribDivisor);
+    ZCSR_LOAD(glDrawElementsInstanced);
+    ZCSR_LOAD(glUniform1f);
+    ZCSR_LOAD(glUniform3f);
+    ZCSR_LOAD(glUniform4f);
+    ZCSR_LOAD(glUniform4fv);
+    ZCSR_LOAD(glBlendEquation);
+    ZCSR_LOAD(glBlendFuncSeparate);
+    ZCSR_LOAD(glBlendEquationSeparate);
+    ZCSR_LOAD(glDrawBuffers);
+    ZCSR_LOAD(glClearBufferfv);
+    ZCSR_LOAD(glGenRenderbuffers);
+    ZCSR_LOAD(glBindRenderbuffer);
+    ZCSR_LOAD(glRenderbufferStorageMultisample);
+    ZCSR_LOAD(glFramebufferRenderbuffer);
+    ZCSR_LOAD(glBlitFramebuffer);
+    ZCSR_LOAD(glDeleteRenderbuffers);
     return 1;
 }
 

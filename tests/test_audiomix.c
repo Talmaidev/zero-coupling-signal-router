@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <assert.h>
+#include <stdatomic.h>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -74,6 +76,78 @@ static int write_wav(const char* path, uint32_t frames) {
     }
     fclose(f);
     return 1;
+}
+
+typedef struct zcsr_test_audio_device_callback_state {
+    atomic_uint calls;
+    atomic_bool bad_event;
+} zcsr_test_audio_device_callback_state;
+
+static void zcsr_test_audio_device_callback(
+    zcsr_mixer* mixer,
+    zcsr_audio_device_event event,
+    void* user) {
+    zcsr_test_audio_device_callback_state* state =
+        (zcsr_test_audio_device_callback_state*)user;
+
+    (void)mixer;
+
+    if (!state) return;
+
+    if (event != ZCSR_AUDIO_DEVICE_LOST &&
+        event != ZCSR_AUDIO_DEVICE_CHANGED &&
+        event != ZCSR_AUDIO_DEVICE_RECOVERED) {
+        atomic_store_explicit(
+            &state->bad_event, true, memory_order_release);
+    }
+
+    atomic_fetch_add_explicit(
+        &state->calls, 1U, memory_order_relaxed);
+}
+
+static void test_audiomix_device_callback_api(void) {
+    zcsr_mixer* mixer;
+    zcsr_test_audio_device_callback_state first;
+    zcsr_test_audio_device_callback_state second;
+
+    atomic_init(&first.calls, 0U);
+    atomic_init(&first.bad_event, false);
+
+    atomic_init(&second.calls, 0U);
+    atomic_init(&second.bad_event, false);
+
+    mixer = zcsr_mix_start();
+
+    /*
+     * Follow the existing audio-test policy if the current target has no
+     * usable mixer backend. The Linux headless path should still be able to
+     * exercise the mixer logic, as documented by audiomix.c.
+     */
+    if (!mixer) {
+        return;
+    }
+
+    /* Register, then replace the callback/user pair. */
+    zcsr_mix_set_device_callback(
+        mixer, zcsr_test_audio_device_callback, &first);
+
+    zcsr_mix_set_device_callback(
+        mixer, zcsr_test_audio_device_callback, &second);
+
+    /* Unregister before stopping so both stack-owned user objects stay valid. */
+    zcsr_mix_set_device_callback(mixer, NULL, NULL);
+
+    zcsr_mix_stop(mixer);
+
+    /*
+     * No hardware event is injected. If a real platform event arrived during
+     * the test, it must still map to one of the three public enum values.
+     */
+    assert(!atomic_load_explicit(
+        &first.bad_event, memory_order_acquire));
+
+    assert(!atomic_load_explicit(
+        &second.bad_event, memory_order_acquire));
 }
 
 int main(void) {
@@ -149,6 +223,9 @@ int main(void) {
     }
 
     zcsr_mix_stop(m);
+
+    test_audiomix_device_callback_api();
+
     printf("PASS: audiomix logic\n");
     return 0;
 }

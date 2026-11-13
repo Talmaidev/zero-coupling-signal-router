@@ -107,7 +107,9 @@ static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
     HWND hwnd = (HWND)zcsr_surface_native_handle(window);
     MSG msg;
     if (!input || !hwnd) return;
-    while (PeekMessageA(&msg, hwnd, 0, 0, PM_REMOVE)) {
+    /* Use NULL hwnd to pump ALL thread messages (not just this window's).
+     * This prevents surface_pump_events from stealing keyboard messages. */
+    while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {
         if (msg.message == WM_CLOSE || msg.message == WM_QUIT) {
             input->close_requested = true;
             zcsr_record_close(window);
@@ -121,9 +123,31 @@ static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
     }
 }
 
-#elif defined(__linux__)
+#elif defined(__ANDROID__)
 #include <time.h>
-#include <X11/Xlib.h>
+uint64_t zcsr_clock_now_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return ((uint64_t)ts.tv_sec * 1000000000ull) + (uint64_t)ts.tv_nsec;
+}
+static void zcsr_input_platform_init(zcsr_input* input, zcsr_surface* window) {
+    (void)input;
+    (void)window;
+}
+static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
+    (void)input;
+    (void)window;
+}
+#elif defined(__linux__) && defined(ZCSR_LINUX_BACKEND_WAYLAND)
+#include <time.h>
+#include <wayland-client.h>
+#include <string.h>
+#include <unistd.h>
+
+/* Internal accessors defined in platform_wayland.c (declared extern here
+ * to avoid cross-module header include — zero-coupling guard). */
+extern void* zcsr_platform_wayland_seat(const zcsr_surface* s);
+extern bool  zcsr_platform_wayland_take_close(zcsr_surface* s);
 
 uint64_t zcsr_clock_now_ns(void) {
     struct timespec ts;
@@ -131,44 +155,111 @@ uint64_t zcsr_clock_now_ns(void) {
     return ((uint64_t)ts.tv_sec * 1000000000ull) + (uint64_t)ts.tv_nsec;
 }
 
-static zcsr_keycode zcsr_map_key(unsigned int keycode) {
-    return (keycode <= 0xffffu) ? (zcsr_keycode)keycode : 0;
+/* evdev keycode -> zcsr_keycode: X11 keycode = evdev + 8, and the X11 backend
+ * uses keycode directly as zcsr_keycode, so match that for Linux consistency. */
+static zcsr_keycode zcsr_map_key(uint32_t evdev_key) {
+    uint32_t x11_keycode = evdev_key + 8u;
+    return (x11_keycode <= 0xffffu) ? (zcsr_keycode)x11_keycode : 0;
 }
+
+/* ---- wl_keyboard listeners ---- */
+static void kb_keymap(void* data, struct wl_keyboard* kb, uint32_t fmt, int32_t fd, uint32_t size) {
+    (void)data; (void)kb; (void)fmt; (void)size;
+    if (fd >= 0) close(fd);
+}
+static void kb_enter(void* data, struct wl_keyboard* kb, uint32_t serial,
+                     struct wl_surface* surf, struct wl_array* keys) {
+    (void)data; (void)kb; (void)serial; (void)surf; (void)keys;
+}
+static void kb_leave(void* data, struct wl_keyboard* kb, uint32_t serial, struct wl_surface* surf) {
+    zcsr_input* input = data;
+    (void)kb; (void)serial; (void)surf;
+    if (input) memset(input->key_down, 0, sizeof(input->key_down));
+}
+static void kb_key(void* data, struct wl_keyboard* kb, uint32_t serial,
+                   uint32_t time, uint32_t key, uint32_t state) {
+    zcsr_input* input = data;
+    (void)kb; (void)serial; (void)time;
+    if (!input) return;
+    zcsr_input_record_key(input, zcsr_map_key(key),
+                          state == WL_KEYBOARD_KEY_STATE_PRESSED ? ZCSR_KEY_DOWN : ZCSR_KEY_UP);
+}
+static void kb_modifiers(void* data, struct wl_keyboard* kb, uint32_t serial,
+                         uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group) {
+    (void)data; (void)kb; (void)serial; (void)depressed; (void)latched; (void)locked; (void)group;
+}
+static void kb_repeat_info(void* data, struct wl_keyboard* kb, int32_t rate, int32_t delay) {
+    (void)data; (void)kb; (void)rate; (void)delay;
+}
+static const struct wl_keyboard_listener kb_listener = {
+    .keymap = kb_keymap, .enter = kb_enter, .leave = kb_leave,
+    .key = kb_key, .modifiers = kb_modifiers, .repeat_info = kb_repeat_info,
+};
+
+static struct wl_keyboard* g_wl_keyboard = NULL;
 
 static void zcsr_input_platform_init(zcsr_input* input, zcsr_surface* window) {
-    Display* display = (Display*)zcsr_surface_native_display(window);
-    Window xwindow = (Window)(uintptr_t)zcsr_surface_native_handle(window);
-    XWindowAttributes attrs;
-    long mask;
-    if (!input || !display || !xwindow || input->pump_initialized) return;
-    if (!XGetWindowAttributes(display, xwindow, &attrs)) return;
-    mask = attrs.your_event_mask | KeyPressMask | KeyReleaseMask | StructureNotifyMask | ExposureMask;
-    XSelectInput(display, xwindow, mask);
-    input->pump_initialized = true;
-}
-
-static Bool zcsr_input_xevent_matches(Display* display, XEvent* event, XPointer arg) {
-    Window xwindow = (Window)(uintptr_t)arg;
-    (void)display;
-    return event && event->xany.window == xwindow &&
-           (event->type == KeyPress || event->type == KeyRelease || event->type == DestroyNotify);
+    struct wl_seat* seat;
+    if (!input || !window || input->pump_initialized) return;
+    seat = (struct wl_seat*)zcsr_platform_wayland_seat(window);
+    if (!seat) return;
+    g_wl_keyboard = wl_seat_get_keyboard(seat);
+    if (g_wl_keyboard) {
+        wl_keyboard_add_listener(g_wl_keyboard, &kb_listener, input);
+        input->pump_initialized = true;
+    }
 }
 
 static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
-    Display* display = (Display*)zcsr_surface_native_display(window);
-    Window xwindow = (Window)(uintptr_t)zcsr_surface_native_handle(window);
-    if (!input || !display || !xwindow) return;
-    for (;;) {
-        XEvent event;
-        if (!XCheckIfEvent(display, &event, zcsr_input_xevent_matches, (XPointer)(uintptr_t)xwindow)) break;
-        if (event.type == KeyPress) {
-            zcsr_input_record_key(input, zcsr_map_key(event.xkey.keycode), ZCSR_KEY_DOWN);
-        } else if (event.type == KeyRelease) {
-            zcsr_input_record_key(input, zcsr_map_key(event.xkey.keycode), ZCSR_KEY_UP);
-        } else if (event.type == DestroyNotify) {
-            input->close_requested = true;
-            zcsr_record_close(window);
-        }
+    /* Wayland events are dispatched by zcsr_surface_pump_events (platform module).
+     * Keyboard events arrive via wl_keyboard listener callbacks above.
+     * Here we only propagate the close flag from xdg_toplevel::close. */
+    if (!input || !window) return;
+    if (zcsr_platform_wayland_take_close(window)) {
+        input->close_requested = true;
+        zcsr_record_close(window);
+    }
+}
+
+#elif defined(__linux__) && defined(ZCSR_LINUX_BACKEND_X11)
+#include <time.h>
+#include <string.h>
+
+/* platform_x11.c 内部访问器（与 Wayland 分支同一零耦合约定：只 extern，
+ * 不引入 modules/platform 的头）。 */
+extern bool zcsr_platform_x11_next_key(zcsr_surface* s, unsigned int* keycode, int* is_down);
+extern bool zcsr_platform_x11_take_close(zcsr_surface* s);
+extern bool zcsr_platform_x11_is_focused(const zcsr_surface* s);
+
+uint64_t zcsr_clock_now_ns(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return ((uint64_t)ts.tv_sec * 1000000000ull) + (uint64_t)ts.tv_nsec;
+}
+
+static void zcsr_input_platform_init(zcsr_input* input, zcsr_surface* window) {
+    (void)input; (void)window;   /* X11 没有需要注册的监听器：事件由平台泵入环 */
+}
+
+static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
+    unsigned int keycode = 0;
+    int down = 0;
+    if (!input || !window) return;
+
+    while (zcsr_platform_x11_next_key(window, &keycode, &down)) {
+        /* X11 keycode 与引擎 Linux 侧约定同域（evdev + 8），直接透传。 */
+        zcsr_input_record_key(input, (zcsr_keycode)keycode,
+                              down ? ZCSR_KEY_DOWN : ZCSR_KEY_UP);
+    }
+
+    /* 失焦时清空按下表，避免 Alt-Tab 之后按键粘住。 */
+    if (!zcsr_platform_x11_is_focused(window)) {
+        memset(input->key_down, 0, sizeof(input->key_down));
+    }
+
+    if (zcsr_platform_x11_take_close(window)) {
+        input->close_requested = true;
+        zcsr_record_close(window);
     }
 }
 
@@ -206,7 +297,7 @@ static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
     }
 }
 
-#else
+#elif !defined(__linux__)
 uint64_t zcsr_clock_now_ns(void) {
     return 0;
 }

@@ -42,4 +42,15 @@ void             zcsr_input_ext_pump(zcsr_input_ext*, zcsr_surface*); /* call on
 zcsr_mouse_state zcsr_input_ext_mouse(const zcsr_input_ext*);
 zcsr_pad_state   zcsr_input_ext_pad(const zcsr_input_ext*, int index);/* index 0..ZCSR_PAD_MAX-1 */
 
+/* ---- Touch (single primary pointer) ---- */
+typedef struct {
+    float x, y;             /* window-local pixels, top-left origin */
+    float dx, dy;           /* accumulated movement since last pump */
+    bool active;            /* primary touch currently active */
+    bool pressed;           /* a down edge occurred since last pump */
+    bool released;          /* an up/cancel edge occurred since last pump */
+} zcsr_touch_state;
+
+zcsr_touch_state zcsr_input_ext_touch(const zcsr_input_ext*);
+
 #endif /* ZCSR_INPUT_EXT_H */
