@@ -121,4 +121,7 @@ bool zcsr_surface_set_cursor_visible(zcsr_surface* s, bool visible) { (void)s; (
 bool zcsr_surface_set_cursor_bitmap(zcsr_surface* s, const unsigned char* rgba, int w, int h,
                                     int hot_x, int hot_y) { (void)s; (void)rgba; (void)w; (void)h; (void)hot_x; (void)hot_y; return false; }
 bool zcsr_surface_reset_cursor(zcsr_surface* s) { (void)s; return false; }
+
+/* Android 没有显示器刷新率可申请。 */
+bool zcsr_surface_set_refresh_hz(zcsr_surface* s, int hz) { (void)s; (void)hz; return false; }
 #endif /* __ANDROID__ */

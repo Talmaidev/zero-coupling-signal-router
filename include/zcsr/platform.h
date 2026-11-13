@@ -103,6 +103,9 @@ bool zcsr_surface_set_drag_region(zcsr_surface* surface, int x, int y, int w, in
  * fullscreen, the window stays fullscreen on the target display and the
  * original restore snapshot is preserved. */
 bool zcsr_surface_move_to_display(zcsr_surface* surface, int display_id);
+/* 申请显示器刷新率（Hz）。仅独占全屏有意义：窗口/无边框模式下返回 false 且不改动。
+ * 返回 true 只表示平台接受了请求，实际频率用 zcsr_display_get().refresh_hz 复核。 */
+bool zcsr_surface_set_refresh_hz(zcsr_surface* surface, int hz);
 
 /* Read the current CLIENT area size in pixels. Either output pointer may be
  * NULL. Invalid surface leaves outputs untouched. */
