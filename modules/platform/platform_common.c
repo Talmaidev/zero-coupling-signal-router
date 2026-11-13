@@ -205,3 +205,11 @@ bool zcsr_surface_set_cursor_bitmap(zcsr_surface* s, const unsigned char* rgba, 
 bool zcsr_surface_reset_cursor(zcsr_surface* s) { (void)s; return false; }
 
 #endif
+
+#ifndef _WIN32
+/* 非 Windows 后端的刷新率切换占位：接口统一，能力如实返回 false。 */
+bool zcsr_surface_set_refresh_hz(zcsr_surface* s, int hz) {
+    (void)s; (void)hz;
+    return false;
+}
+#endif
