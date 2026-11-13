@@ -4,8 +4,11 @@
  * Uses sprite's zcsr_gl_push_quad_uv + zcsr_gl_record_draw with font atlas texture.
  */
 #include "glrender_internal.h"
+#include "zcsr/font.h"
+#include "zcsr/font_atlas.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <math.h>
 
 /* 8x8 bitmap font, ASCII 32-126 (95 glyphs). Each glyph = 8 bytes, 1 bit per pixel.
@@ -115,7 +118,21 @@ void zcsr_gl_draw_text(zcsr_gl_renderer* r, const char* utf8, float x, float y, 
     const unsigned char* p;
     size_t first = 0;
     int started = 0;
-    if (!r || !utf8 || scale <= 0.0f || !r->font_tex) return;
+    if (!r || !utf8 || scale <= 0.0f) return;
+
+    /* Game-supplied TTF path: baseline origin, real per-glyph bearings and advances.
+     * The caller's (x,y) is a top-left cell origin (the bitmap font contract), so lift it
+     * to a baseline by the font ascent before handing over. */
+    if (r->font_atlas) {
+        zcsr_font_metrics_info m;
+        float baseline_y = y;
+        if (zcsr_font_atlas_get_metrics((const zcsr_font_atlas*)r->font_atlas, &m))
+            baseline_y = y + m.ascent * scale;
+        zcsr_font_draw_text((zcsr_font_atlas*)r->font_atlas, utf8, x, baseline_y, scale,
+                            cr, cg, cb, ca);
+        return;
+    }
+    if (!r->font_tex) return;
 
     /* Small-font pixel alignment: when scale < 1.0, glyph geometry and pen
      * positions are fractional (e.g. scale=0.8 -> 6.4px glyphs, 7.2px step).
@@ -163,4 +180,72 @@ void zcsr_gl_draw_text(zcsr_gl_renderer* r, const char* utf8, float x, float y, 
     if (started) {
         zcsr_gl_record_draw(r, r->font_tex, first, r->vertex_count - first);
     }
+}
+
+/* ---- Optional TTF backend ------------------------------------------------------- */
+
+void zcsr_gl_set_font_atlas(zcsr_gl_renderer* r, struct zcsr_font_atlas* atlas) {
+    if (!r) return;
+    r->font_atlas = atlas;
+}
+
+struct zcsr_font_atlas* zcsr_gl_get_font_atlas(zcsr_gl_renderer* r) {
+    return r ? r->font_atlas : NULL;
+}
+
+static unsigned char* gt_align(unsigned char* p, size_t a) {
+    uintptr_t v = (uintptr_t)p;
+    return (unsigned char*)((v + a - 1u) & ~(uintptr_t)(a - 1u));
+}
+
+size_t zcsr_gl_font_buffer_bytes_required(size_t ttf_len) {
+    /* ttf bytes + font instance arena + atlas arena, each aligned to 16. */
+    return ttf_len + 64u
+         + zcsr_font_buffer_bytes_required(ttf_len)
+         + zcsr_font_atlas_buffer_bytes_required() + 64u;
+}
+
+bool zcsr_gl_font_from_file(zcsr_gl_renderer* r, const char* path, int pixel_height,
+                            void* buffer, size_t bytes) {
+    FILE* fp;
+    long size;
+    unsigned char* base = (unsigned char*)buffer;
+    unsigned char* ttf;
+    unsigned char* font_arena;
+    size_t font_arena_bytes;
+    unsigned char* atlas_arena;
+    zcsr_font* font;
+    zcsr_font_atlas* atlas;
+
+    if (!r || !path || !buffer || bytes == 0u || pixel_height <= 0) return false;
+
+    fp = fopen(path, "rb");
+    if (!fp) return false;
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return false; }
+    size = ftell(fp);
+    if (size <= 0) { fclose(fp); return false; }
+    if ((size_t)size + 64u > bytes) { fclose(fp); return false; }
+    rewind(fp);
+
+    ttf = base;
+    if (fread(ttf, 1u, (size_t)size, fp) != (size_t)size) { fclose(fp); return false; }
+    fclose(fp);
+
+    font_arena = gt_align(ttf + (size_t)size, 16u);
+    font_arena_bytes = zcsr_font_buffer_bytes_required((size_t)size);
+    if ((unsigned char*)font_arena + font_arena_bytes > base + bytes) return false;
+
+    font = zcsr_font_load(ttf, (size_t)size, pixel_height, font_arena, font_arena_bytes);
+    if (!font) return false;
+
+    atlas_arena = gt_align(font_arena + font_arena_bytes, 16u);
+    if ((unsigned char*)atlas_arena + zcsr_font_atlas_buffer_bytes_required() > base + bytes)
+        return false;
+
+    atlas = zcsr_font_atlas_create(r, font, atlas_arena,
+                                   zcsr_font_atlas_buffer_bytes_required());
+    if (!atlas) return false;
+
+    r->font_atlas = atlas;
+    return true;
 }

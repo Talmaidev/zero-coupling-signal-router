@@ -2,6 +2,7 @@
  * Uses core's texture table (zcsr_gl_find_tex) and platform hooks (make_current/swap/update_size).
  */
 #include "glrender_internal.h"
+#include "zcsr/font_atlas.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -86,6 +87,9 @@ void zcsr_gl_begin(zcsr_gl_renderer* r) {
     if (r) {
         r->vertex_count = 0;
         r->draw_count = 0;
+        /* TTF atlas tracks the codepoints used per frame so it can rebuild on overflow;
+         * this is the frame boundary it expects. NULL atlas = built-in bitmap font. */
+        if (r->font_atlas) zcsr_font_atlas_begin_frame(r->font_atlas);
     }
 }
 

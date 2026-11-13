@@ -329,3 +329,8 @@ void zcsr_font_draw_text(zcsr_font_atlas* a, const char* utf8,
         prev_cp = cp;
     }
 }
+
+bool zcsr_font_atlas_get_metrics(const zcsr_font_atlas* a, zcsr_font_metrics_info* out) {
+    if (!a || !a->font || !out) return false;
+    return zcsr_font_get_metrics(a->font, out);
+}
