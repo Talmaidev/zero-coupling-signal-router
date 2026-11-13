@@ -5,6 +5,7 @@
  * (zcsr_light2d_begin_geometry has bound the G-buffer). */
 #include "glrender_internal.h"
 #include "zcsr/gl_render_l2d_geo.h"
+#include "zcsr/diagnostics.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -174,7 +175,7 @@ static unsigned int geo_compile(unsigned int type, const char* src) {
         if (len < 0) len = 0;
         if (len >= (GLsizei)sizeof(log)) len = (GLsizei)sizeof(log) - 1;
         log[len] = '\0';
-        fprintf(stderr, "l2d_geo shader compile failed: %s\n", log);
+        ZCSR_LOG_ERROR("glrender", "l2d_geo shader compile failed: %s", log);
         glDeleteShader(shader);
         return 0;
     }
@@ -220,7 +221,7 @@ static bool geo_ensure(zcsr_gl_renderer* r) {
         if (len < 0) len = 0;
         if (len >= (GLsizei)sizeof(log)) len = (GLsizei)sizeof(log) - 1;
         log[len] = '\0';
-        fprintf(stderr, "l2d_geo program link failed: %s\n", log);
+        ZCSR_LOG_ERROR("glrender", "l2d_geo program link failed: %s", log);
         glDeleteProgram(p);
         return false;
     }
@@ -274,7 +275,7 @@ static bool geo_ensure(zcsr_gl_renderer* r) {
         if (len < 0) len = 0;
         if (len >= (GLsizei)sizeof(log)) len = (GLsizei)sizeof(log) - 1;
         log[len] = '\0';
-        fprintf(stderr, "l2d_geo tex program link failed: %s\n", log);
+        ZCSR_LOG_ERROR("glrender", "l2d_geo tex program link failed: %s", log);
         glDeleteProgram(p);
         zcsr_gl_l2d_geo_cleanup(r);
         return false;
@@ -337,7 +338,7 @@ static bool geo_ensure(zcsr_gl_renderer* r) {
         if (len < 0) len = 0;
         if (len >= (GLsizei)sizeof(log)) len = (GLsizei)sizeof(log) - 1;
         log[len] = '\0';
-        fprintf(stderr, "l2d_geo nmap program link failed: %s\n", log);
+        ZCSR_LOG_ERROR("glrender", "l2d_geo nmap program link failed: %s", log);
         glDeleteProgram(p);
         zcsr_gl_l2d_geo_cleanup(r);
         return false;
