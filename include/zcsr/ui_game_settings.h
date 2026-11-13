@@ -184,6 +184,19 @@ bool zcsr_game_settings_get_button_rect(const zcsr_game_settings* s, int button_
  * load 逐行调用对应的 override_*，所以载入后的布局立即生效；缺失文件返回 false。 */
 bool zcsr_game_settings_save_overrides(const zcsr_game_settings* s, const char* path);
 bool zcsr_game_settings_load_overrides(zcsr_game_settings* s, const char* path);
+/* ---- 组件颜色覆盖：颜色属于组件（UIM 的最小单位），不属于编辑器 ----
+ * 传 NULL 恢复主题色。值域 0..1，和渲染层的颜色约定一致。
+ * save/load_overrides 会一起存盘（itemcolor / btncolor 行）。 */
+typedef struct { float r, g, b; } zcsr_game_settings_color;
+
+bool zcsr_game_settings_override_item_color(zcsr_game_settings* s, int tab_index, int item_index,
+                                            const zcsr_game_settings_color* color);
+bool zcsr_game_settings_override_button_color(zcsr_game_settings* s, int button_index,
+                                              const zcsr_game_settings_color* color);
+bool zcsr_game_settings_get_item_color(const zcsr_game_settings* s, int tab_index, int item_index,
+                                       zcsr_game_settings_color* out);   /* 无覆盖时返回主题色 */
+bool zcsr_game_settings_get_button_color(const zcsr_game_settings* s, int button_index,
+                                         zcsr_game_settings_color* out);
 
 #ifdef __cplusplus
 }
