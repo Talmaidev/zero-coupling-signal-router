@@ -28,6 +28,11 @@ typedef enum {
 typedef struct { int x, y, w, h; } zcsr_rect;
 typedef struct { float x, y, w, h; } zcsr_rectf; /* float rectangle, for viewport/rendering */
 
+/* Layout is part of the public contract (viewport math and UI hit-tests pass
+ * these by value across module boundaries). Freeze field count/width. */
+_Static_assert(sizeof(zcsr_rect) == 4 * sizeof(int), "zcsr_rect ABI: four int fields");
+_Static_assert(sizeof(zcsr_rectf) == 4 * sizeof(float), "zcsr_rectf ABI: four float fields");
+
 typedef struct zcsr_surface zcsr_surface; /* opaque native top-level surface */
 
 /* Desktop: create the native surface. Android: create a logical handle and attach the
