@@ -5,6 +5,7 @@
  */
 #include <stdlib.h>
 #include "zcsr/audio_mix.h"
+#include "zcsr/diagnostics.h"
 #include "audiomix_internal.h"
 
 #include <stdatomic.h>
@@ -1697,8 +1698,8 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
             WAVEOUTCAPS caps;
             memset(&caps, 0, sizeof(caps));
             if (waveOutGetDevCaps(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
-                if (wcsstr(caps.szPname, L"FxSound") == NULL &&
-                    wcsstr(caps.szPname, L"Virtual") == NULL) {
+                if (strstr(caps.szPname, "FxSound") == NULL &&
+                    strstr(caps.szPname, "Virtual") == NULL) {
                     chosen_device = i;
                     break;
                 }
@@ -1730,17 +1731,21 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
                         int matched = 0;
                         for (UINT wi = 0; wi < dev_count; ++wi) {
                             WAVEOUTCAPS wc;
+                            WCHAR wname[MAXPNAMELEN];
                             memset(&wc, 0, sizeof(wc));
                             if (waveOutGetDevCaps(wi, &wc, sizeof(wc)) == MMSYSERR_NOERROR &&
-                                (wcsstr(wc.szPname, pv.pwszVal) || wcsstr(pv.pwszVal, wc.szPname))) {
+                                MultiByteToWideChar(CP_ACP, 0, wc.szPname, -1,
+                                                    wname, MAXPNAMELEN) > 0 &&
+                                (wcsstr(wname, pv.pwszVal) || wcsstr(pv.pwszVal, wname))) {
                                 chosen_device = wi;
                                 matched = 1;
-                                printf("[audio] waveout selected endpoint (%u)\n", wi);
+                                ZCSR_LOG_INFO("audiomix", "waveout selected endpoint (%u)", wi);
                                 break;
                             }
                         }
                         if (!matched)
-                            printf("[audio] waveout selected endpoint: no name match, fallback\n");
+                            ZCSR_LOG_INFO("audiomix",
+                                          "waveout selected endpoint: no name match, fallback");
                     }
                     PropVariantClear(&pv);
                     ps->lpVtbl->Release(ps);
@@ -1820,8 +1825,9 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
     hr = b->audio_client->lpVtbl->Start(b->audio_client);
     if (FAILED(hr)) goto fail;
 
-    printf("[audio] backend opened endpoint '%s'\n",
-           (owner && owner->output_device_id[0]) ? owner->output_device_id : "system-default");
+    ZCSR_LOG_INFO("audiomix", "backend opened endpoint '%s'",
+                  (owner && owner->output_device_id[0]) ? owner->output_device_id
+                                                        : "system-default");
     b->opened = true;
     b->timeout_count = 0;
     b->retry_after_tick = 0;

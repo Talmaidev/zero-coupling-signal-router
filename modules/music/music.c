@@ -9,11 +9,20 @@
 #include <limits.h>
 #include <math.h>
 
+/* Third-party single-file decoders: their warnings are not ours to fix; scope
+ * the suppression to these includes only (MSVC /WX would otherwise fail). */
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4244 4245 4456 4457 4701)
+#endif
 #define MINIMP3_FLOAT_OUTPUT
 #include "../../third_party/minimp3.h"
 #define STB_VORBIS_HEADER_ONLY
 #include "../../third_party/stb_vorbis.c"
 #undef STB_VORBIS_HEADER_ONLY
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 #if defined(_WIN32)
 #  include <windows.h>

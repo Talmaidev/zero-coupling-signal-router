@@ -12,6 +12,7 @@
  */
 #include "glrender_internal.h"
 #include "zcsr/gl_render_light2d_ext.h"
+#include "zcsr/diagnostics.h"
 
 /* Glad headers for this project don't expose these 3.3+ enums; define locally. */
 #ifndef GL_SRGB8_ALPHA8
@@ -1293,7 +1294,8 @@ static bool zcsr_l2d_ensure_msaa_target(zcsr_gl_renderer* r, int w, int h) {
     r->l2d_msaa_rb = rb;
     r->l2d_msaa_w = w;
     r->l2d_msaa_h = h;
-    printf("[gl] msaa target %dx%d samples=%d\n", w, h, r->l2d_msaa_samples);
+    ZCSR_LOG_INFO("glrender", "msaa target %dx%d samples=%d",
+                  w, h, r->l2d_msaa_samples);
     return true;
 }
 

@@ -235,6 +235,7 @@ zcsr_file_result_t zcsr_dir_open(zcsr_file_service_t* fs,
 zcsr_file_result_t zcsr_dir_next(zcsr_file_service_t* fs,
                                   zcsr_dir_t* dir,
                                   zcsr_dir_entry_t* out_entry) {
+    (void)fs; /* Directory iteration is backend-global; fs is kept for API symmetry. */
     /* 注意：这是现有 API 的设计缺陷，使用静态缓冲区
      * 连续调用会覆盖上一次的结果，非线程安全
      * 未来应该改 API 让调用者提供缓冲区 */
@@ -245,6 +246,7 @@ zcsr_file_result_t zcsr_dir_next(zcsr_file_service_t* fs,
 
 zcsr_file_result_t zcsr_dir_close(zcsr_file_service_t* fs,
                                    zcsr_dir_t* dir) {
+    (void)fs; /* Backend handle is global; fs is kept for API symmetry. */
     return zcsr_platform_file_ops.dir_close((void*)dir);
 }
 
@@ -327,6 +329,7 @@ zcsr_file_result_t zcsr_file_read(zcsr_file_service_t* fs,
                                    void* buffer,
                                    size_t capacity,
                                    size_t* out_bytes_read) {
+    (void)fs; /* Backend handle is global; fs is kept for API symmetry. */
     return zcsr_platform_file_ops.read((void*)file, buffer, capacity, out_bytes_read);
 }
 
@@ -335,6 +338,7 @@ zcsr_file_result_t zcsr_file_write(zcsr_file_service_t* fs,
                                      const void* data,
                                      size_t size,
                                      size_t* out_bytes_written) {
+    (void)fs; /* Backend handle is global; fs is kept for API symmetry. */
     return zcsr_platform_file_ops.write((void*)file, data, size, out_bytes_written);
 }
 
@@ -343,11 +347,13 @@ zcsr_file_result_t zcsr_file_seek(zcsr_file_service_t* fs,
                                    int64_t offset,
                                    zcsr_file_seek_origin_t origin,
                                    uint64_t* out_position) {
+    (void)fs; /* Backend handle is global; fs is kept for API symmetry. */
     return zcsr_platform_file_ops.seek((void*)file, offset, (int)origin, out_position);
 }
 
 zcsr_file_result_t zcsr_file_close(zcsr_file_service_t* fs,
                                     zcsr_file_t* file) {
+    (void)fs; /* Backend handle is global; fs is kept for API symmetry. */
     return zcsr_platform_file_ops.close((void*)file);
 }
 

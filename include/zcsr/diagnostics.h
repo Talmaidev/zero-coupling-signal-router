@@ -26,25 +26,60 @@ extern "C" {
  * 使用方式：
  *   ZCSR_LOG_INFO("resource", "Loaded %s", path);
  *   ZCSR_LOG_ERROR("ui", "Invalid node id %u", node_id);
+ *
+ * 编译期下限 ZCSR_LOG_COMPILE_LEVEL（0..5，默认 0=全部保留）：
+ *   低于该级别的调用展开为 (void)0，格式串与实参都不求值，
+ *   可从 Release 二进制中彻底剔除。默认 0 不改变现有行为。
+ *
+ * 偏差记录 DEV-001：##__VA_ARGS__ 为 GNU/MSVC 扩展，用于支持零实参调用；
+ *   ISO C11 无 __VA_OPT__。该模式仅允许存在于本头文件，禁止扩散。
  */
 
+#ifndef ZCSR_LOG_COMPILE_LEVEL
+#define ZCSR_LOG_COMPILE_LEVEL 0
+#endif
+
+#if ZCSR_LOG_COMPILE_LEVEL <= 0
 #define ZCSR_LOG_TRACE(module, fmt, ...) \
     zcsr_log_write(ZCSR_LOG_TRACE, module, "[%s:%d] " fmt, __func__, __LINE__, ##__VA_ARGS__)
+#else
+#define ZCSR_LOG_TRACE(module, fmt, ...) ((void)0)
+#endif
 
+#if ZCSR_LOG_COMPILE_LEVEL <= 1
 #define ZCSR_LOG_DEBUG(module, fmt, ...) \
     zcsr_log_write(ZCSR_LOG_DEBUG, module, "[%s:%d] " fmt, __func__, __LINE__, ##__VA_ARGS__)
+#else
+#define ZCSR_LOG_DEBUG(module, fmt, ...) ((void)0)
+#endif
 
+#if ZCSR_LOG_COMPILE_LEVEL <= 2
 #define ZCSR_LOG_INFO(module, fmt, ...) \
     zcsr_log_write(ZCSR_LOG_INFO, module, "[%s:%d] " fmt, __func__, __LINE__, ##__VA_ARGS__)
+#else
+#define ZCSR_LOG_INFO(module, fmt, ...) ((void)0)
+#endif
 
+#if ZCSR_LOG_COMPILE_LEVEL <= 3
 #define ZCSR_LOG_WARN(module, fmt, ...) \
     zcsr_log_write(ZCSR_LOG_WARN, module, "[%s:%d] " fmt, __func__, __LINE__, ##__VA_ARGS__)
+#else
+#define ZCSR_LOG_WARN(module, fmt, ...) ((void)0)
+#endif
 
+#if ZCSR_LOG_COMPILE_LEVEL <= 4
 #define ZCSR_LOG_ERROR(module, fmt, ...) \
     zcsr_log_write(ZCSR_LOG_ERROR, module, "[%s:%d] " fmt, __func__, __LINE__, ##__VA_ARGS__)
+#else
+#define ZCSR_LOG_ERROR(module, fmt, ...) ((void)0)
+#endif
 
+#if ZCSR_LOG_COMPILE_LEVEL <= 5
 #define ZCSR_LOG_FATAL(module, fmt, ...) \
     zcsr_log_write(ZCSR_LOG_FATAL, module, "[%s:%d] " fmt, __func__, __LINE__, ##__VA_ARGS__)
+#else
+#define ZCSR_LOG_FATAL(module, fmt, ...) ((void)0)
+#endif
 
 /* ============================================================
  * Assert：Debug 启用，Release 关闭
