@@ -1,12 +1,15 @@
 #ifndef ZCSR_GL_RENDER_H
 #define ZCSR_GL_RENDER_H
-/* Engine-ext Agent 1 — GPU rendering (OpenGL 3.3 Core). OPTIONAL renderer, beside the existing
+/* Engine-ext Agent 1 — GPU rendering.
+ * Desktop: OpenGL 3.3 Core. Android: OpenGL ES 3.x.
+ * OPTIONAL renderer, beside the existing
  * software/overlay path (which stays unchanged). Implementer: modules/glrender (vendors glad;
  * glad used ONLY inside that module). Includes only shared contracts. No runtime heap: renderer
  * state lives in a caller buffer; GPU memory is the driver's. */
-#include "platform.h"  /* zcsr_surface */
-#include "sprite.h"    /* zcsr_rectf */
-#include "color.h"     /* zcsr_color_mode */
+#include "platform.h"       /* zcsr_surface */
+#include "sprite.h"         /* zcsr_rectf */
+#include "color.h"          /* zcsr_color_mode */
+#include "texture_atlas.h"  /* zcsr_atlas_region */
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -14,11 +17,20 @@
 typedef struct zcsr_gl_renderer zcsr_gl_renderer; /* opaque; instance-owned */
 typedef uint32_t zcsr_gl_texture;                 /* GPU texture handle; 0 = invalid */
 
-/* Create a GL 3.3 Core context on the surface (Win32 wgl / X11 GLX / Cocoa NSOpenGL|CGL) and the
- * renderer state inside the caller buffer. NULL on failure / buffer too small. */
+/* Create a GL 3.3 Core context on the surface (Win32 wgl / X11 GLX / Cocoa NSOpenGL) and the
+ * renderer state inside the caller buffer. NULL on failure / buffer too small.
+ *
+ * The renderer is large: a fixed vertex batch sized for the 10k-sprite cap dominates it (~2.3 MiB),
+ * so give the buffer a few MiB (the bundled tests/benches use 8 MiB). The layout is opaque and is
+ * never heap-allocated; an oversized static/arena buffer is the intended usage. */
 zcsr_gl_renderer* zcsr_gl_create(zcsr_surface* surface, void* buffer, size_t bytes);
 void              zcsr_gl_destroy(zcsr_gl_renderer*);
 void              zcsr_gl_set_vsync(zcsr_gl_renderer*, bool on);
+/* Swap front/back buffers (present). Call after draw_instances when targeting the window. */
+void              zcsr_gl_present(zcsr_gl_renderer*);
+/* Clear the window back buffer with a solid RGBA color.
+ * Selects the window target; call present() afterwards to display it. */
+void              zcsr_gl_clear(zcsr_gl_renderer*, float r, float g, float b, float a);
 
 /* Upload 8-bit RGBA pixels to a GPU texture. `linear` = linear filter (else nearest). */
 zcsr_gl_texture   zcsr_gl_texture_create(zcsr_gl_renderer*, const uint8_t* rgba, int w, int h);
@@ -45,17 +57,204 @@ typedef struct {
 
 /* Batched draw. Target throughput: 200..10000 sprites within frame budget.
  * begin() clears the batch; submit() appends one; flush() draws all in one pass.
+ * flush() does NOT swap buffers — call present() afterwards to display.
  * submit_batch() is the signal-friendly entry (render_submit_batch maps here). */
 void zcsr_gl_begin(zcsr_gl_renderer*);
 void zcsr_gl_submit(zcsr_gl_renderer*, const zcsr_gl_sprite*);
 void zcsr_gl_flush(zcsr_gl_renderer*);
 void zcsr_gl_submit_batch(zcsr_gl_renderer*, const zcsr_gl_sprite* sprites, size_t count);
 
+/* Scissor (clip rectangle), UI convention: top-left origin, exclusive.
+ * w<=0 or h<=0 disables the test. Coordinates are clamped to the current
+ * render target; y is flipped internally because GL's origin is bottom-left.
+ * Pair every "on" with zcsr_gl_scissor_off — leaving it enabled clips later draws. */
+void zcsr_gl_scissor(zcsr_gl_renderer*, int x, int y, int w, int h);
+void zcsr_gl_scissor_off(zcsr_gl_renderer*);
+
 /* Offscreen render-to-texture: set the draw target (0 = back buffer / window). */
 void zcsr_gl_set_target(zcsr_gl_renderer*, zcsr_gl_texture target_or_zero);
 
-/* Built-in bitmap-font text (scores / UI). Top-left origin, color 0..1. No external font loading. */
+/* Built-in bitmap-font text (scores / UI). Top-left origin, color 0..1.
+ * When a TTF atlas is bound (see below), this routes through it instead of the
+ * built-in 8x8 bitmap font and per-glyph bearing/advance come from the TTF. */
 void zcsr_gl_draw_text(zcsr_gl_renderer*, const char* utf8, float x, float y, float scale,
                        float r, float g, float b, float a);
+
+/* ---- Game-supplied TTF text -------------------------------------------------------------
+ * SDL_ttf-shaped contract: the game owns the TTF and the buffers, the engine only
+ * rasterizes. Nothing in modules/ui, modules/app_shell or the settings page needs to
+ * change for a game to swap fonts — bind the atlas, every zcsr_gl_draw_text call uses it.
+ *
+ *   zcsr_font*          f   = zcsr_font_load(ttf_bytes, len, pixel_height, buf1, n1);
+ *   zcsr_font_atlas*    a   = zcsr_font_atlas_create(r, f, buf2, n2);
+ *   zcsr_gl_set_font_atlas(r, a);
+ *
+ * Pass NULL to unbind and fall back to the built-in bitmap font. Scale in draw_text
+ * multiplies the loaded pixel_height (1.0 = native raster size).
+ * zcsr_font and zcsr_font_atlas must outlive the renderer binding. */
+struct zcsr_font_atlas;
+void zcsr_gl_set_font_atlas(zcsr_gl_renderer*, struct zcsr_font_atlas* atlas);
+struct zcsr_font_atlas* zcsr_gl_get_font_atlas(zcsr_gl_renderer*);
+
+/* Convenience: read a TTF/OTF file and bind it in one call. `buffer` holds the TTF
+ * bytes, the zcsr_font instance and the atlas; size it with
+ * zcsr_gl_font_buffer_bytes_required(file_bytes). Returns false on any failure and
+ * leaves the previous binding untouched. */
+size_t zcsr_gl_font_buffer_bytes_required(size_t ttf_len);
+bool zcsr_gl_font_from_file(zcsr_gl_renderer*, const char* path, int pixel_height,
+                            void* buffer, size_t bytes);
+
+/* Bind the default UI font with zero configuration: ZCSR_FONT_TTF if set, else the
+ * first existing system UI font (Win: segoeui/arial, Linux: DejaVuSans/Liberation).
+ * Returns false when nothing is found — callers keep the built-in 8x8 bitmap, which
+ * stays a fallback and never the default. */
+bool zcsr_gl_font_default(zcsr_gl_renderer*, int pixel_height, void* buffer, size_t bytes);
+
+/* Default GL sampling for textures created from now on. A "Texture Quality" option can
+ * map to this and actually change filtering instead of only storing a number. */
+void zcsr_gl_set_texture_filter_default(zcsr_gl_renderer*, bool linear);
+bool zcsr_gl_get_texture_filter_default(const zcsr_gl_renderer*);
+/* 纹理质量预设：0=最近邻（最省，无 mip）；1=双线性；2=双线性+mipmap（三线性）。
+ * 只影响此后创建的纹理；已有纹理保留创建时的采样方式。 */
+bool zcsr_gl_set_texture_quality(zcsr_gl_renderer*, int level);
+int  zcsr_gl_get_texture_quality(const zcsr_gl_renderer*);
+
+/* ---- Atlas sprites ---------------------------------------------------------------------------
+ * A sprite that samples a sub-rectangle of a shared atlas texture. Many atlas sprites with the
+ * same `atlas` texture differ only in `region` UV, so they merge into one draw call even though
+ * they are logically distinct images. This is the post-atlas counterpart of zcsr_gl_sprite. */
+typedef struct {
+    zcsr_gl_texture   atlas;  /* the packed atlas texture (shared by many sprites) */
+    zcsr_atlas_region region; /* UV sub-rectangle of this sprite's image */
+    zcsr_rectf        dst;
+    float             rotation;
+    float r, g, b, a;
+    zcsr_color_mode   mode;
+    float             amount;
+} zcsr_gl_atlas_sprite;
+
+/* Batched draw for atlas sprites. Same begin/flush semantics as submit_batch; all sprites that
+ * share one atlas texture are coalesced into a single glDrawArrays. */
+void zcsr_gl_submit_atlas_batch(zcsr_gl_renderer*, const zcsr_gl_atlas_sprite* sprites, size_t count);
+
+/* ---- Instanced rendering ----------------------------------------------------------------------
+ * One draw call (glDrawElementsInstanced) expands a single unit quad into N instances. Only the
+ * per-instance data is uploaded (60 bytes each), instead of 6 full vertices per sprite (216 bytes),
+ * so both CPU vertex setup and GPU transfer shrink. The rotation/quad expansion moves into the
+ * vertex shader. Best for large counts of same-texture sprites. */
+typedef struct {
+    float cx, cy;          /* center position (pixels) */
+    float w, h;            /* size (pixels) */
+    float u0, v0, u1, v1;  /* atlas UV sub-rectangle (use 0,0,1,1 for a full texture) */
+    float r, g, b, a;      /* modulation color 0..1 */
+    float rotation;        /* radians, about the center */
+    float amount;          /* blend strength for MIX/ADD */
+    float mode;            /* zcsr_color_mode as float */
+    uint32_t tex;          /* CPU-only: texture handle, used for sorting into runs */
+    float z;               /* CPU-only: depth/layer; larger = farther, drawn first (painter's) */
+    /* 约束：z 值必须为非 NaN 的有限浮点数。若传入 NaN，排序行为未定义。 */
+} zcsr_gl_instance;        /* 15 float attrs + uint32 + float = 68 bytes; tex/z are CPU-only */
+
+/* Draw `count` instances sharing one bound texture, in one instanced draw call. Instances are
+ * drawn as-is (no sorting). For a batch spanning multiple textures, sort it first (see
+ * zcsr_sort_instances) then call this once per texture run, or use submit_instance_batch. */
+void zcsr_gl_draw_instances(zcsr_gl_renderer*, zcsr_gl_texture texture,
+                            const zcsr_gl_instance* instances, size_t count);
+
+/* Sort a writable instance array into texture runs (and blend mode within a texture) so that
+ * drawing needs one state setup per run. Pure CPU, no heap: `temp` is caller scratch of at least
+ * `count * sizeof(zcsr_gl_instance)` bytes. Returns the number of distinct texture runs. After
+ * sorting, iterate runs with zcsr_instance_run to get each run's texture/start/count.
+ *
+ * CONTRACT (N2): this function REORDERS the input array in place. Instances are grouped by
+ * texture; the relative order of instances with the same texture is preserved (stable), but the
+ * relative order of instances with DIFFERENT textures is not. Callers that rely on the original
+ * input order for overlapping instances (painter's order) must use zcsr_sort_state instead of
+ * this function, or be aware that overlapping instances across texture boundaries may be drawn
+ * in a different order than submitted. */
+size_t zcsr_sort_instances(zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes);
+
+/* Describe one texture run produced by zcsr_sort_instances. `run_index` in 0..return-1.
+ * Writes the texture and the [start,start+len) slice of the sorted array. */
+void zcsr_instance_run(const zcsr_gl_instance* sorted, size_t count, size_t run_index,
+                       zcsr_gl_texture* out_texture, size_t* out_start, size_t* out_len);
+
+/* Convenience: sort and draw all instances (one instanced call per texture run). `temp` is
+ * caller scratch (>= count * sizeof instance).
+ * CONTRACT (N2): sorts the input array in place via zcsr_sort_instances, then draws runs in
+ * texture order. The relative order of instances across texture boundaries is not preserved;
+ * callers with overlap dependencies must sort first with zcsr_sort_state and draw manually. */
+void zcsr_gl_submit_instance_batch(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count,
+                                   void* temp, size_t temp_bytes);
+
+/* ---- full state sort (opaque vs translucent) ----
+ * An instance is treated as translucent when its alpha < 1.0 or its color mode is MIX/ADD.
+ * NOTE (N1): translucency is classified from INSTANCE FIELDS ONLY. Texture pixel alpha is not
+ * inspected (it lives on the GPU and is not readable here). If a texture contains transparent
+ * pixels, instances using it MUST be marked translucent by the caller (set alpha < 1.0 or use
+ * a MIX/ADD mode), otherwise they sort into the opaque group and may blend incorrectly when
+ * overlapping translucent instances. This is a documented caller contract, not a bug to be
+ * silently papered over.
+ * Partitions the array into opaque instances first (sorted by texture, for batching) then
+ * translucent instances sorted back-to-front by z (larger z = farther, painter's algorithm).
+ * Returns the number of opaque instances. After sorting:
+ *   - draw [0, opaque) via texture runs (zcsr_instance_run / zcsr_gl_draw_instances),
+ *   - draw [opaque, count) in array order, grouping only adjacent same-texture instances.
+ * `temp` is caller scratch (>= count * sizeof instance). */
+size_t zcsr_sort_state(zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes,
+                       size_t* out_opaque);
+
+/* Convenience: full state sort + draw. Opaque instances are drawn in texture runs;
+ * translucent instances are drawn back-to-front, flushing on texture changes. Presents at the
+ * end when targeting the window. `temp` is caller scratch (>= count * sizeof instance). */
+void zcsr_gl_submit_state(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count,
+                          void* temp, size_t temp_bytes);
+
+/* ---- Basic geometry (additive, white-texture quads) ----
+ * Enqueue into the current sprite batch; caller still owns flush/present semantics. */
+
+/* Draw a filled axis-aligned rectangle in screen pixels. Uses the internal white texture. */
+void zcsr_gl_fill_rect(zcsr_gl_renderer*,
+                       float x, float y, float w, float h,
+                       float r, float g, float b, float a);
+
+/* Draw a line segment of given pixel width. Internally a rotated quad. */
+void zcsr_gl_draw_line(zcsr_gl_renderer*,
+                       float x1, float y1, float x2, float y2,
+                       float width,
+                       float r, float g, float b, float a);
+
+/* Draw a rectangle outline of given thickness. Internally four filled rects. */
+void zcsr_gl_draw_rect(zcsr_gl_renderer*,
+                       float x, float y, float w, float h,
+                       float thickness,
+                       float r, float g, float b, float a);
+
+/* ---- Texture upload / atlas sprites / circle (additive) ---- */
+
+/* Upload a sub-region of a texture from RGBA data.
+ * src_stride_bytes is the byte stride of each source row (>= w*4).
+ * If src_stride_bytes % 4 != 0, implementation falls back to per-row upload.
+ * Restores GL_UNPACK_ROW_LENGTH to 0 after upload. */
+bool zcsr_gl_texture_upload_region(zcsr_gl_renderer*,
+                                    zcsr_gl_texture,
+                                    int x, int y, int w, int h,
+                                    int src_stride_bytes,
+                                    const uint8_t* rgba);
+
+/* Enqueue a sprite from an atlas texture with explicit UV coordinates.
+ * Enqueue-only; actual draw at flush. MULTIPLY color mode. */
+void zcsr_gl_queue_atlas_sprite(zcsr_gl_renderer*,
+                                 zcsr_gl_texture atlas,
+                                 float dx, float dy, float dw, float dh,
+                                 float u0, float v0, float u1, float v1,
+                                 float r, float g, float b, float a);
+
+/* Enqueue a filled circle. segments clamped to [32, 256].
+ * Enqueue-only; uses white texture, MULTIPLY mode.
+ * Rejects non-finite cx/cy/radius/color. */
+void zcsr_gl_fill_circle(zcsr_gl_renderer*,
+                          float cx, float cy, float radius, int segments,
+                          float r, float g, float b, float a);
 
 #endif /* ZCSR_GL_RENDER_H */

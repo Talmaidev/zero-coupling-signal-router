@@ -1,62 +1,117 @@
-# Architecture
+# ZCSR Architecture
 
-Language: **C11/C17**. No heap, no STL (N/A in C), no external dependencies.
+## Zero-Heap Policy
 
-## Principle: contracts in, implementations out
-All coupling lives in `include/zcsr/` (pure interface headers). A module:
-- includes **only** `zcsr/*` contract headers,
-- implements the function prototypes declared in its own contract header,
-- never includes another module's source.
+**Definition:** zcsr's own code does not call `malloc`, `free`, `calloc`, or `realloc`.
 
-Contracts use **opaque handles** (`typedef struct zcsr_foo zcsr_foo;`) + C prototypes, so callers
-hold a pointer and call functions without seeing the layout. Integration (`integration/`) is the
-only place that references every module — through these prototypes, so swapping or stubbing a
-module changes nothing elsewhere.
+**Scope:** This constraint applies to all code under `modules/` and `include/` that is part of the zcsr project.
 
-## Dependency phases (why not all 6 in parallel from minute 1)
+**Exclusions:** Allocations made internally by system libraries are NOT counted against the zero-heap constraint:
+- Wayland client library (`libwayland-client`)
+- PipeWire (`libpipewire-0.3`, `libspa-0.2`)
+- EGL / OpenGL (libEGL, libOpenGL, GLAD loader)
+- Operating system APIs (Win32, Android NDK, Cocoa)
+
+**Implementation:** Fixed-size pools are used for all zcsr-managed objects:
+- `zcsr_surface`: pool of 4 (`ZCSR_SURFACE_POOL`)
+- `zcsr_overlay`: pool of 4 (`ZCSR_OVERLAY_POOL`)
+- Other modules use static buffers or caller-provided memory
+
+## Zero-Coupling Policy
+
+**Definition:** Module source files may only include shared contract headers from `include/zcsr/`. They must not include headers from other modules (no `../other_module/` or `modules/other/` includes).
+
+**Enforcement:** `tools/check_no_cross_includes.sh` verifies this at build time.
+
+**Exception:** Same-directory internal headers (e.g., `platform_internal.h`, `audiomix_internal.h`) are allowed and never leave their module.
+
+## Platform Backends
+
+| Platform | Window | Rendering | Audio | Input |
+|----------|--------|-----------|-------|-------|
+| Windows | Win32 | WGL + OpenGL | WASAPI | Win32 message pump |
+| Linux | Wayland + xdg-shell | EGL + OpenGL | PipeWire | Wayland (wl_keyboard, wl_pointer) |
+| Android | ANativeWindow | EGL + OpenGL | AAudio | AInputEvent |
+| macOS | Cocoa | NSOpenGL | AudioUnit | Cocoa events |
+
+### Linux Backend Split (post-v1)
+
+`modules/platform/` is split per-backend:
+- `platform_common.c` — shared pool, DPI, focus callbacks, display helpers
+- `platform_win32.c` — Windows backend
+- `platform_wayland.c` — Wayland backend
+- `platform_android.c` — Android backend
+- `platform_cocoa.m` — macOS backend
+- `platform_internal.h` — shared struct definitions and internal interfaces
+
+Each backend file contains only its platform's code; no cross-platform `#if` blocks.
+
+## Audio Backend
+
+`modules/audiomix/`:
+- `audiomix.c` — core mixer (channel mixing, format conversion)
+- `audiomix_pipewire.c` — PipeWire output backend (Linux)
+- `audiomix_internal.h` — shared backend struct and interface
+
+The PipeWire backend uses a SPSC ring buffer between the mixer thread and the realtime process callback, with int32 accumulation and clamping to avoid overflow.
+
+## Input Backend
+
+`modules/input/` — keyboard input (zcsr_input)
+`modules/inputext/` — mouse + gamepad input (zcsr_input_ext)
+
+Linux uses Wayland `wl_keyboard` and `wl_pointer` with evdev keycode mapping (zcsr_keycode = evdev + 8, matching X11 convention).
+
+## Thread Model
+
 ```
-Phase 0  (Integration/arch)  contracts + build skeleton                [this commit]
-Phase 1  (parallel)          Agent1 core · Agent2 signal · Agent5 platform
-Phase 2                      Agent3 hsm (needs core+signal) · Agent4 overlay (needs platform)
-Phase 3  (Integration)       wire demo · benchmark · validate · review
+zcsr thread model:
+  Owned threads (created by zcsr):
+    - Main thread (game loop)           x1
+    - Dedicated audio worker thread      x1 per mixer
+    - Dedicated decode worker thread     x1 per zcsr_music
+    - PipeWire control thread             x1 per mixer (pipewire backend only)
+  External threads (created by system libs, NOT managed by zcsr):
+    - PipeWire data-loop RT thread(s)    (libpipewire internal)
+    - WASAPI audio thread                 (OS internal)
+    - AAudio callback thread              (OS internal)
+  Thread pool: none.
 ```
-Phase 1 modules only depend on contracts, so they are genuinely independent once Phase 0 is frozen.
 
-## Contract notes
-### Value (`value.h`)
-Tagged union of `bool`/`int64`/`const char*` only. Strings are non-owning pointers into
-caller/arena storage — `zcsr_value` never allocates or frees.
+**Communication between threads:**
+- SPSC lock-free ring (audio decode → audio worker / RT thread)
+- Atomic flags (state, pause, volume)
+- No cross-thread signal dispatch (signal router is single-threaded)
 
-### Core (`arena.h`, `state_buffer.h`) — Agent 1
-- `zcsr_arena`: linear/stack allocator placed inside a caller buffer; no `malloc`.
-- `zcsr_state`: fixed-capacity key→value store. Reads take `const zcsr_state*`; `zcsr_state_set`
-  returns `false` on capacity overflow (never grows). Keep total footprint < 256KB.
+**Thread-safety contracts:**
+- `zcsr_surface_acquire/release`: main thread only, not thread-safe
+- `zcsr_mixer`: audio worker thread owned by audiomix
+- `zcsr_music`: decode thread owned by zcsr_music
+- `on_process` callback (PipeWire): RT-safe only (no malloc, no blocking lock, no syscall)
 
-### Signal/Slot (`signal.h`) — Agent 2
-- Slot = `bool (*)(const char*)`; signal payload is a `const char*`.
-- C has no templates, so "zero runtime overhead" = connections live in a `static const zcsr_conn[]`
-  table built at compile time (ideally via an X-macro `ZCSR_ROUTER`), with no dynamic registration
-  or heap. `zcsr_emit()` is a fixed table walk; type-safety comes from the fixed `zcsr_slot_fn`
-  signature. (A working baseline `zcsr_emit` ships in Phase 0; Agent 2 adds the X-macro.)
+### Surface Pool Thread Contract
 
-### HSM (`hsm.h`) — Agent 3
-- Instance-owned (no global mutable state). `zcsr_hsm_dispatch(signal, payload)` drives transitions.
-- On transition, persist `zcsr_hsm_current()` into the state buffer (e.g. key `hsm.state`).
+`zcsr_surfaces[4]` in `platform_common.c` is a static fixed pool owned exclusively by the engine main thread. `zcsr_surface_acquire()` and `zcsr_surface_release()` must only be called from the main thread. The current implementation provides no internal lock and does not claim thread safety.
 
-### Platform (`platform.h`) — Agent 5
-- `ZCSR_PLATFORM` selected at compile time via `_WIN32` / `__APPLE__` / `__linux__`.
-- `zcsr_surface`: borderless, transparent, always-on-top top-level window. Backends:
-  Win32 (layered+topmost), X11 (override-redirect + `_NET_WM_STATE_ABOVE` + ARGB visual),
-  Cocoa (borderless `NSWindow`, status-window level). No GL/DX/Vulkan.
+Surface creation, destruction, and lifecycle-related operations must follow the platform API's calling-thread contract. Callers must not invoke acquire/release from worker threads, audio threads, system callback threads, or any other thread, unless a future version explicitly extends and verifies the relevant threading contract.
 
-### Overlay (`overlay.h`) — Agent 4
-- Renders only text + one bitmap + ≤3 buttons via GDI/X11/Cocoa. Target < 1ms/frame.
-- `zcsr_overlay_on_pointer`: hover → show item info; click → emit the button's `click_signal`,
-  return bool.
+If multi-threaded surface creation or destruction is needed in the future, the fixed pool's concurrency ownership and lifecycle management must first be redesigned, then mutex synchronization added for slot acquire/release and related state transitions. Pool capacity, cross-thread release, init-failure cleanup, and concurrent access during destruction must also be re-evaluated. Adding atomic operations to the `in_use` flag alone does not constitute a multi-thread-safe refactor.
 
-## Validation (Agent 6)
-- `zcsr_demo`: wiring + spec demo (hover info; click returns bool).
-- `zcsr_bench`: 1000 renders → assert `<1ms/frame` and `>=1000 refresh/s` (`<0.1 FPS impact`).
-- `check_coupling`: static guard against cross-module includes.
-- Cross-platform reality: only **Linux/X11** is verifiable on the build host; Windows/macOS
-  need CI runners or follow-up validation (flagged honestly, not assumed).
+The fixed pool capacity is currently 4. On exhaustion, acquire must fail explicitly; it must not grow via heap allocation. Any change to the threading contract or pool capacity must update the API documentation and add corresponding concurrency and capacity tests.
+
+### Zero-Heap and Threading Are Orthogonal
+
+- **Zero-heap**: memory allocation strategy. zcsr source code never calls `malloc`/`calloc`/`realloc`/`free`. All state lives in caller-provided buffers or fixed module-level pools.
+- **Threading**: execution model. zcsr uses dedicated worker threads for async I/O (audio, decode) plus a single-threaded game loop. No thread pool.
+
+Fixed memory buffers are used by both main thread and worker threads. Being "fixed memory" does **not** mean "single-threaded", and being "multi-threaded" does **not** require heap allocation.
+
+### Zero-Heap Exception Boundary
+
+zcsr's own source code must not directly call `malloc`/`calloc`/`realloc`/`free`, nor indirectly execute such allocation through custom wrapper functions. Exceptions are limited to:
+- Allocations performed internally by system or third-party libraries in their API implementations
+- Native resources created and managed by OS APIs
+
+Callers should use the creation, destruction, and lifecycle management interfaces provided by the respective API. This exception is not expanded by code location (platform, backend, integration, or system-library adaptation layer). Private state structs, ring buffers, scratch areas, and other zcsr-owned data stores created to adapt system libraries must still use caller-provided buffers, module-level fixed storage, or pre-declared-capacity static pools — not heap allocation. Passing a zcsr-allocated pointer to a system library does not change the allocation's ownership. Using objects created by system-library APIs or buffers managed by system libraries is not considered direct zcsr heap allocation.
+
+Code review and CI must check for direct allocation calls and indirect allocation wrappers in zcsr's own source code; they must not exempt based on file path, module name, or "system adaptation layer" labels.
