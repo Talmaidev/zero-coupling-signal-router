@@ -9,6 +9,24 @@
 #include <stdint.h>
 #include <string.h>
 
+#define ZCSR_MOUSE_BUTTON_MASK ((uint8_t)(ZCSR_MOUSE_LEFT | ZCSR_MOUSE_RIGHT | ZCSR_MOUSE_MIDDLE))
+
+void zcsr_mouse_state_update_edges(zcsr_mouse_state* state, uint8_t previous_buttons) {
+    uint8_t current;
+    if (!state) return;
+    current = (uint8_t)(state->buttons & ZCSR_MOUSE_BUTTON_MASK);
+    previous_buttons = (uint8_t)(previous_buttons & ZCSR_MOUSE_BUTTON_MASK);
+    state->pressed = (uint8_t)(current & (uint8_t)~previous_buttons);
+    state->released = (uint8_t)(previous_buttons & (uint8_t)~current);
+}
+
+void zcsr_mouse_state_merge_event_edges(zcsr_mouse_state* state,
+                                        uint8_t pressed, uint8_t released) {
+    if (!state) return;
+    state->pressed = (uint8_t)((state->pressed | pressed) & ZCSR_MOUSE_BUTTON_MASK);
+    state->released = (uint8_t)((state->released | released) & ZCSR_MOUSE_BUTTON_MASK);
+}
+
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -374,18 +392,21 @@ static uint8_t zcsr_mouse_buttons(void) {
     uint8_t buttons = 0;
     SHORT state;
 
+    /* 0x8000 = currently held, 0x0001 = pressed since the previous query. A
+     * click can complete between two pumps, so honour both bits: otherwise a
+     * fast right-click never reaches a menu that only opens on the press edge. */
     state = GetAsyncKeyState(VK_LBUTTON);
-    if ((state & 0x8000) != 0) {
+    if ((state & 0x8001) != 0) {
         buttons = (uint8_t)(buttons | (uint8_t)ZCSR_MOUSE_LEFT);
     }
 
     state = GetAsyncKeyState(VK_RBUTTON);
-    if ((state & 0x8000) != 0) {
+    if ((state & 0x8001) != 0) {
         buttons = (uint8_t)(buttons | (uint8_t)ZCSR_MOUSE_RIGHT);
     }
 
     state = GetAsyncKeyState(VK_MBUTTON);
-    if ((state & 0x8000) != 0) {
+    if ((state & 0x8001) != 0) {
         buttons = (uint8_t)(buttons | (uint8_t)ZCSR_MOUSE_MIDDLE);
     }
 
@@ -730,6 +751,20 @@ void zcsr_input_ext_pump(
         in->mouse.buttons = 0;
     }
 
+    /* One-frame edges are derived in the common wrapper so Windows, X11 and
+     * Wayland all expose the same pressed/released contract. Windows also
+     * queues event-driven bytes: a click whose down+up both arrive between two
+     * pumps leaves buttons=0, so the derived edge would be lost. Merge the
+     * queued event edges after derivation and clear them for the next pump. */
+    zcsr_mouse_state_update_edges(&in->mouse, in->mouse_prev_buttons);
+#if defined(_WIN32)
+    zcsr_mouse_state_merge_event_edges(&in->mouse, in->mouse_btn_pressed,
+                                       in->mouse_btn_released);
+    in->mouse_btn_pressed = 0;
+    in->mouse_btn_released = 0;
+#endif
+    in->mouse_prev_buttons = in->mouse.buttons;
+
     zcsr_pump_gamepads(in);
 #if defined(__ANDROID__)
     in->touch = in->touch_pending;
@@ -741,7 +776,7 @@ void zcsr_input_ext_pump(
 }
 
 zcsr_mouse_state zcsr_input_ext_mouse(const zcsr_input_ext* in) {
-    return in ? in->mouse : (zcsr_mouse_state){ 0, 0, 0, 0, 0, 0 };
+    return in ? in->mouse : (zcsr_mouse_state){ 0 };
 }
 
 zcsr_pad_state zcsr_input_ext_pad(const zcsr_input_ext* in, int index) {
