@@ -157,8 +157,10 @@ typedef struct {
     /* 约束：z 值必须为非 NaN 的有限浮点数。若传入 NaN，排序行为未定义。 */
 } zcsr_gl_instance;        /* 15 float attrs + uint32 + float + bool = 72 bytes; tex/z/has_alpha are CPU-only */
 
-/* Draw `count` instances sharing one bound texture, in one instanced draw call. Instances are
- * drawn as-is (no sorting). For a batch spanning multiple textures, sort it first (see
+/* Draw `count` instances sharing one bound texture. Instances are drawn in
+ * submission order (no sorting); the implementation splits requests larger than
+ * its internal instance cap into consecutive batches, so no instance is dropped.
+ * For a batch spanning multiple textures, sort it first (see
  * zcsr_sort_instances) then call this once per texture run, or use submit_instance_batch. */
 void zcsr_gl_draw_instances(zcsr_gl_renderer*, zcsr_gl_texture texture,
                             const zcsr_gl_instance* instances, size_t count);

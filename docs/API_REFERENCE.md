@@ -211,7 +211,7 @@ Engine-ext Agent 1 — GPU rendering (OpenGL 3.3 Core). OPTIONAL renderer, besid
 
 | Function | Notes |
 |---|---|
-| `void zcsr_gl_draw_instances(zcsr_gl_renderer*, zcsr_gl_texture texture, const zcsr_gl_instance* instances, size_t count)` | single glDrawElementsInstanced call; count clamped to ZCSR_GL_MAX_INSTANCES |
+| `void zcsr_gl_draw_instances(zcsr_gl_renderer*, zcsr_gl_texture texture, const zcsr_gl_instance* instances, size_t count)` | draws all instances; requests above ZCSR_GL_MAX_INSTANCES are split into consecutive instanced batches |
 | `size_t zcsr_sort_instances(zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes)` | LSD radix by tex; temp must be >= count * sizeof(zcsr_gl_instance) |
 | `void zcsr_instance_run(const zcsr_gl_instance* sorted, size_t count, size_t run_index, zcsr_gl_texture* out_texture, size_t* out_start, size_t* out_len)` |  |
 | `void zcsr_gl_submit_instance_batch(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes)` | sort + draw in texture runs |

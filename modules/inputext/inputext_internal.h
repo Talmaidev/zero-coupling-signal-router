@@ -12,6 +12,7 @@
 
 struct zcsr_input_ext {
     zcsr_mouse_state mouse;
+    uint8_t mouse_prev_buttons;  /* held mask from the previous pump, for edge derivation */
     zcsr_pad_state pads[ZCSR_PAD_MAX];
     zcsr_surface* surface;
     bool initialized;

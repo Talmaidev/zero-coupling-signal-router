@@ -3221,9 +3221,22 @@ bool zcsr_mix_register_wav(zcsr_mixer* m, const char* id, const char* wav_path) 
 #if defined(_WIN32)
 /* 枚举当前活动的渲染端点。不做设备切换，只给 UI 一个真实列表。 */
 bool zcsr_mix_set_output_device(zcsr_mixer* m, const char* endpoint_id) {
+    zcsr_mix_device_info devices[16];
+    int count;
+    int i;
+    bool found = false;
     if (!m) return false;
     if (!endpoint_id) endpoint_id = "";
     if (strlen(endpoint_id) >= sizeof(m->output_device_id)) return false;
+    if (endpoint_id[0] == '\0') {
+        found = true;  /* empty = system default */
+    } else {
+        count = zcsr_mix_list_output_devices(devices, (int)(sizeof(devices) / sizeof(devices[0])));
+        for (i = 0; i < count; ++i) {
+            if (strcmp(devices[i].id, endpoint_id) == 0) { found = true; break; }
+        }
+    }
+    if (!found) return false;  /* unknown id: keep the current endpoint */
     snprintf(m->output_device_id, sizeof(m->output_device_id), "%s", endpoint_id);
     /* 请求线程只写字符串 + pending 标志；关流/重开由 worker 做。 */
     zcsr_mix_device_set_pending(m, ZCSR_MIX_DEVICE_PENDING_CHANGED);
