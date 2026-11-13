@@ -92,6 +92,12 @@ struct zcsr_game_settings {
     uint8_t tab_override[MS_MAX_TABS];
     uint8_t item_override[MS_MAX_ITEMS];
     uint8_t btn_override[3];
+
+    /* 组件颜色覆盖（0 = 用主题色）。颜色属于组件，编辑器只改它、存它。 */
+    uint8_t item_color_set[MS_MAX_ITEMS];
+    float   item_color[MS_MAX_ITEMS][3];
+    uint8_t btn_color_set[3];
+    float   btn_color[3][3];
 };
 
 /* ---- 颜色 ---- */
@@ -902,8 +908,12 @@ void zcsr_game_settings_render(zcsr_game_settings* s, zcsr_gl_renderer* r) {
         }
 
         /* label */
-        zcsr_gl_draw_text(r, it->label, row.x + 4, row.y + (row.h - 8.0f * scale) * 0.5f,
-                          scale, MS_RGBA_IF(is_sel, 1.0f,1.0f,1.0f,1.0f, 0.72f,0.76f,0.82f,1.0f));
+        {
+            zcsr_game_settings_color lc;
+            zcsr_game_settings_get_item_color(s, s->active_tab, i, &lc);
+            zcsr_gl_draw_text(r, it->label, row.x + 4, row.y + (row.h - 8.0f * scale) * 0.5f,
+                              scale, MS_RGBA_IF(is_sel, 1.0f,1.0f,1.0f,1.0f, lc.r,lc.g,lc.b,1.0f));
+        }
 
         /* dirty marker */
         bool item_dirty = false;
@@ -997,10 +1007,15 @@ void zcsr_game_settings_render(zcsr_game_settings* s, zcsr_gl_renderer* r) {
         bool hov = (b == s->hovered_button);
         bool foc = (b == s->selected_button && s->focus_area == 1);
         bool primary = (b == 0); /* Apply is primary */
-        if (primary) {
-            zcsr_gl_fill_rect(r, br.x, br.y, br.w, br.h, MS_RGBA_IF(hov, 0.35f,0.65f,1.0f,1.0f, 0.25f,0.55f,0.95f,1.0f));
-        } else {
-            zcsr_gl_fill_rect(r, br.x, br.y, br.w, br.h, MS_RGBA_IF(hov, 0.12f,0.16f,0.24f,1.0f, 0.08f,0.11f,0.16f,1.0f));
+        {
+            zcsr_game_settings_color bc;
+            zcsr_game_settings_get_button_color(s, b, &bc);
+            /* hover 时提亮 30%，颜色本身仍然来自组件（可能被编辑器改过） */
+            float kr = hov ? 1.3f : 1.0f;
+            zcsr_gl_fill_rect(r, br.x, br.y, br.w, br.h,
+                              bc.r * kr > 1.0f ? 1.0f : bc.r * kr,
+                              bc.g * kr > 1.0f ? 1.0f : bc.g * kr,
+                              bc.b * kr > 1.0f ? 1.0f : bc.b * kr, 1.0f);
         }
         if (foc) {
             zcsr_gl_draw_rect(r, br.x - 1, br.y - 1, br.w + 2, br.h + 2, 2.0f, C_ACCENT_GLOW);
@@ -1204,12 +1219,22 @@ bool zcsr_game_settings_save_overrides(const zcsr_game_settings* s, const char* 
                 fprintf(f, "item %d %d %.2f %.2f %.2f %.2f\n", t, i, r.x, r.y, r.w, r.h);
                 ++written;
             }
+            if (s->item_color_set[flat]) {
+                fprintf(f, "itemcolor %d %d %.3f %.3f %.3f\n", t, i,
+                        s->item_color[flat][0], s->item_color[flat][1], s->item_color[flat][2]);
+                ++written;
+            }
         }
     }
     for (i = 0; i < 3; ++i) {
         zcsr_game_settings_rect r;
         if (s->btn_override[i] && zcsr_game_settings_get_button_rect(s, i, &r)) {
             fprintf(f, "btn %d %.2f %.2f %.2f %.2f\n", i, r.x, r.y, r.w, r.h);
+            ++written;
+        }
+        if (s->btn_color_set[i]) {
+            fprintf(f, "btncolor %d %.3f %.3f %.3f\n", i,
+                    s->btn_color[i][0], s->btn_color[i][1], s->btn_color[i][2]);
             ++written;
         }
     }
@@ -1237,10 +1262,83 @@ bool zcsr_game_settings_load_overrides(zcsr_game_settings* s, const char* path)
         } else if (strcmp(kind, "btn") == 0) {
             if (fscanf(f, "%d %f %f %f %f", &a, &r.x, &r.y, &r.w, &r.h) != 5) break;
             if (zcsr_game_settings_override_button(s, a, &r)) ++applied;
+        } else if (strcmp(kind, "itemcolor") == 0) {
+            zcsr_game_settings_color c;
+            if (fscanf(f, "%d %d %f %f %f", &a, &b, &c.r, &c.g, &c.b) != 5) break;
+            if (zcsr_game_settings_override_item_color(s, a, b, &c)) ++applied;
+        } else if (strcmp(kind, "btncolor") == 0) {
+            zcsr_game_settings_color c;
+            if (fscanf(f, "%d %f %f %f", &a, &c.r, &c.g, &c.b) != 4) break;
+            if (zcsr_game_settings_override_button_color(s, a, &c)) ++applied;
         } else {
             break;
         }
     }
     fclose(f);
     return applied > 0;
+}
+/* ---- 组件颜色覆盖 --------------------------------------------------------- */
+static int ms_flat_item_index(const zcsr_game_settings* s, int tab_index, int item_index)
+{
+    int t, flat = 0;
+    if (!s || tab_index < 0 || tab_index >= s->tab_count) return -1;
+    if (item_index < 0 || item_index >= s->tabs[tab_index].count) return -1;
+    for (t = 0; t < tab_index; ++t) flat += s->tabs[t].count;
+    return flat + item_index;
+}
+
+bool zcsr_game_settings_override_item_color(zcsr_game_settings* s, int tab_index, int item_index,
+                                            const zcsr_game_settings_color* color)
+{
+    int flat = ms_flat_item_index(s, tab_index, item_index);
+    if (flat < 0 || flat >= MS_MAX_ITEMS) return false;
+    if (!color) { s->item_color_set[flat] = 0; return true; }
+    s->item_color_set[flat] = 1;
+    s->item_color[flat][0] = color->r;
+    s->item_color[flat][1] = color->g;
+    s->item_color[flat][2] = color->b;
+    return true;
+}
+
+bool zcsr_game_settings_override_button_color(zcsr_game_settings* s, int button_index,
+                                              const zcsr_game_settings_color* color)
+{
+    if (!s || button_index < 0 || button_index >= 3) return false;
+    if (!color) { s->btn_color_set[button_index] = 0; return true; }
+    s->btn_color_set[button_index] = 1;
+    s->btn_color[button_index][0] = color->r;
+    s->btn_color[button_index][1] = color->g;
+    s->btn_color[button_index][2] = color->b;
+    return true;
+}
+
+bool zcsr_game_settings_get_item_color(const zcsr_game_settings* s, int tab_index, int item_index,
+                                       zcsr_game_settings_color* out)
+{
+    int flat = ms_flat_item_index(s, tab_index, item_index);
+    if (flat < 0 || !out) return false;
+    if (s->item_color_set[flat]) {
+        out->r = s->item_color[flat][0];
+        out->g = s->item_color[flat][1];
+        out->b = s->item_color[flat][2];
+    } else {
+        out->r = 0.72f; out->g = 0.76f; out->b = 0.82f;   /* 主题正文色 */
+    }
+    return true;
+}
+
+bool zcsr_game_settings_get_button_color(const zcsr_game_settings* s, int button_index,
+                                         zcsr_game_settings_color* out)
+{
+    if (!s || button_index < 0 || button_index >= 3 || !out) return false;
+    if (s->btn_color_set[button_index]) {
+        out->r = s->btn_color[button_index][0];
+        out->g = s->btn_color[button_index][1];
+        out->b = s->btn_color[button_index][2];
+    } else if (button_index == 0) {
+        out->r = 0.25f; out->g = 0.55f; out->b = 0.95f;   /* Apply 主色 */
+    } else {
+        out->r = 0.08f; out->g = 0.11f; out->b = 0.16f;
+    }
+    return true;
 }
