@@ -3211,7 +3211,7 @@ bool zcsr_mix_set_output_device(zcsr_mixer* m, const char* endpoint_id) {
     if (!m) return false;
     if (!endpoint_id) endpoint_id = "";
     if (strlen(endpoint_id) >= sizeof(m->output_device_id)) return false;
-    strcpy(m->output_device_id, endpoint_id);
+    snprintf(m->output_device_id, sizeof(m->output_device_id), "%s", endpoint_id);
     /* 请求线程只写字符串 + pending 标志；关流/重开由 worker 做。 */
     zcsr_mix_device_set_pending(m, ZCSR_MIX_DEVICE_PENDING_CHANGED);
     return true;
@@ -3292,6 +3292,7 @@ int zcsr_mix_list_output_devices(zcsr_mix_device_info* out, int max) {
         }
         if (slot->name[0] == '\0') {
             strncpy(slot->name, slot->id, sizeof(slot->name) - 1);
+            slot->name[sizeof(slot->name) - 1] = '\0';
         }
         dev->lpVtbl->Release(dev);
         ++count;
