@@ -71,7 +71,21 @@ bool        zcsr_mix_register_wav(zcsr_mixer*, const char* id, const char* wav_p
 
 /* Play a registered sound on a free channel. Returns channel 0..15, or -1 (no free channel /
  * unknown id). volume 0..1; loop repeats until stopped. Non-blocking (posts to the audio thread). */
+/* 音量总线：每路通道属于一条总线，mix 时 clip volume × bus gain × master gain。
+ * 之前只有 per-clip volume，所以 Master/Music/SFX/Voice 四个滑杆没有落点。 */
+typedef enum {
+    ZCSR_MIX_BUS_SFX = 0,     /* 音效、UI */
+    ZCSR_MIX_BUS_MUSIC = 1,   /* 流式音乐 */
+    ZCSR_MIX_BUS_VOICE = 2,   /* 对白 / 语音 */
+    ZCSR_MIX_BUS_COUNT = 3
+} zcsr_mix_bus;
+
 int         zcsr_mix_play(zcsr_mixer*, const char* id, float volume, bool loop);
+/* 带总线归属的播放；zcsr_mix_play 等价于 bus=ZCSR_MIX_BUS_SFX。 */
+int         zcsr_mix_play_ex(zcsr_mixer*, const char* id, float volume, bool loop, int bus);
+/* 0..1；非法入参返回 false，不改已有值。 */
+bool        zcsr_mix_set_master_gain(zcsr_mixer*, float gain);
+bool        zcsr_mix_set_bus_gain(zcsr_mixer*, int bus, float gain);
 void        zcsr_mix_stop_channel(zcsr_mixer*, int channel);
 
 /* Slots to connect to a zcsr/signal.h router (zcsr_slot_fn shape). payload = sound id.
