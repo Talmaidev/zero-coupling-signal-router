@@ -169,7 +169,6 @@ void zcsr_gl_draw_instances(zcsr_gl_renderer* r, zcsr_gl_texture texture,
                             const zcsr_gl_instance* instances, size_t count) {
     if (!r || !instances || count == 0 || texture == 0) return;
     if (!zcsr_gl_find_tex(r, texture)) return;
-    if (count > ZCSR_GL_MAX_INSTANCES) count = ZCSR_GL_MAX_INSTANCES;
     if (!zcsr_gl_make_current(r)) return;
 
     if (r->target == 0) {
@@ -187,7 +186,20 @@ void zcsr_gl_draw_instances(zcsr_gl_renderer* r, zcsr_gl_texture texture,
     glUniform1i(r->inst_uniform_tex, 0);
 
     glBindVertexArray(r->inst_vao);
-    zcsr_gl_draw_instances_prepared(r, texture, instances, count);
+    /* Draw every instance. The VBO holds ZCSR_GL_MAX_INSTANCES, so a larger
+     * request is issued as consecutive batches instead of silently dropping
+     * instances past the cap. */
+    {
+        size_t remaining = count;
+        const zcsr_gl_instance* batch = instances;
+        while (remaining > 0u) {
+            size_t n = remaining > (size_t)ZCSR_GL_MAX_INSTANCES
+                     ? (size_t)ZCSR_GL_MAX_INSTANCES : remaining;
+            zcsr_gl_draw_instances_prepared(r, texture, batch, n);
+            batch += n;
+            remaining -= n;
+        }
+    }
     glBindVertexArray(0);
 }
 
