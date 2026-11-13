@@ -99,6 +99,11 @@ typedef struct {
 } zcsr_mix_device_info;
 
 int         zcsr_mix_list_output_devices(zcsr_mix_device_info* out, int max);
+/* 切换输出端点（id 来自 zcsr_mix_list_output_devices；NULL/"" 恢复系统默认）。
+ * 已运行的 mixer 会关闭并重建后端流；失败下次 tick 会继续重试。 */
+bool        zcsr_mix_set_output_device(zcsr_mixer*, const char* endpoint_id);
+/* 当前请求的端点 id（空串=系统默认），用于设置页回显。 */
+const char* zcsr_mix_get_output_device(const zcsr_mixer*);
 void        zcsr_mix_stop_channel(zcsr_mixer*, int channel);
 
 /* Slots to connect to a zcsr/signal.h router (zcsr_slot_fn shape). payload = sound id.

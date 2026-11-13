@@ -160,6 +160,10 @@ struct zcsr_mixer {
 
     zcsr_mix_backend backend;
 
+    /* 设置页 Output Device：请求的端点（UTF-8 端点 ID，空 = 系统默认）。
+     * backend_open 按它 GetDevice；切换时走 device_pending 重建流程。 */
+    char output_device_id[ZCSR_MIX_DEVICE_ID_CAP];
+
     /* Device recovery state; platform callbacks only set pending flags. */
     atomic_int device_state;
     atomic_uint device_pending_flags;
@@ -1623,12 +1627,22 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
         (void)zcsr_mix_notification_register(owner, b->enumerator);
     }
 
-    hr = b->enumerator->lpVtbl->GetDefaultAudioEndpoint(
-        b->enumerator,
-        eRender,
-        eConsole,
-        &device
-    );
+    /* 优先使用设置页选择的端点；找不到再退回系统默认，避免切错后静音。 */
+    if (owner && owner->output_device_id[0]) {
+        WCHAR wid[ZCSR_MIX_DEVICE_ID_CAP * 2];
+        if (MultiByteToWideChar(CP_UTF8, 0, owner->output_device_id, -1,
+                                wid, (int)(sizeof(wid) / sizeof(wid[0]))) > 0) {
+            hr = b->enumerator->lpVtbl->GetDevice(b->enumerator, wid, &device);
+        }
+    }
+    if (!device) {
+        hr = b->enumerator->lpVtbl->GetDefaultAudioEndpoint(
+            b->enumerator,
+            eRender,
+            eConsole,
+            &device
+        );
+    }
     if (FAILED(hr) || !device) goto fail;
 
     /*
@@ -1688,6 +1702,50 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
                     chosen_device = i;
                     break;
                 }
+            }
+        }
+
+        /* waveOut 回退路径也要尊重设置页选的端点：端点 ID -> 友好名 -> waveOut 索引。 */
+        if (owner && owner->output_device_id[0]) {
+            WCHAR wid[ZCSR_MIX_DEVICE_ID_CAP * 2];
+            IMMDevice* sel = NULL;
+            IMMDeviceEnumerator* en2 = NULL;
+            if (MultiByteToWideChar(CP_UTF8, 0, owner->output_device_id, -1,
+                                    wid, (int)(sizeof(wid) / sizeof(wid[0]))) > 0 &&
+                SUCCEEDED(CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
+                                           &IID_IMMDeviceEnumerator, (void**)&en2)) && en2) {
+                (void)en2->lpVtbl->GetDevice(en2, wid, &sel);
+                en2->lpVtbl->Release(en2);
+            }
+            if (sel) {
+                IPropertyStore* ps = NULL;
+                PROPERTYKEY fkey = {
+                    { 0xa45c254e, 0xdf1c, 0x4efd,
+                      { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14 };
+                if (SUCCEEDED(sel->lpVtbl->OpenPropertyStore(sel, STGM_READ, &ps)) && ps) {
+                    PROPVARIANT pv;
+                    PropVariantInit(&pv);
+                    if (SUCCEEDED(ps->lpVtbl->GetValue(ps, &fkey, &pv)) &&
+                        pv.vt == VT_LPWSTR && pv.pwszVal) {
+                        int matched = 0;
+                        for (UINT wi = 0; wi < dev_count; ++wi) {
+                            WAVEOUTCAPS wc;
+                            memset(&wc, 0, sizeof(wc));
+                            if (waveOutGetDevCaps(wi, &wc, sizeof(wc)) == MMSYSERR_NOERROR &&
+                                (wcsstr(wc.szPname, pv.pwszVal) || wcsstr(pv.pwszVal, wc.szPname))) {
+                                chosen_device = wi;
+                                matched = 1;
+                                printf("[audio] waveout selected endpoint (%u)\n", wi);
+                                break;
+                            }
+                        }
+                        if (!matched)
+                            printf("[audio] waveout selected endpoint: no name match, fallback\n");
+                    }
+                    PropVariantClear(&pv);
+                    ps->lpVtbl->Release(ps);
+                }
+                sel->lpVtbl->Release(sel);
             }
         }
 
@@ -1762,6 +1820,8 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
     hr = b->audio_client->lpVtbl->Start(b->audio_client);
     if (FAILED(hr)) goto fail;
 
+    printf("[audio] backend opened endpoint '%s'\n",
+           (owner && owner->output_device_id[0]) ? owner->output_device_id : "system-default");
     b->opened = true;
     b->timeout_count = 0;
     b->retry_after_tick = 0;
@@ -3141,6 +3201,20 @@ bool zcsr_mix_register_wav(zcsr_mixer* m, const char* id, const char* wav_path) 
 
 #if defined(_WIN32)
 /* 枚举当前活动的渲染端点。不做设备切换，只给 UI 一个真实列表。 */
+bool zcsr_mix_set_output_device(zcsr_mixer* m, const char* endpoint_id) {
+    if (!m) return false;
+    if (!endpoint_id) endpoint_id = "";
+    if (strlen(endpoint_id) >= sizeof(m->output_device_id)) return false;
+    strcpy(m->output_device_id, endpoint_id);
+    /* 请求线程只写字符串 + pending 标志；关流/重开由 worker 做。 */
+    zcsr_mix_device_set_pending(m, ZCSR_MIX_DEVICE_PENDING_CHANGED);
+    return true;
+}
+
+const char* zcsr_mix_get_output_device(const zcsr_mixer* m) {
+    return m ? m->output_device_id : "";
+}
+
 static int zcsr_mix_wide_to_utf8(const wchar_t* w, char* out, int cap) {
     int n;
     if (!w || !out || cap <= 1) return 0;

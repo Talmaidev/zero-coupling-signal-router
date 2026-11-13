@@ -49,6 +49,7 @@ PFNGLRENDERBUFFERSTORAGEMULTISAMPLESCENIC glad_glRenderbufferStorageMultisample;
 PFNGLFRAMEBUFFERRENDERBUFFERPROC glad_glFramebufferRenderbuffer;
 PFNGLBLITFRAMEBUFFERPROC glad_glBlitFramebuffer;
 PFNGLDELETEBUFFERSPROC_RB glad_glDeleteRenderbuffers;
+PFNGLGENERATEMIPMAPPROC glad_glGenerateMipmap;
 
 typedef union {
     GLADgenericproc generic;
@@ -101,6 +102,7 @@ typedef union {
     PFNGLFRAMEBUFFERRENDERBUFFERPROC glFramebufferRenderbuffer;
     PFNGLBLITFRAMEBUFFERPROC glBlitFramebuffer;
     PFNGLDELETEBUFFERSPROC_RB glDeleteRenderbuffers;
+    PFNGLGENERATEMIPMAPPROC glGenerateMipmap;
 } zcsr_glad_proc;
 
 #define ZCSR_LOAD(name) do { zcsr_glad_proc p; p.generic = load(#name); glad_##name = p.name; if (!glad_##name) return 0; } while (0)

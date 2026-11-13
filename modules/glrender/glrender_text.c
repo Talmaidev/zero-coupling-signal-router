@@ -290,6 +290,36 @@ void zcsr_gl_set_texture_filter_default(zcsr_gl_renderer* r, bool linear) {
     if (r) r->default_filter_linear = linear;
 }
 
+bool zcsr_gl_set_texture_quality(zcsr_gl_renderer* r, int level) {
+    if (!r) return false;
+    if (level < 0) level = 0;
+    if (level > 2) level = 2;
+    r->tex_quality = level;
+    r->default_filter_linear = (level >= 1);
+    /* 已创建的纹理也重设采样，否则设置页改完只有“之后新建的”纹理变化。 */
+    if (zcsr_gl_make_current(r)) {
+        GLint f = (level >= 1) ? GL_LINEAR : GL_NEAREST;
+        GLint minf = f;
+        for (int i = 0; i < ZCSR_GL_MAX_TEXTURES; ++i) {
+            zcsr_gl_tex_entry* e = &r->textures[i];
+            if (!e->in_use || e->id == 0u) continue;
+            glBindTexture(GL_TEXTURE_2D, e->id);
+            if (level >= 2 && glGenerateMipmap != NULL) {
+                glGenerateMipmap(GL_TEXTURE_2D);
+                minf = GL_LINEAR_MIPMAP_LINEAR;
+            }
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minf);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, f);
+        }
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+    return true;
+}
+
+int zcsr_gl_get_texture_quality(const zcsr_gl_renderer* r) {
+    return r ? r->tex_quality : 0;
+}
+
 bool zcsr_gl_get_texture_filter_default(const zcsr_gl_renderer* r) {
     return r ? r->default_filter_linear : false;
 }

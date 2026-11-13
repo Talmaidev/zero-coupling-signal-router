@@ -222,6 +222,7 @@ struct zcsr_gl_renderer {
 
     /* ---- Composite post-process FBO: deferred/bloom shader draws here first,
      * then optional game hook reads it, then blit to default framebuffer. ---- */
+    int tex_quality;           /* 0=nearest 1=linear 2=linear+mips */
     unsigned int l2d_comp_fbo;
     unsigned int l2d_comp_tex;
     int l2d_comp_w, l2d_comp_h;

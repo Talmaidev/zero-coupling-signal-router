@@ -114,6 +114,10 @@ bool zcsr_gl_font_default(zcsr_gl_renderer*, int pixel_height, void* buffer, siz
  * map to this and actually change filtering instead of only storing a number. */
 void zcsr_gl_set_texture_filter_default(zcsr_gl_renderer*, bool linear);
 bool zcsr_gl_get_texture_filter_default(const zcsr_gl_renderer*);
+/* 纹理质量预设：0=最近邻（最省，无 mip）；1=双线性；2=双线性+mipmap（三线性）。
+ * 只影响此后创建的纹理；已有纹理保留创建时的采样方式。 */
+bool zcsr_gl_set_texture_quality(zcsr_gl_renderer*, int level);
+int  zcsr_gl_get_texture_quality(const zcsr_gl_renderer*);
 
 /* ---- Atlas sprites ---------------------------------------------------------------------------
  * A sprite that samples a sub-rectangle of a shared atlas texture. Many atlas sprites with the

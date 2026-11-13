@@ -308,13 +308,19 @@ zcsr_gl_texture zcsr_gl_texture_create(zcsr_gl_renderer* r, const uint8_t* rgba,
     glBindTexture(GL_TEXTURE_2D, tex);
     /* Default sampling comes from the renderer's texture-quality setting, so a game's
      * "Texture Quality" option changes something real instead of only a stored value. */
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
-                    r->default_filter_linear ? GL_LINEAR : GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
-                    r->default_filter_linear ? GL_LINEAR : GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    /* 质量 2 走 mipmap（三线性）；入口缺失/生成失败退回双线性。 */
+    if (r->tex_quality >= 2 && glGenerateMipmap != NULL) {
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    } else {
+        GLint f = (r->tex_quality >= 1) ? GL_LINEAR : GL_NEAREST;
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, f);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, f);
+    }
     *e = (zcsr_gl_tex_entry){ tex, w, h, true };
     zcsr_tex_index_insert(r, tex, (uint8_t)(e - r->textures));
     return tex;

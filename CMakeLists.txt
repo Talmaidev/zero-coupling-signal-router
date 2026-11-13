@@ -83,7 +83,9 @@ zcsr_module(inputext)  # Engine-ext Agent 3 — mouse + gamepad (additive to key
 zcsr_module(light2d)   # Light2D additive lighting (no GL calls; drives glrender via gl_render_light2d_ext.h)
 target_link_libraries(zcsr_light2d PUBLIC zcsr_glrender)
 target_include_directories(zcsr_light2d PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/glad/include)
-zcsr_module(image)     # Engine-ext Agent — decode→RGBA32 + offline CPU processing (separated from rendering; vendors stb_image)
+zcsr_module(image)
+zcsr_module(assets)   # 开发者自带资源导入（相对路径 -> 纹理/字体/WAV）
+target_link_libraries(zcsr_assets PUBLIC zcsr_image zcsr_glrender zcsr_audiomix)     # Engine-ext Agent — decode→RGBA32 + offline CPU processing (separated from rendering; vendors stb_image)
 zcsr_module(atlas)     # Texture atlas shelf-packing + region table (pure logic, no GL)
 zcsr_module(culling)   # Viewport culling: linear + uniform grid (pure logic, no GL)
 zcsr_module(font)      # TrueType font loader/rasterizer (stb_truetype, no GL dependency)
