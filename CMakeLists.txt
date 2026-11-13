@@ -199,7 +199,8 @@ if(UNIX AND NOT APPLE)
 
     target_compile_definitions(zcsr_glrender PRIVATE ZCSR_LINUX_BACKEND_X11)
     target_include_directories(zcsr_glrender PRIVATE ${X11_INCLUDE_DIRS})
-    target_link_libraries(zcsr_glrender PUBLIC ${X11_LIBRARIES} OpenGL::OpenGL m)
+    # GLX entry points (glXChooseFBConfig / glXMakeCurrent ...) live in libGL, not libOpenGL
+    target_link_libraries(zcsr_glrender PUBLIC ${X11_LIBRARIES} OpenGL::GL OpenGL::OpenGL m)
   elseif(ZCSR_LINUX_BACKEND STREQUAL "wayland")
     add_custom_command(
         OUTPUT ${CMAKE_BINARY_DIR}/gen/xdg-shell-client-protocol.h

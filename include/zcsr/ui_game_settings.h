@@ -165,6 +165,10 @@ int         zcsr_game_settings_tab_count(const zcsr_game_settings* s);
 const char* zcsr_game_settings_tab_name(const zcsr_game_settings* s, int tab_index);
 int         zcsr_game_settings_item_count(const zcsr_game_settings* s, int tab_index);
 const char* zcsr_game_settings_item_label(const zcsr_game_settings* s, int tab_index, int item_index);
+/* 读某项已应用值（value / slider / toggle 任选其一传 NULL 表示不关心）。
+ * 宿主在 Apply 之后用它把值接到自己的子系统上。 */
+bool zcsr_game_settings_get_item_value(const zcsr_game_settings* s, int tab_index, int item_index,
+                                       int* value, float* slider, bool* toggle);
 const char* zcsr_game_settings_button_name(int button_index); /* 0=Apply 1=Cancel 2=Reset */
 
 /* 读取控件当前矩形（几何权威在 node 里，覆盖后的值也会被读到）。 */

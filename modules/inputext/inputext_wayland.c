@@ -7,7 +7,7 @@
  *
  * Zero-heap: all state in static storage or caller buffer.
  */
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_LINUX_BACKEND_WAYLAND)
 
 #include "inputext_internal.h"
 

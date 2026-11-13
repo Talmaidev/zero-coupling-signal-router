@@ -1147,6 +1147,18 @@ int zcsr_game_settings_item_count(const zcsr_game_settings* s, int tab_index) {
     return s->tabs[tab_index].count;
 }
 
+/* 读取某一项"已应用"的值（不是 pending）：调用方拥有 items 数组，但跨模块时
+ * 只能通过这个接口拿值 —— 这就是此前 15 项"只存不生效"的根：没有消费方读值的口子。 */
+bool zcsr_game_settings_get_item_value(const zcsr_game_settings* s, int tab_index, int item_index,
+                                       int* value, float* slider, bool* toggle) {
+    if (!s || tab_index < 0 || tab_index >= s->tab_count) return false;
+    if (item_index < 0 || item_index >= s->tabs[tab_index].count) return false;
+    const zcsr_game_settings_item* it = &s->tabs[tab_index].items[item_index];
+    if (value)  *value  = it->value;
+    if (slider) *slider = it->slider_value;
+    if (toggle) *toggle = it->toggle_value;
+    return true;
+}
 const char* zcsr_game_settings_item_label(const zcsr_game_settings* s, int tab_index, int item_index) {
     if (!s || tab_index < 0 || tab_index >= s->tab_count) return NULL;
     if (item_index < 0 || item_index >= s->tabs[tab_index].count) return NULL;
