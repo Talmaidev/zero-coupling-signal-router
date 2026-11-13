@@ -94,6 +94,7 @@ zcsr_module(music)     # Streaming music player (OGG/MP3, depends on audiomix)
 zcsr_module(ui)        # Generic UI runtime (node/input/focus/apply/preset/draw-list + GL backend)
 zcsr_module(app_shell) # App shell: window skeleton + main menu + settings overlay
 zcsr_module(camera)    # 2.5D orthographic camera (world units + shear)
+zcsr_module(camera3d)  # software perspective camera (3D -> screen px)
 zcsr_module(sprite)     # Lit sprite renderer (uses G-buffer from light2d)
 zcsr_module(runtime_viewport) # Engine-Owned Runtime Viewport (Contain Fit + 坐标变换)
 zcsr_module(file_service) # Unified File Service + VFS/Mount + Win32(file_win32.c) / POSIX(file_posix.c) backends
