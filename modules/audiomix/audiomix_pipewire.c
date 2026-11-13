@@ -288,3 +288,7 @@ void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned fr
 }
 
 #endif /* defined(__linux__) && !defined(__ANDROID__) */
+
+/* Keep the translation unit non-empty on platforms where this backend is
+ * compiled out; MSVC C4206 is an error under /WX. */
+typedef struct zcsr_audiomix_pipewire_tu_anchor { int reserved; } zcsr_audiomix_pipewire_tu_anchor;

@@ -13,7 +13,7 @@ if(MSVC)
   # 文案"[应用]""[显示模式]"）。MSVC 默认按当前 ANSI 代码页解释源文件，非中文 Windows
   # 与英文 Windows 上这些字面量会变成乱码；/utf-8 让源码按 UTF-8 解释，源码与运行时
   # 字面量在三平台一致。
-  add_compile_options(/W4 /utf-8 /experimental:c11atomics) # audiomix uses C11 <stdatomic.h>
+  add_compile_options(/W4 /WX /utf-8 /experimental:c11atomics) # audiomix uses C11 <stdatomic.h>
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS) # fopen/strncpy/... are fine here, not C4996
 else()
   add_compile_options(-Wall -Wextra -Wpedantic)
