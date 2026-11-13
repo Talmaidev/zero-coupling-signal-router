@@ -30,6 +30,10 @@ void zcsr_font_atlas_set_font(zcsr_font_atlas*, zcsr_font* font);
  * codepoint set used for atlas rebuild-on-overflow. */
 void zcsr_font_atlas_begin_frame(zcsr_font_atlas*);
 
+/* Vertical metrics of the bound font (ascent/descent/line_height, in font pixels).
+ * Used by callers that draw from a top-left origin and need a baseline. */
+bool zcsr_font_atlas_get_metrics(const zcsr_font_atlas*, zcsr_font_metrics_info* out);
+
 /* Enqueue a UTF-8 text string for drawing. Origin is the baseline position.
  * Enqueue-only: actual draw happens at zcsr_gl_flush.
  * New glyphs are rasterized and uploaded to the atlas on demand. */
