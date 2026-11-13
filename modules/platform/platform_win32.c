@@ -404,6 +404,22 @@ static void zcsr_win_apply_geometry(HWND hwnd, int x, int y, int w, int h, bool 
                  SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_NOACTIVATE);
 }
 
+bool zcsr_surface_set_refresh_hz(zcsr_surface* s, int hz) {
+    DEVMODEA dm;
+    LONG rc;
+    if (!s || !s->in_use || !s->hwnd) return false;
+    /* 独占全屏才有"显示器刷新率"这回事；窗口化改的是桌面模式，越权。 */
+    if (s->mode != ZCSR_WINDOW_FULLSCREEN) return false;
+    if (hz < 24 || hz > 500) return false;
+    memset(&dm, 0, sizeof(dm));
+    dm.dmSize = sizeof(dm);
+    if (!EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm)) return false;
+    dm.dmDisplayFrequency = (DWORD)hz;
+    dm.dmFields |= DM_DISPLAYFREQUENCY;
+    rc = ChangeDisplaySettingsA(&dm, CDS_FULLSCREEN);
+    return rc == DISP_CHANGE_SUCCESSFUL;
+}
+
 bool zcsr_surface_set_mode(zcsr_surface* s, zcsr_window_mode mode) {
     HWND hwnd;
     LONG style, exstyle;
