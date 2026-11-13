@@ -99,6 +99,7 @@ typedef struct {
     uint32_t frame;
     float volume;     /* public-facing, set from API */
     int32_t volume_q8; /* Q8 fixed-point (0..256), precomputed in apply_cmd for render hot path */
+    int bus;          /* 0=SFX 1=Music 2=Voice */
     bool loop;
     /* ---- streaming PCM fields (additive) ---- */
     _Atomic bool is_stream;
@@ -117,6 +118,7 @@ typedef struct {
     int sound;
     float volume;
     bool loop;
+    int bus;            /* ZCSR_MIX_BUS_* for PLAY */
     char id[ZCSR_MIX_ID_CAP];
 } zcsr_mix_cmd;
 
@@ -124,6 +126,8 @@ struct zcsr_mixer {
     bool in_use;
     atomic_bool running;
     bool thread_started;
+    atomic_int master_gain_q8;
+    atomic_int bus_gain_q8[ZCSR_MIX_BUS_COUNT];
     zcsr_mix_sound sounds[ZCSR_MIX_MAX_SOUNDS];
     zcsr_mix_channel channels[ZCSR_MIX_CHANNELS];
     int16_t samples[ZCSR_MIX_SAMPLE_FRAMES * 2];
@@ -2565,6 +2569,7 @@ static void zcsr_mix_apply_cmd(zcsr_mixer* m, const zcsr_mix_cmd* cmd) {
         ch->frame = 0;
         ch->volume = cmd->volume;
         ch->volume_q8 = (int32_t)(cmd->volume * 256.0f + 0.5f);  /* Q8 fixed-point for render hot path */
+        ch->bus = cmd->bus;
         ch->loop = cmd->loop;
         atomic_store_explicit(&ch->state, ZCSR_MIX_CH_ACTIVE, memory_order_release);
     } else if (cmd->type == ZCSR_MIX_CMD_STOP_CHANNEL && cmd->channel >= 0 && cmd->channel < ZCSR_MIX_CHANNELS) {
@@ -2612,6 +2617,11 @@ static void zcsr_mix_render_period(zcsr_mixer* m) {
                 if (avail == 0) continue;  /* underrun: silence */
                 idx = (r % 4096u) * 2u;
                 vol = (int)atomic_load_explicit(&ch->stream_volume_q8, memory_order_acquire);
+                {
+                    int bus_q8 = atomic_load_explicit(&m->bus_gain_q8[ZCSR_MIX_BUS_MUSIC], memory_order_relaxed);
+                    int master_q8 = atomic_load_explicit(&m->master_gain_q8, memory_order_relaxed);
+                    vol = ((vol * bus_q8) >> 8) * master_q8 >> 8;
+                }
                 left += (ch->pcm_ring[idx] * vol) >> 8;
                 right += (ch->pcm_ring[idx + 1] * vol) >> 8;
                 atomic_store_explicit(&ch->stream_read, r + 1, memory_order_release);
@@ -2640,8 +2650,13 @@ static void zcsr_mix_render_period(zcsr_mixer* m) {
                 }
             }
             sample = (s->offset + ch->frame) * 2U;
-            left += (m->samples[sample] * ch->volume_q8) >> 8;
-            right += (m->samples[sample + 1U] * ch->volume_q8) >> 8;
+            {
+                int bus_q8 = atomic_load_explicit(&m->bus_gain_q8[ch->bus], memory_order_relaxed);
+                int master_q8 = atomic_load_explicit(&m->master_gain_q8, memory_order_relaxed);
+                int eff = ((ch->volume_q8 * bus_q8) >> 8) * master_q8 >> 8;
+                left  += (m->samples[sample] * eff) >> 8;
+                right += (m->samples[sample + 1U] * eff) >> 8;
+            }
             ++ch->frame;
         }
         m->mix_buffer[frame * 2U] = zcsr_mix_clamp(left);
@@ -2924,6 +2939,8 @@ zcsr_mixer* zcsr_mix_start(void) {
         atomic_init(&m->cmd_tail, 0U);
         atomic_init(&m->finished_head, 0U);
         atomic_init(&m->finished_tail, 0U);
+        atomic_init(&m->master_gain_q8, 256);
+        for (int b = 0; b < ZCSR_MIX_BUS_COUNT; ++b) atomic_init(&m->bus_gain_q8[b], 256);
 
         /* New device-state atomics must be explicitly initialized. */
         atomic_init(&m->device_state, ZCSR_MIX_DEVICE_RUNNING);
@@ -3122,16 +3139,34 @@ bool zcsr_mix_register_wav(zcsr_mixer* m, const char* id, const char* wav_path) 
     return false;
 }
 
+bool zcsr_mix_set_master_gain(zcsr_mixer* m, float gain) {
+    if (!m || gain < 0.0f || gain > 1.0f) return false;
+    atomic_store_explicit(&m->master_gain_q8, (int)(gain * 256.0f + 0.5f), memory_order_release);
+    return true;
+}
+
+bool zcsr_mix_set_bus_gain(zcsr_mixer* m, int bus, float gain) {
+    if (!m || bus < 0 || bus >= ZCSR_MIX_BUS_COUNT) return false;
+    if (gain < 0.0f || gain > 1.0f) return false;
+    atomic_store_explicit(&m->bus_gain_q8[bus], (int)(gain * 256.0f + 0.5f), memory_order_release);
+    return true;
+}
+
 int zcsr_mix_play(zcsr_mixer* m, const char* id, float volume, bool loop) {
+    return zcsr_mix_play_ex(m, id, volume, loop, ZCSR_MIX_BUS_SFX);
+}
+
+int zcsr_mix_play_ex(zcsr_mixer* m, const char* id, float volume, bool loop, int bus) {
     int sound = zcsr_mix_find_sound(m, id);
     zcsr_mix_cmd cmd;
     if (!m || sound < 0) return -1;
     if (volume < 0.0f) volume = 0.0f;
     if (volume > 1.0f) volume = 1.0f;
+    if (bus < 0 || bus >= ZCSR_MIX_BUS_COUNT) bus = ZCSR_MIX_BUS_SFX;
     for (int c = 0; c < ZCSR_MIX_CHANNELS; ++c) {
         int expected = ZCSR_MIX_CH_FREE;
         if (!atomic_compare_exchange_strong(&m->channels[c].state, &expected, ZCSR_MIX_CH_RESERVED)) continue;
-        cmd = (zcsr_mix_cmd){ ZCSR_MIX_CMD_PLAY, c, sound, volume, loop, { 0 } };
+        cmd = (zcsr_mix_cmd){ ZCSR_MIX_CMD_PLAY, c, sound, volume, loop, bus, { 0 } };
         if (!zcsr_mix_ring_push(m, &cmd)) {
             atomic_store(&m->channels[c].state, ZCSR_MIX_CH_FREE);
             return -1;
@@ -3144,7 +3179,7 @@ int zcsr_mix_play(zcsr_mixer* m, const char* id, float volume, bool loop) {
 void zcsr_mix_stop_channel(zcsr_mixer* m, int channel) {
     zcsr_mix_cmd cmd;
     if (!m || channel < 0 || channel >= ZCSR_MIX_CHANNELS) return;
-    cmd = (zcsr_mix_cmd){ ZCSR_MIX_CMD_STOP_CHANNEL, channel, -1, 0.0f, false, { 0 } };
+    cmd = (zcsr_mix_cmd){ ZCSR_MIX_CMD_STOP_CHANNEL, channel, -1, 0.0f, false, ZCSR_MIX_BUS_SFX, { 0 } };
     (void)zcsr_mix_ring_push(m, &cmd);
 }
 
