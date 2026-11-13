@@ -23,6 +23,14 @@ void zcsr_camera_set_viewport(zcsr_camera* c, int w, int h);
 void zcsr_camera_set_zoom(zcsr_camera* c, float px_per_unit); /* clamps to [8, 1024] */
 void zcsr_camera_move_to(zcsr_camera* c, float wx, float wy);
 
+/* Pitch (degrees) is a view over the SAME shear constant, not a second one:
+ *   height_shear = cot(pitch)      ->   90 deg = pure top-down (k = 0),
+ *                                       63.4 deg = k = 0.5 (the old debug look),
+ *                                       45 deg = k = 1 (lower, more side-on).
+ * Use this to tune how high the 2.5D view looks; it only rewrites height_shear. */
+void zcsr_camera_set_pitch_deg(zcsr_camera* c, float pitch_deg); /* clamps to [20, 90] */
+float zcsr_camera_get_pitch_deg(const zcsr_camera* c);
+
 /* world -> pixels (y-down screen), including the height-shear rise for wz.
  * For ground-plane points pass wz = 0. Out pointers may be NULL. */
 void zcsr_camera_world_to_px(const zcsr_camera* c,

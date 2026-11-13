@@ -104,6 +104,17 @@ size_t zcsr_gl_font_buffer_bytes_required(size_t ttf_len);
 bool zcsr_gl_font_from_file(zcsr_gl_renderer*, const char* path, int pixel_height,
                             void* buffer, size_t bytes);
 
+/* Bind the default UI font with zero configuration: ZCSR_FONT_TTF if set, else the
+ * first existing system UI font (Win: segoeui/arial, Linux: DejaVuSans/Liberation).
+ * Returns false when nothing is found — callers keep the built-in 8x8 bitmap, which
+ * stays a fallback and never the default. */
+bool zcsr_gl_font_default(zcsr_gl_renderer*, int pixel_height, void* buffer, size_t bytes);
+
+/* Default GL sampling for textures created from now on. A "Texture Quality" option can
+ * map to this and actually change filtering instead of only storing a number. */
+void zcsr_gl_set_texture_filter_default(zcsr_gl_renderer*, bool linear);
+bool zcsr_gl_get_texture_filter_default(const zcsr_gl_renderer*);
+
 /* ---- Atlas sprites ---------------------------------------------------------------------------
  * A sprite that samples a sub-rectangle of a shared atlas texture. Many atlas sprites with the
  * same `atlas` texture differ only in `region` UV, so they merge into one draw call even though
