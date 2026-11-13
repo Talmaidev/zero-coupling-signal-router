@@ -6,7 +6,7 @@
 int main(void) {
     zcsr_mix_device_info devs[4];
     zcsr_mixer* m;
-    int n, i;
+    int n;
     n = zcsr_mix_list_output_devices(devs, 4);
     printf("devices=%d\n", n);
     if (n < 2) {

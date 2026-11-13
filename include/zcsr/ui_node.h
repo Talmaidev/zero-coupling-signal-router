@@ -131,6 +131,12 @@ bool zcsr_ui_node_is_editable(zcsr_ui_widget_type type);
 /* True for nodes that can receive focus and pointer interaction. */
 bool zcsr_ui_node_is_interactive(zcsr_ui_widget_type type);
 
+/* Topmost interactive hit test over a flat node array.
+ * `nodes[count-1]` is treated as the topmost draw layer; the scan goes backwards.
+ * A node is hit only when desc.visible && desc.enabled && interactive && rect contains
+ * the point. Returns ZCSR_UI_ID_NONE when nothing is hit. Pure function, no state. */
+zcsr_ui_id zcsr_ui_hit_test(const zcsr_ui_node* nodes, size_t count, float x, float y);
+
 #ifdef __cplusplus
 }
 #endif

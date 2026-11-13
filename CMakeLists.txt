@@ -66,6 +66,10 @@ zcsr_module(signal)    # Agent 2
 zcsr_module(hsm)       # Agent 3
 zcsr_module(overlay)   # Agent 4
 zcsr_module(platform)  # Agent 5
+if(NOT WIN32)
+  set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/modules/platform/platform_win32.c
+      PROPERTIES HEADER_FILE_ONLY TRUE)
+endif()
 
 # --- Task #7: Classic 2D Game Core extension (zero-coupling, builds on the contracts above) ---
 zcsr_module(input)     # Game Core Agent 1 — input / window / 60FPS timer
@@ -89,6 +93,10 @@ target_link_libraries(zcsr_assets PUBLIC zcsr_image zcsr_glrender zcsr_audiomix)
 zcsr_module(atlas)     # Texture atlas shelf-packing + region table (pure logic, no GL)
 zcsr_module(culling)   # Viewport culling: linear + uniform grid (pure logic, no GL)
 zcsr_module(font)      # TrueType font loader/rasterizer (stb_truetype, no GL dependency)
+# glrender calls surface/font/atlas entry points; declare the dependency so
+# GNU ld orders them after libzcsr_glrender.a instead of reporting undefined
+# references when a consumer links only zcsr_glrender.
+target_link_libraries(zcsr_glrender PUBLIC zcsr_platform zcsr_font zcsr_atlas)
 if(UNIX AND NOT APPLE)
   target_link_libraries(zcsr_font PUBLIC m)  # stb_truetype uses sqrt/floor/ceil/fmod/pow
 endif()
@@ -96,10 +104,17 @@ zcsr_module(music)     # Streaming music player (OGG/MP3, depends on audiomix)
 zcsr_module(ui)        # Generic UI runtime (node/input/focus/apply/preset/draw-list + GL backend)
 zcsr_module(app_shell) # App shell: window skeleton + main menu + settings overlay
 zcsr_module(camera)    # 2.5D orthographic camera (world units + shear)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(zcsr_camera PUBLIC m) # camera pitch uses cosf/sinf/atan2f
+endif()
 zcsr_module(camera3d)  # software perspective camera (3D -> screen px)
 zcsr_module(sprite)     # Lit sprite renderer (uses G-buffer from light2d)
 zcsr_module(runtime_viewport) # Engine-Owned Runtime Viewport (Contain Fit + 坐标变换)
 zcsr_module(file_service) # Unified File Service + VFS/Mount + Win32(file_win32.c) / POSIX(file_posix.c) backends
+if(NOT WIN32)
+  set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/modules/file_service/file_win32.c
+      PROPERTIES HEADER_FILE_ONLY TRUE)
+endif()
 zcsr_module(resource)      # Resource Manager + Handle + Generation + Cache
 target_link_libraries(zcsr_app_shell PUBLIC
     zcsr_glrender zcsr_platform zcsr_input zcsr_inputext zcsr_ui)
@@ -189,6 +204,17 @@ if(UNIX AND NOT APPLE)
   endif()
   message(STATUS "Linux window backend: ${ZCSR_LINUX_BACKEND} (x11=${ZCSR_LINUX_HAS_X11} wayland=${ZCSR_LINUX_HAS_WAYLAND})")
 
+  # Do not compile backends that cannot be selected on this host.  An empty TU
+  # is not valid ISO C and -Wpedantic flags it even though the glob includes it.
+  if(NOT ZCSR_LINUX_BACKEND STREQUAL "x11")
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/modules/platform/platform_x11.c
+        PROPERTIES HEADER_FILE_ONLY TRUE)
+  endif()
+  if(NOT ZCSR_LINUX_BACKEND STREQUAL "wayland")
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/modules/platform/platform_wayland.c
+        PROPERTIES HEADER_FILE_ONLY TRUE)
+  endif()
+
   if(ZCSR_LINUX_BACKEND STREQUAL "x11")
     target_sources(zcsr_platform PRIVATE modules/platform/platform_x11.c)
     target_compile_definitions(zcsr_platform PRIVATE ZCSR_LINUX_BACKEND_X11)
@@ -260,6 +286,9 @@ if(UNIX AND NOT APPLE)
       ${SPA_LIBRARIES})
   else()
   message(STATUS "Linux: PipeWire 音频后端未启用（缺 libpipewire-0.3 / libspa-0.2），audiomix 保持静音实现")
+  set_source_files_properties(
+      ${CMAKE_CURRENT_SOURCE_DIR}/modules/audiomix/audiomix_pipewire.c
+      PROPERTIES HEADER_FILE_ONLY TRUE)
   endif()
 
 elseif(WIN32)
