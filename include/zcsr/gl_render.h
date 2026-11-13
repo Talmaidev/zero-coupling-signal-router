@@ -74,9 +74,35 @@ void zcsr_gl_scissor_off(zcsr_gl_renderer*);
 /* Offscreen render-to-texture: set the draw target (0 = back buffer / window). */
 void zcsr_gl_set_target(zcsr_gl_renderer*, zcsr_gl_texture target_or_zero);
 
-/* Built-in bitmap-font text (scores / UI). Top-left origin, color 0..1. No external font loading. */
+/* Built-in bitmap-font text (scores / UI). Top-left origin, color 0..1.
+ * When a TTF atlas is bound (see below), this routes through it instead of the
+ * built-in 8x8 bitmap font and per-glyph bearing/advance come from the TTF. */
 void zcsr_gl_draw_text(zcsr_gl_renderer*, const char* utf8, float x, float y, float scale,
                        float r, float g, float b, float a);
+
+/* ---- Game-supplied TTF text -------------------------------------------------------------
+ * SDL_ttf-shaped contract: the game owns the TTF and the buffers, the engine only
+ * rasterizes. Nothing in modules/ui, modules/app_shell or the settings page needs to
+ * change for a game to swap fonts — bind the atlas, every zcsr_gl_draw_text call uses it.
+ *
+ *   zcsr_font*          f   = zcsr_font_load(ttf_bytes, len, pixel_height, buf1, n1);
+ *   zcsr_font_atlas*    a   = zcsr_font_atlas_create(r, f, buf2, n2);
+ *   zcsr_gl_set_font_atlas(r, a);
+ *
+ * Pass NULL to unbind and fall back to the built-in bitmap font. Scale in draw_text
+ * multiplies the loaded pixel_height (1.0 = native raster size).
+ * zcsr_font and zcsr_font_atlas must outlive the renderer binding. */
+struct zcsr_font_atlas;
+void zcsr_gl_set_font_atlas(zcsr_gl_renderer*, struct zcsr_font_atlas* atlas);
+struct zcsr_font_atlas* zcsr_gl_get_font_atlas(zcsr_gl_renderer*);
+
+/* Convenience: read a TTF/OTF file and bind it in one call. `buffer` holds the TTF
+ * bytes, the zcsr_font instance and the atlas; size it with
+ * zcsr_gl_font_buffer_bytes_required(file_bytes). Returns false on any failure and
+ * leaves the previous binding untouched. */
+size_t zcsr_gl_font_buffer_bytes_required(size_t ttf_len);
+bool zcsr_gl_font_from_file(zcsr_gl_renderer*, const char* path, int pixel_height,
+                            void* buffer, size_t bytes);
 
 /* ---- Atlas sprites ---------------------------------------------------------------------------
  * A sprite that samples a sub-rectangle of a shared atlas texture. Many atlas sprites with the

@@ -132,6 +132,8 @@ struct zcsr_gl_renderer {
     unsigned int vbo;
     unsigned int white_tex;
     unsigned int font_tex;
+    /* Optional TTF text backend (see zcsr_gl_set_font_atlas). NULL = built-in 8x8 bitmap. */
+    struct zcsr_font_atlas* font_atlas;
     unsigned int fbo;
     zcsr_gl_texture target;
     int uniform_view;
