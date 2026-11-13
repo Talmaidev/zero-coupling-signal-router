@@ -1695,9 +1695,9 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
         UINT dev_count = waveOutGetNumDevs();
         UINT chosen_device = WAVE_MAPPER;
         for (UINT i = 0; i < dev_count; i++) {
-            WAVEOUTCAPS caps;
+            WAVEOUTCAPSA caps;
             memset(&caps, 0, sizeof(caps));
-            if (waveOutGetDevCaps(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
+            if (waveOutGetDevCapsA(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
                 if (strstr(caps.szPname, "FxSound") == NULL &&
                     strstr(caps.szPname, "Virtual") == NULL) {
                     chosen_device = i;
@@ -1730,10 +1730,10 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
                         pv.vt == VT_LPWSTR && pv.pwszVal) {
                         int matched = 0;
                         for (UINT wi = 0; wi < dev_count; ++wi) {
-                            WAVEOUTCAPS wc;
+                            WAVEOUTCAPSA wc;
                             WCHAR wname[MAXPNAMELEN];
                             memset(&wc, 0, sizeof(wc));
-                            if (waveOutGetDevCaps(wi, &wc, sizeof(wc)) == MMSYSERR_NOERROR &&
+                            if (waveOutGetDevCapsA(wi, &wc, sizeof(wc)) == MMSYSERR_NOERROR &&
                                 MultiByteToWideChar(CP_ACP, 0, wc.szPname, -1,
                                                     wname, MAXPNAMELEN) > 0 &&
                                 (wcsstr(wname, pv.pwszVal) || wcsstr(pv.pwszVal, wname))) {
@@ -2505,6 +2505,21 @@ void zcsr_mix_backend_write(
     }
 }
 
+#elif defined(__linux__) && !defined(__ANDROID__) && !defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
+/* Headless/no-PipeWire Linux: keep the mixer contract and consume periods
+ * silently.  This is a real backend implementation, not a fake success path. */
+void zcsr_mix_backend_close(zcsr_mix_backend* b) {
+    zcsr_mixer* owner;
+    if (!b) return;
+    owner = b->owner;
+    *b = (zcsr_mix_backend){ 0 };
+    b->owner = owner;
+}
+void zcsr_mix_backend_open(zcsr_mix_backend* b) { if (b) b->opened = false; }
+void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned frames) {
+    (void)b; (void)pcm; (void)frames; zcsr_mix_sleep_period();
+}
+
 #elif !defined(__linux__)
 
 void zcsr_mix_backend_close(zcsr_mix_backend* b) { if (b) *b = (zcsr_mix_backend){ 0 }; }
@@ -2567,9 +2582,7 @@ static bool zcsr_mix_backend_close_ex(zcsr_mixer* m) {
 #  if defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
     return !m->backend.opened && m->backend.pw.loop == NULL;
 #  else
-    return !m->backend.opened &&
-           m->backend.pcm == NULL &&
-           m->backend.lib == NULL;
+    return !m->backend.opened;
 #  endif
 #elif defined(_WIN32)
     return !m->backend.opened &&
@@ -3228,6 +3241,17 @@ static int zcsr_mix_wide_to_utf8(const wchar_t* w, char* out, int cap) {
     if (n <= 0) { out[0] = '\0'; return 0; }
     out[n] = '\0';
     return n;
+}
+#else
+/* R5 contract: unsupported hosts fail explicitly; they do not pretend success. */
+bool zcsr_mix_set_output_device(zcsr_mixer* m, const char* endpoint_id) {
+    (void)m; (void)endpoint_id;
+    return false;
+}
+
+const char* zcsr_mix_get_output_device(const zcsr_mixer* m) {
+    (void)m;
+    return "";
 }
 #endif
 

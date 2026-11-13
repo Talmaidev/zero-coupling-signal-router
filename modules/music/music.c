@@ -60,6 +60,13 @@ struct zcsr_music {
     size_t out_pending_offset;
     zcsr_mixer* mixer;
     int stream_channel;
+    uint64_t duration_ms;
+    uint64_t play_start_ms;
+    _Atomic uint64_t position_base_ms;
+    _Atomic uint64_t position_base_frames;
+    _Atomic uint64_t seek_target_ms;
+    _Atomic bool seek_requested;
+    _Atomic int error_detail;
     _Atomic bool stop_requested;
     _Atomic bool paused;
     _Atomic bool loop;
@@ -106,6 +113,48 @@ static float clampf(float v, float lo, float hi) {
     return v;
 }
 
+static uint64_t samples_to_ms(uint64_t samples, int rate) {
+    uint64_t r;
+    if (rate <= 0) return 0;
+    r = (uint64_t)rate;
+    if (samples > UINT64_MAX / 1000u) return 0; /* implausible container length */
+    return (samples / r) * 1000u + ((samples % r) * 1000u) / r;
+}
+
+static void music_set_error(zcsr_music* m, zcsr_music_error error) {
+    if (m) atomic_store(&m->error_detail, (int)error);
+}
+
+/* Scan MP3 frames once at load. This is O(file size), but duration is then O(1).
+ * Decoding is used because minimp3 has no header-only sample counter; frames with
+ * no audio (ID3/metadata) still advance frame_offset. */
+static uint64_t mp3_scan_duration(const unsigned char* data, size_t len, int* out_rate) {
+    mp3dec_t dec;
+    mp3dec_frame_info_t info;
+    float pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+    size_t offset = 0;
+    uint64_t total_samples = 0;
+    int rate = 0;
+
+    if (out_rate) *out_rate = 0;
+    mp3dec_init(&dec);
+    while (offset < len) {
+        size_t remaining = len - offset;
+        int samples;
+        if (remaining > (size_t)INT_MAX) break;
+        memset(&info, 0, sizeof(info));
+        samples = mp3dec_decode_frame(&dec, data + offset, (int)remaining, pcm, &info);
+        if (info.frame_bytes == 0) break;
+        offset += (size_t)info.frame_bytes;
+        if (samples > 0) {
+            if (rate == 0) rate = info.hz;
+            total_samples += (uint64_t)samples;
+        }
+    }
+    if (out_rate) *out_rate = rate;
+    return samples_to_ms(total_samples, rate);
+}
+
 /* ---- buffer size ---- */
 
 size_t zcsr_music_buffer_bytes_required(size_t encoded_len) {
@@ -141,6 +190,7 @@ zcsr_music* zcsr_music_load(const void* encoded, size_t len,
     if ((size_t)(p - (uint8_t*)buffer) + needed > bytes) return NULL;
     m = (struct zcsr_music*)p;
     p += align_up_sz(sizeof(*m), 8);
+    memset(m, 0, sizeof(*m));
     enc_dst = p;
     p += len;
     p = align_up(p, 8);
@@ -153,7 +203,6 @@ zcsr_music* zcsr_music_load(const void* encoded, size_t len,
     m->out_pcm = (int16_t*)p;
     p += MUSIC_OUT_MAX_FRAMES * 2u * sizeof(int16_t);
     if ((size_t)(p - (uint8_t*)buffer) > bytes) return NULL;
-    memset(m, 0, sizeof(*m));
     memcpy(enc_dst, encoded, len);
     m->fmt = fmt;
     m->encoded_copy = enc_dst;
@@ -172,10 +221,16 @@ zcsr_music* zcsr_music_load(const void* encoded, size_t len,
         if (!m->decoder.ogg.handle) { memset(m, 0, sizeof(*m)); return NULL; }
         {
             stb_vorbis_info info = stb_vorbis_get_info(m->decoder.ogg.handle);
+            unsigned samples;
             m->src_sample_rate = info.sample_rate;
             m->src_channels = info.channels;
+            samples = stb_vorbis_stream_length_in_samples(m->decoder.ogg.handle);
+            m->duration_ms = samples_to_ms((uint64_t)samples, info.sample_rate);
         }
     } else if (fmt == ZCSR_MUSIC_MP3) {
+        int scan_rate = 0;
+        m->duration_ms = mp3_scan_duration(m->encoded_copy, m->encoded_len, &scan_rate);
+        if (scan_rate > 0) m->src_sample_rate = scan_rate;
         mp3dec_init(&m->decoder.mp3.dec);
         m->decoder.mp3.frame_offset = 0;
         /* sample rate / channels filled on first successful decode */
@@ -257,6 +312,49 @@ static size_t decode_block(zcsr_music* m, decode_status* st) {
         : decode_block_mp3(m, st);
 }
 
+/* Position the decoder at the target. OGG uses stb_vorbis's sample index;
+ * MP3 re-initializes and decodes forward because no sparse index is allocated. */
+static bool decoder_seek_to_ms(zcsr_music* m, uint64_t ms) {
+    if (!m || m->src_sample_rate <= 0) return false;
+    if (m->fmt == ZCSR_MUSIC_OGG) {
+        uint64_t sample = (ms * (uint64_t)m->src_sample_rate) / 1000u;
+        if (sample > (uint64_t)UINT_MAX) return false;
+        return stb_vorbis_seek(m->decoder.ogg.handle, (unsigned)sample) != 0;
+    }
+    if (m->fmt == ZCSR_MUSIC_MP3) {
+        size_t offset = 0;
+        uint64_t decoded_ms = 0;
+        mp3dec_t dec;
+        mp3dec_frame_info_t info;
+        float pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+
+        mp3dec_init(&dec);
+        while (offset < m->encoded_len && decoded_ms < ms) {
+            size_t remaining = m->encoded_len - offset;
+            int samples;
+            if (remaining > (size_t)INT_MAX) return false;
+            memset(&info, 0, sizeof(info));
+            samples = mp3dec_decode_frame(&dec,
+                (const uint8_t*)m->encoded_copy + offset,
+                (int)remaining, pcm, &info);
+            if (info.frame_bytes == 0) return false;
+            offset += (size_t)info.frame_bytes;
+            if (samples > 0) {
+                int rate = info.hz > 0 ? info.hz : m->src_sample_rate;
+                if (rate <= 0) return false;
+                decoded_ms += ((uint64_t)samples * 1000u) / (uint64_t)rate;
+                m->src_sample_rate = rate;
+                m->src_channels = info.channels > 2 ? 2 : info.channels;
+            }
+        }
+        m->decoder.mp3.dec = dec;
+        m->decoder.mp3.frame_offset = offset;
+        m->src_pcm_frames = 0;
+        return true;
+    }
+    return false;
+}
+
 /* ---- resample (linear interpolation, source_step = src_rate / 44100) ---- */
 
 static size_t resample_to_scratch(zcsr_music* m) {
@@ -303,6 +401,27 @@ static size_t resample_to_scratch(zcsr_music* m) {
 
 static void music_thread_main(zcsr_music* m) {
     while (!atomic_load(&m->stop_requested)) {
+        if (atomic_load(&m->seek_requested)) {
+            uint64_t target = atomic_load(&m->seek_target_ms);
+            uint64_t consumed;
+            atomic_store(&m->seek_requested, false);
+            (void)zcsr_mix_stream_flush(m->mixer, m->stream_channel);
+            if (!decoder_seek_to_ms(m, target)) {
+                music_set_error(m, ZCSR_MUSIC_ERR_DECODE);
+                atomic_store(&m->state, ZCSR_MUSIC_ERROR);
+                break;
+            }
+            m->src_pcm_frames = 0;
+            m->resample_phase = 0.0f;
+            m->out_pending_frames = 0;
+            m->out_pending_offset = 0;
+            m->frames_sent = 0;
+            consumed = zcsr_mix_stream_consumed_frames(m->mixer, m->stream_channel);
+            atomic_store(&m->session_base_frames, (unsigned int)consumed);
+            atomic_store(&m->position_base_frames, consumed);
+            atomic_store(&m->position_base_ms, target);
+            continue;
+        }
         if (atomic_load(&m->paused)) { sleep_ms(1); continue; }
         /* feed pending PCM */
         if (m->out_pending_frames > 0) {
@@ -327,6 +446,7 @@ static void music_thread_main(zcsr_music* m) {
             size_t src_n = decode_block(m, &st);
             if (st == DEC_SKIP_NO_AUDIO) continue;
             if (st == DEC_ERROR) {
+                music_set_error(m, ZCSR_MUSIC_ERR_DECODE);
                 atomic_store(&m->state, ZCSR_MUSIC_ERROR);
                 break;
             }
@@ -375,36 +495,54 @@ static void* music_thread_proc(void* arg) {
 bool zcsr_music_attach_mixer(zcsr_music* m, zcsr_mixer* mixer) {
     if (!m || !mixer || m->mixer) return false;
     m->stream_channel = zcsr_mix_attach_stream(mixer);
-    if (m->stream_channel < 0) return false;
+    if (m->stream_channel < 0) {
+        music_set_error(m, ZCSR_MUSIC_ERR_NO_DEVICE);
+        return false;
+    }
     m->mixer = mixer;
+    music_set_error(m, ZCSR_MUSIC_ERR_NONE);
     return true;
 }
 
 bool zcsr_music_play(zcsr_music* m) {
-    if (!m || !m->mixer) return false;
-    if (m->started) zcsr_music_stop(m);
-    if (m->fmt == ZCSR_MUSIC_OGG) {
-        stb_vorbis_seek_start(m->decoder.ogg.handle);
-    } else {
-        mp3dec_init(&m->decoder.mp3.dec);
-        m->decoder.mp3.frame_offset = 0;
+    uint64_t start_ms;
+    uint64_t start_frames;
+    if (!m || !m->mixer) {
+        music_set_error(m, ZCSR_MUSIC_ERR_NO_DEVICE);
+        return false;
     }
-    m->src_pcm_frames = 0;
+    start_ms = m->play_start_ms;
+    if (m->started) zcsr_music_stop(m);
+    if (!decoder_seek_to_ms(m, start_ms)) {
+        music_set_error(m, ZCSR_MUSIC_ERR_DECODE);
+        atomic_store(&m->state, ZCSR_MUSIC_ERROR);
+        return false;
+    }
     m->resample_phase = 0.0f;
     m->out_pending_frames = 0;
     m->out_pending_offset = 0;
     m->frames_sent = 0;
+    m->play_start_ms = start_ms;
+    atomic_store(&m->position_base_ms, start_ms);
+    atomic_store(&m->seek_requested, false);
     atomic_store(&m->stop_requested, false);
     atomic_store(&m->paused, false);
-    atomic_store(&m->session_base_frames,
-        (unsigned int)zcsr_mix_stream_consumed_frames(m->mixer, m->stream_channel));
+    start_frames = zcsr_mix_stream_consumed_frames(m->mixer, m->stream_channel);
+    atomic_store(&m->session_base_frames, (unsigned int)start_frames);
+    atomic_store(&m->position_base_frames, start_frames);
+    music_set_error(m, ZCSR_MUSIC_ERR_NONE);
     /* set PLAYING before creating thread */
     atomic_store(&m->state, ZCSR_MUSIC_PLAYING);
 #if defined(_WIN32)
     m->thread_handle = CreateThread(NULL, 0, music_thread_proc, m, 0, NULL);
-    if (!m->thread_handle) { atomic_store(&m->state, ZCSR_MUSIC_ERROR); return false; }
+    if (!m->thread_handle) {
+        music_set_error(m, ZCSR_MUSIC_ERR_NO_DEVICE);
+        atomic_store(&m->state, ZCSR_MUSIC_ERROR);
+        return false;
+    }
 #else
     if (pthread_create(&m->thread_handle, NULL, music_thread_proc, m) != 0) {
+        music_set_error(m, ZCSR_MUSIC_ERR_NO_DEVICE);
         atomic_store(&m->state, ZCSR_MUSIC_ERROR);
         return false;
     }
@@ -434,6 +572,11 @@ void zcsr_music_stop(zcsr_music* m) {
     m->src_pcm_frames = 0;
     m->resample_phase = 0.0f;
     m->out_pending_frames = 0;
+    m->out_pending_offset = 0;
+    m->play_start_ms = 0;
+    atomic_store(&m->position_base_ms, 0);
+    atomic_store(&m->position_base_frames, 0);
+    atomic_store(&m->seek_requested, false);
     atomic_store(&m->state, ZCSR_MUSIC_STOPPED);
 }
 
@@ -477,9 +620,55 @@ zcsr_music_state zcsr_music_get_state(const zcsr_music* m) {
 }
 
 uint64_t zcsr_music_position_ms(const zcsr_music* m) {
-    uint64_t now, base;
-    if (!m || !m->mixer) return 0;
+    uint64_t now, base, base_ms;
+    if (!m) return 0;
+    base_ms = atomic_load(&((zcsr_music*)m)->position_base_ms);
+    if (!m->mixer) return base_ms;
     now = zcsr_mix_stream_consumed_frames(m->mixer, m->stream_channel);
-    base = (uint64_t)atomic_load(&m->session_base_frames);
-    return (now - base) * 1000u / 44100u;
+    base = atomic_load(&((zcsr_music*)m)->position_base_frames);
+    if (now <= base) return base_ms;
+    return base_ms + (now - base) * 1000u / 44100u;
+}
+
+bool zcsr_music_duration_ms(const zcsr_music* m, uint64_t* out_ms) {
+    if (!m || !out_ms || m->duration_ms == 0) return false;
+    *out_ms = m->duration_ms;
+    return true;
+}
+
+bool zcsr_music_seek_ms(zcsr_music* m, uint64_t ms) {
+    uint64_t target;
+    zcsr_music_state state;
+
+    if (!m || m->duration_ms == 0) return false;
+    state = zcsr_music_get_state(m);
+    if (state == ZCSR_MUSIC_ERROR) return false;
+    target = (ms > m->duration_ms) ? m->duration_ms : ms;
+    atomic_store(&m->position_base_ms, target);
+    if (state == ZCSR_MUSIC_PLAYING || state == ZCSR_MUSIC_PAUSED) {
+        /* The decoder thread owns the decoder; it consumes this request at the
+         * top of its loop, flushes the mixer stream, and reseeks. */
+        if (m->mixer) {
+            atomic_store(&m->position_base_frames,
+                zcsr_mix_stream_consumed_frames(m->mixer, m->stream_channel));
+        }
+        atomic_store(&m->seek_target_ms, target);
+        atomic_store(&m->seek_requested, true);
+    } else {
+        /* STOPPED/ENDED: record the next play start. The decoder is not touched
+         * until play(), which joins any old thread first. */
+        m->play_start_ms = target;
+        if (m->mixer) {
+            atomic_store(&m->position_base_frames,
+                zcsr_mix_stream_consumed_frames(m->mixer, m->stream_channel));
+        }
+        atomic_store(&m->seek_requested, false);
+    }
+    music_set_error(m, ZCSR_MUSIC_ERR_NONE);
+    return true;
+}
+
+zcsr_music_error zcsr_music_get_error(const zcsr_music* m) {
+    if (!m) return ZCSR_MUSIC_ERR_NONE;
+    return (zcsr_music_error)atomic_load(&((zcsr_music*)m)->error_detail);
 }

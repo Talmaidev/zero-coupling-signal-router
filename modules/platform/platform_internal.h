@@ -1,5 +1,8 @@
 #ifndef ZCSR_PLATFORM_INTERNAL_H
 #define ZCSR_PLATFORM_INTERNAL_H
+
+/* X11 key event ring capacity (platform_x11.c uses the same literal). */
+enum { ZCSR_X11_KEY_RING = 64 };
 /* Module-private shared definitions for the platform module.
  * Included only by translation units under modules/platform/.
  * The zero-coupling guard bans "../" and "modules/" includes;
@@ -69,8 +72,7 @@ struct zcsr_surface {
     unsigned int  x_buttons_latch;        /* 两次 pump 之间按下的边沿（读一次后清） */
     int           x_wheel;                /* 累计滚轮刻度 */
     /* 按键事件环：平台泵入，input 模块泵出。 */
-    enum { ZCSR_X11_KEY_RING = 64 };
-    struct { unsigned int keycode; int down; } x_keys[ZCSR_X11_KEY_RING];
+    struct { unsigned int keycode; int down; } x_keys[64];
     int x_key_head, x_key_tail;
 #elif defined(__APPLE__)
     void* ns_window;

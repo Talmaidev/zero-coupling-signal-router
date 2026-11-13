@@ -152,8 +152,10 @@ typedef struct {
     float mode;            /* zcsr_color_mode as float */
     uint32_t tex;          /* CPU-only: texture handle, used for sorting into runs */
     float z;               /* CPU-only: depth/layer; larger = farther, drawn first (painter's) */
+    bool has_alpha;        /* CPU-only: texture has non-opaque pixels; sort as translucent.
+                            * Do not set this for fully opaque textures: it changes batching. */
     /* 约束：z 值必须为非 NaN 的有限浮点数。若传入 NaN，排序行为未定义。 */
-} zcsr_gl_instance;        /* 15 float attrs + uint32 + float = 68 bytes; tex/z are CPU-only */
+} zcsr_gl_instance;        /* 15 float attrs + uint32 + float + bool = 72 bytes; tex/z/has_alpha are CPU-only */
 
 /* Draw `count` instances sharing one bound texture, in one instanced draw call. Instances are
  * drawn as-is (no sorting). For a batch spanning multiple textures, sort it first (see
@@ -188,13 +190,12 @@ void zcsr_gl_submit_instance_batch(zcsr_gl_renderer*, zcsr_gl_instance* instance
                                    void* temp, size_t temp_bytes);
 
 /* ---- full state sort (opaque vs translucent) ----
- * An instance is treated as translucent when its alpha < 1.0 or its color mode is MIX/ADD.
- * NOTE (N1): translucency is classified from INSTANCE FIELDS ONLY. Texture pixel alpha is not
- * inspected (it lives on the GPU and is not readable here). If a texture contains transparent
- * pixels, instances using it MUST be marked translucent by the caller (set alpha < 1.0 or use
- * a MIX/ADD mode), otherwise they sort into the opaque group and may blend incorrectly when
- * overlapping translucent instances. This is a documented caller contract, not a bug to be
- * silently papered over.
+ * An instance is treated as translucent when its alpha < 1.0, its color mode is MIX/ADD,
+ * or its CPU-only `has_alpha` flag is true.
+ * NOTE (N1): the renderer does not read texture pixels. If a texture contains transparent
+ * pixels, set `has_alpha = true` on every instance that samples it. Leaving the flag false
+ * keeps the old caller contract (mark translucent via alpha/mode); correctly setting it
+ * allows alpha-cutout sprites to sort behind/above each other without changing their color.
  * Partitions the array into opaque instances first (sorted by texture, for batching) then
  * translucent instances sorted back-to-front by z (larger z = farther, painter's algorithm).
  * Returns the number of opaque instances. After sorting:

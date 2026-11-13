@@ -1,6 +1,7 @@
 #ifndef ZCSR_PLATFORM_H
 #define ZCSR_PLATFORM_H
 #include <stdbool.h>
+#include <stddef.h>
 /* Agent 5 — Platform abstraction. Win32 / X11 / Cocoa / Android, auto-selected at compile time.
  * NO OpenGL/DirectX/Vulkan. Exactly one backend is selected by the gates below.
  * Implementer: modules/platform. */
@@ -29,9 +30,17 @@ typedef struct { int x, y, w, h; } zcsr_rect;
 typedef struct { float x, y, w, h; } zcsr_rectf; /* float rectangle, for viewport/rendering */
 
 /* Layout is part of the public contract (viewport math and UI hit-tests pass
- * these by value across module boundaries). Freeze field count/width. */
-_Static_assert(sizeof(zcsr_rect) == 4 * sizeof(int), "zcsr_rect ABI: four int fields");
-_Static_assert(sizeof(zcsr_rectf) == 4 * sizeof(float), "zcsr_rectf ABI: four float fields");
+ * these by value across module boundaries). Freeze width AND field order. */
+_Static_assert(sizeof(zcsr_rect) == 16, "zcsr_rect ABI: must stay 16 bytes");
+_Static_assert(offsetof(zcsr_rect, x) == 0, "zcsr_rect ABI: x offset");
+_Static_assert(offsetof(zcsr_rect, y) == 4, "zcsr_rect ABI: y offset");
+_Static_assert(offsetof(zcsr_rect, w) == 8, "zcsr_rect ABI: w offset");
+_Static_assert(offsetof(zcsr_rect, h) == 12, "zcsr_rect ABI: h offset");
+_Static_assert(sizeof(zcsr_rectf) == 16, "zcsr_rectf ABI: must stay 16 bytes");
+_Static_assert(offsetof(zcsr_rectf, x) == 0, "zcsr_rectf ABI: x offset");
+_Static_assert(offsetof(zcsr_rectf, y) == 4, "zcsr_rectf ABI: y offset");
+_Static_assert(offsetof(zcsr_rectf, w) == 8, "zcsr_rectf ABI: w offset");
+_Static_assert(offsetof(zcsr_rectf, h) == 12, "zcsr_rectf ABI: h offset");
 
 typedef struct zcsr_surface zcsr_surface; /* opaque native top-level surface */
 
