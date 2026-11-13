@@ -310,7 +310,8 @@ void zcsr_gl_submit_instance_batch(zcsr_gl_renderer* r, zcsr_gl_instance* instan
  * =========================================================================================== */
 
 static int zcsr_is_translucent(const zcsr_gl_instance* in) {
-    return in->a < 0.9999f ||
+    return in->has_alpha ||
+           in->a < 0.9999f ||
            in->mode == (float)ZCSR_MOD_MIX || in->mode == (float)ZCSR_MOD_ADD;
 }
 
@@ -319,6 +320,11 @@ size_t zcsr_sort_state(zcsr_gl_instance* instances, size_t count, void* temp, si
     zcsr_gl_instance* scratch = temp;
     size_t i = 0, j = count;
     if (!instances || !temp || count == 0) {
+        if (out_opaque) *out_opaque = 0;
+        return 0;
+    }
+    /* Keep the scratch-size multiplication below in range on 32-bit size_t. */
+    if (count > ((size_t)-1) / sizeof(zcsr_gl_instance)) {
         if (out_opaque) *out_opaque = 0;
         return 0;
     }

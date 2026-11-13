@@ -76,7 +76,7 @@ struct zcsr_light2d_ctx {
 /* Built-in camera for callers that never call set_camera: origin centered,
  * one 128px reference tile per world unit. Read-only shared storage. */
 static const zcsr_camera zcsr_l2d_default_camera = {
-    0.0f, 0.0f, 128.0f, 0, 0
+    0.0f, 0.0f, 128.0f, 0, 0, 0.0f
 };
 
 static const zcsr_camera* zcsr_l2d_effective_camera(const zcsr_light2d_ctx* ctx)
