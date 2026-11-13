@@ -3139,6 +3139,94 @@ bool zcsr_mix_register_wav(zcsr_mixer* m, const char* id, const char* wav_path) 
     return false;
 }
 
+#if defined(_WIN32)
+/* 枚举当前活动的渲染端点。不做设备切换，只给 UI 一个真实列表。 */
+static int zcsr_mix_wide_to_utf8(const wchar_t* w, char* out, int cap) {
+    int n;
+    if (!w || !out || cap <= 1) return 0;
+    n = WideCharToMultiByte(CP_UTF8, 0, w, -1, out, cap - 1, NULL, NULL);
+    if (n <= 0) { out[0] = '\0'; return 0; }
+    out[n] = '\0';
+    return n;
+}
+#endif
+
+int zcsr_mix_list_output_devices(zcsr_mix_device_info* out, int max) {
+#if defined(_WIN32)
+    zcsr_mix_device_info* list = out;
+    int count = 0;
+    HRESULT hr;
+    IMMDeviceEnumerator* en = NULL;
+    IMMDeviceCollection* col = NULL;
+    IMMDevice* def = NULL;
+    char default_id[ZCSR_MIX_DEVICE_ID_CAP];
+    bool com_ok;
+    UINT i, n;
+    if (!out || max <= 0) return 0;
+    default_id[0] = '\0';
+    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    com_ok = SUCCEEDED(hr);
+    hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL,
+                          &IID_IMMDeviceEnumerator, (void**)&en);
+    if (FAILED(hr) || !en) goto done;
+    (void)en->lpVtbl->GetDefaultAudioEndpoint(en, eRender, eConsole, &def);
+    if (def) {
+        LPWSTR wid = NULL;
+        if (SUCCEEDED(def->lpVtbl->GetId(def, &wid)) && wid) {
+            (void)zcsr_mix_wide_to_utf8(wid, default_id, sizeof(default_id));
+            CoTaskMemFree(wid);
+        }
+        def->lpVtbl->Release(def);
+        def = NULL;
+    }
+    hr = en->lpVtbl->EnumAudioEndpoints(en, eRender, DEVICE_STATE_ACTIVE, &col);
+    if (FAILED(hr) || !col) goto done;
+    if (FAILED(col->lpVtbl->GetCount(col, &n))) goto done;
+    for (i = 0; i < n && count < max; ++i) {
+        IMMDevice* dev = NULL;
+        IPropertyStore* store = NULL;
+        PROPVARIANT pv;
+        LPWSTR wid = NULL;
+        zcsr_mix_device_info* slot = &list[count];
+        memset(slot, 0, sizeof(*slot));
+        if (FAILED(col->lpVtbl->Item(col, i, &dev)) || !dev) continue;
+        if (FAILED(dev->lpVtbl->GetId(dev, &wid)) || !wid) {
+            dev->lpVtbl->Release(dev);
+            continue;
+        }
+        (void)zcsr_mix_wide_to_utf8(wid, slot->id, sizeof(slot->id));
+        CoTaskMemFree(wid);
+        slot->is_default = (default_id[0] && strcmp(slot->id, default_id) == 0);
+        if (SUCCEEDED(dev->lpVtbl->OpenPropertyStore(dev, STGM_READ, &store)) && store) {
+            static const PROPERTYKEY k_friendly = {
+                { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } },
+                14
+            };
+            PropVariantInit(&pv);
+            if (SUCCEEDED(store->lpVtbl->GetValue(store, &k_friendly, &pv)) &&
+                pv.vt == VT_LPWSTR && pv.pwszVal) {
+                (void)zcsr_mix_wide_to_utf8(pv.pwszVal, slot->name, sizeof(slot->name));
+            }
+            PropVariantClear(&pv);
+            store->lpVtbl->Release(store);
+        }
+        if (slot->name[0] == '\0') {
+            strncpy(slot->name, slot->id, sizeof(slot->name) - 1);
+        }
+        dev->lpVtbl->Release(dev);
+        ++count;
+    }
+done:
+    if (col) col->lpVtbl->Release(col);
+    if (en) en->lpVtbl->Release(en);
+    if (com_ok) CoUninitialize();
+    return count;
+#else
+    (void)out; (void)max;
+    return 0;
+#endif
+}
+
 bool zcsr_mix_set_master_gain(zcsr_mixer* m, float gain) {
     if (!m || gain < 0.0f || gain > 1.0f) return false;
     atomic_store_explicit(&m->master_gain_q8, (int)(gain * 256.0f + 0.5f), memory_order_release);
