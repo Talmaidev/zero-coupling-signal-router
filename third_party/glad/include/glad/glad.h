@@ -174,6 +174,9 @@ typedef ptrdiff_t GLintptr;
 #ifndef GL_NEAREST
 #define GL_NEAREST 0x2600
 #endif
+#ifndef GL_LINEAR_MIPMAP_LINEAR
+#define GL_LINEAR_MIPMAP_LINEAR 0x2703
+#endif
 
 /* Function-pointer typedefs for the GL 2.0+ subset used below (Khronos signatures). */
 typedef void (GLAPIENTRY *PFNGLGENVERTEXARRAYSPROC)(GLsizei n, GLuint* arrays);
@@ -240,6 +243,7 @@ typedef void (GLAPIENTRY *PFNGLBLITFRAMEBUFFERPROC)(GLint srcX0, GLint srcY0, GL
                                                     GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1,
                                                     GLbitfield mask, GLenum filter);
 typedef void (GLAPIENTRY *PFNGLDELETEBUFFERSPROC_RB)(GLsizei n, const GLuint* renderbuffers);
+typedef void (GLAPIENTRY *PFNGLGENERATEMIPMAPPROC)(GLenum target);
 #endif /* !__APPLE__ */
 
 #ifdef __cplusplus
@@ -299,6 +303,7 @@ extern PFNGLRENDERBUFFERSTORAGEMULTISAMPLESCENIC glad_glRenderbufferStorageMulti
 extern PFNGLFRAMEBUFFERRENDERBUFFERPROC glad_glFramebufferRenderbuffer;
 extern PFNGLBLITFRAMEBUFFERPROC glad_glBlitFramebuffer;
 extern PFNGLDELETEBUFFERSPROC_RB glad_glDeleteRenderbuffers;
+extern PFNGLGENERATEMIPMAPPROC glad_glGenerateMipmap;
 
 #ifdef __cplusplus
 }
@@ -355,5 +360,6 @@ extern PFNGLDELETEBUFFERSPROC_RB glad_glDeleteRenderbuffers;
 #define glFramebufferRenderbuffer glad_glFramebufferRenderbuffer
 #define glBlitFramebuffer glad_glBlitFramebuffer
 #define glDeleteRenderbuffers glad_glDeleteRenderbuffers
+#define glGenerateMipmap glad_glGenerateMipmap
 
 #endif /* ZCSR_THIRD_PARTY_GLAD_H */
