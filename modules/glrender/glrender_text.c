@@ -123,13 +123,20 @@ void zcsr_gl_draw_text(zcsr_gl_renderer* r, const char* utf8, float x, float y, 
 
     /* Game-supplied TTF path: baseline origin, real per-glyph bearings and advances.
      * The caller's (x,y) is a top-left cell origin (the bitmap font contract), so lift it
-     * to a baseline by the font ascent before handing over. */
+     * to a baseline by the font ascent before handing over.
+     *
+     * 关键：字形是按 pixel_height 光栅化的一次性位图。用 1.4 / 0.6 这种分数缩放去采样，
+     * 等于在缩放一张已经烘好的位图 —— 越缩越糊（之前"字体反而更模糊"就是这个）。
+     * 因此这里把缩放吸附到整数倍：1.4 -> 1、0.6 -> 1、2.4 -> 2。要更大的字就传更大
+     * 的整数倍，由调用方决定，而不是让采样器去猜。 */
     if (r->font_atlas) {
         zcsr_font_metrics_info m;
+        float snapped = roundf(scale);
         float baseline_y = y;
+        if (snapped < 1.0f) snapped = 1.0f;
         if (zcsr_font_atlas_get_metrics((const zcsr_font_atlas*)r->font_atlas, &m))
-            baseline_y = y + m.ascent * scale;
-        zcsr_font_draw_text((zcsr_font_atlas*)r->font_atlas, utf8, x, baseline_y, scale,
+            baseline_y = y + m.ascent * snapped;
+        zcsr_font_draw_text((zcsr_font_atlas*)r->font_atlas, utf8, x, baseline_y, snapped,
                             cr, cg, cb, ca);
         return;
     }
