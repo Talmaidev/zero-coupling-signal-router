@@ -1,6 +1,7 @@
 build/
 build-*/
 build-release/
+build_arch/
 out/
 *.o
 *.a
