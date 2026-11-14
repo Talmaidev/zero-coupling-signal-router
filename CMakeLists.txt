@@ -26,6 +26,7 @@ endif()
 
 # --- Optional Box2D v3 physics (fetched on demand; zero impact on default builds) ---
 option(ZCSR_ENABLE_BOX2D "Fetch Box2D v3 for game projects" OFF)
+option(ZCSR_BUILD_TESTS "Build repository-native contract tests" ON)
 if(ZCSR_ENABLE_BOX2D)
   include(FetchContent)
   FetchContent_Declare(box2d
@@ -331,3 +332,12 @@ add_custom_target(check_coupling
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_no_cross_includes.sh
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   COMMENT "Verifying no cross-module includes")
+
+# --- Repository-native contract tests ---
+# Only when this repository is the top-level project. When it is consumed via
+# add_subdirectory (for example by game_test), the consumer owns its test target
+# names and must not collide with the engine's own CTest entries.
+if(ZCSR_BUILD_TESTS AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  enable_testing()
+  add_subdirectory(tests)
+endif()

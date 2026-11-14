@@ -13,5 +13,9 @@ void*       zcsr_arena_alloc(zcsr_arena*, size_t bytes, size_t align); /* NULL i
 void        zcsr_arena_reset(zcsr_arena*);                             /* free all (LIFO) */
 size_t      zcsr_arena_used(const zcsr_arena*);
 size_t      zcsr_arena_capacity(const zcsr_arena*);
+/* Number of successful zcsr_arena_alloc calls since init/reset. This counts
+ * engine-arena allocations only; it does not observe libc malloc, GPU driver,
+ * or other engine-internal allocations. */
+size_t      zcsr_arena_alloc_count(const zcsr_arena*);
 
 #endif /* ZCSR_ARENA_H */

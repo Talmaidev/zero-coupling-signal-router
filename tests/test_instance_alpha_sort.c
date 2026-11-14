@@ -56,6 +56,36 @@ int main(void) {
               "empty array rejected");
     }
 
+    /* Atlas-page contract: four instances sharing one texture are one run. */
+    {
+        zcsr_gl_instance same_tex[4];
+        zcsr_gl_instance scratch[4];
+        size_t i;
+        for (i = 0; i < 4u; ++i) same_tex[i] = make_instance(7u, (float)i, 1.0f, false);
+        CHECK(zcsr_sort_instances(same_tex, 4u, scratch, sizeof(scratch)) == 1u,
+              "same atlas page is one texture run");
+    }
+
+    /* New submission APIs must reject null arguments without touching GL. */
+    {
+        zcsr_gl_sorted_run runs[2];
+        float ms = -1.0f;
+        memset(runs, 0, sizeof(runs));
+        CHECK(zcsr_gl_draw_instances(NULL, 1u, instances, 1u) == 0u,
+              "draw_instances null renderer returns 0");
+        CHECK(zcsr_gl_submit_instance_batch(NULL, instances, 1u, temp, sizeof(temp)) == 0u,
+              "submit_instance_batch null renderer returns 0");
+        CHECK(zcsr_gl_submit_state(NULL, instances, 1u, temp, sizeof(temp)) == 0u,
+              "submit_state null renderer returns 0");
+        CHECK(zcsr_gl_submit_sorted_runs(NULL, runs, 2u) == 0u,
+              "submit_sorted_runs null renderer returns 0");
+        CHECK(zcsr_gl_submit_sorted_runs(NULL, NULL, 0u) == 0u,
+              "submit_sorted_runs empty returns 0");
+        CHECK(!zcsr_gl_gpu_timer_begin(NULL), "gpu timer begin rejects null renderer");
+        CHECK(!zcsr_gl_gpu_timer_end(NULL), "gpu timer end rejects null renderer");
+        CHECK(!zcsr_gl_gpu_timer_last_ms(NULL, &ms), "gpu timer result rejects null renderer");
+    }
+
     if (failures == 0) {
         printf("test_instance_alpha_sort PASS\n");
         return 0;
