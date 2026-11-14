@@ -126,6 +126,32 @@ int main(void) {
 
     zcsr_gl_texture_filter(renderer, tex, true);
     zcsr_gl_texture_filter(renderer, tex, false);
+
+    /* Single-texture batch must take the no-sort fast path and still submit
+     * every instance. This is the path that used to re-sort 1M instances. */
+    {
+        zcsr_gl_instance batch[2] = {0};
+        zcsr_gl_instance scratch[2];
+        size_t submitted;
+        batch[0].tex = tex;
+        batch[0].cx = 16.0f; batch[0].cy = 16.0f;
+        batch[0].w = 8.0f; batch[0].h = 8.0f;
+        batch[0].u1 = 1.0f; batch[0].v1 = 1.0f;
+        batch[0].r = 1.0f; batch[0].g = 1.0f; batch[0].b = 1.0f; batch[0].a = 1.0f;
+        batch[1] = batch[0];
+        batch[1].cx = 32.0f;
+        submitted = zcsr_gl_submit_instance_batch(renderer, batch, 2u,
+                                                  scratch, sizeof scratch);
+        if (submitted != 2u) {
+            printf("FAIL: single-texture instance batch submitted %zu/2\n", submitted);
+            zcsr_gl_texture_destroy(renderer, tex);
+            zcsr_gl_destroy(renderer);
+            zcsr_surface_destroy(surface);
+            return 1;
+        }
+        printf("PASS: single-texture instance batch fast path\n");
+    }
+
     zcsr_gl_sprite sprite = { tex, { 16.0f, 16.0f, 64.0f, 64.0f }, 0.25f, 1.0f, 1.0f, 1.0f, 1.0f,
                               ZCSR_MOD_MULTIPLY, 0.0f };
     zcsr_gl_begin(renderer);

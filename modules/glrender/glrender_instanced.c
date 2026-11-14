@@ -299,11 +299,33 @@ void zcsr_instance_run(const zcsr_gl_instance* sorted, size_t count, size_t run_
     *out_len = 0;
 }
 
+/* One-texture fast path: the batch already has a single draw run, so the 4-pass
+ * radix sort cannot change draw order. Preserve the general sort path for any
+ * batch that actually spans textures. */
+static bool zcsr_gl_instances_one_texture(const zcsr_gl_instance* instances, size_t count) {
+    zcsr_gl_texture first;
+    size_t i;
+    if (!instances || count == 0) return false;
+    first = instances[0].tex;
+    for (i = 1; i < count; ++i) {
+        if (instances[i].tex != first) return false;
+    }
+    return true;
+}
+
 size_t zcsr_gl_submit_instance_batch(zcsr_gl_renderer* r, zcsr_gl_instance* instances,
                                      size_t count, void* temp, size_t temp_bytes) {
     size_t runs, i, submitted = 0;
     if (!r || !instances || !temp || count == 0) return 0;
     if (temp_bytes < count * sizeof(zcsr_gl_instance)) return 0;
+
+    if (zcsr_gl_instances_one_texture(instances, count)) {
+        if (!zcsr_gl_instanced_begin_state(r)) return 0;
+        submitted = zcsr_gl_draw_run_batched(r, instances[0].tex, instances, count);
+        zcsr_gl_instanced_end_state();
+        return submitted;
+    }
+
     runs = zcsr_sort_instances(instances, count, temp, temp_bytes);
 
     /* Shared GL state once for all texture runs (O2: state hoisting). */

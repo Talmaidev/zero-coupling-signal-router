@@ -13,6 +13,14 @@ if(WIN32)
 endif()
 add_test(NAME instance_alpha_sort COMMAND instance_alpha_sort_test)
 
+add_executable(glrender_test test_glrender.c)
+target_link_libraries(glrender_test PRIVATE
+    zcsr_glrender zcsr_platform zcsr_font zcsr_atlas zcsr_image zcsr_core)
+if(WIN32)
+    target_link_libraries(glrender_test PRIVATE user32 gdi32 opengl32)
+endif()
+add_test(NAME glrender COMMAND glrender_test)
+
 add_executable(ui_hit_test test_ui_hit.c)
 target_link_libraries(ui_hit_test PRIVATE zcsr_ui zcsr_core)
 add_test(NAME ui_hit COMMAND ui_hit_test)
