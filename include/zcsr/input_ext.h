@@ -16,7 +16,21 @@ typedef struct {
     int     dx, dy;   /* delta since last pump */
     int     wheel;    /* wheel ticks accumulated since last pump */
     uint8_t buttons;  /* OR of zcsr_mouse_button currently held */
+    uint8_t pressed;  /* zcsr_mouse_button bits that went up->down since last pump */
+    uint8_t released; /* zcsr_mouse_button bits that went down->up since last pump */
 } zcsr_mouse_state;
+
+/* Derive one-frame pressed/released edges from the current held mask and the
+ * previous frame's held mask. Pure function; backends call it once per pump.
+ * `previous_buttons` is the held mask returned by the previous pump. */
+void zcsr_mouse_state_update_edges(zcsr_mouse_state* state, uint8_t previous_buttons);
+
+/* Merge queued backend event edges into this frame's pressed/released.
+ * Event-driven backends can deliver down+up between two pumps; the held mask
+ * is then already 0 and derived edges would be lost. Both masks are clipped to
+ * ZCSR_MOUSE_LEFT/RIGHT/MIDDLE. Pure function. */
+void zcsr_mouse_state_merge_event_edges(zcsr_mouse_state* state,
+                                        uint8_t pressed, uint8_t released);
 
 /* ---- Gamepad (up to 2, Xbox layout) ---- */
 enum { ZCSR_PAD_MAX = 2 };

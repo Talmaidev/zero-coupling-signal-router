@@ -2,6 +2,7 @@
  * Platform-independent GL logic. Context must be current and glad loaded before core_init.
  */
 #include "glrender_internal.h"
+#include "zcsr/diagnostics.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -28,8 +29,8 @@ void zcsr_gl_log_object_info(
     __android_log_print(ANDROID_LOG_ERROR, "zcsr-gl", "%s: %s",
         label, log[0] ? log : "(empty info log)");
 #else
-    fprintf(stderr, "zcsr-gl: %s: %s\n",
-        label, log[0] ? log : "(empty info log)");
+    ZCSR_LOG_ERROR("glrender", "%s: %s",
+                   label, log[0] ? log : "(empty info log)");
 #endif
 }
 
@@ -354,30 +355,32 @@ void zcsr_gl_texture_destroy(zcsr_gl_renderer* r, zcsr_gl_texture t) {
 void zcsr_gl_set_target(zcsr_gl_renderer* r, zcsr_gl_texture target_or_zero) {
     zcsr_gl_tex_entry* e;
     if (!r || !zcsr_gl_make_current(r)) return;
-    printf("[GL_SET_TARGET] called: target=%d (0=backbuffer, other=RTT texture)\n", (int)target_or_zero);
+    ZCSR_LOG_DEBUG("glrender", "set_target called: target=%d (0=backbuffer)",
+                   (int)target_or_zero);
     if (target_or_zero == 0) {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         r->target = 0;
         zcsr_gl_update_size(r);
-        printf("[GL_SET_TARGET] -> bound backbuffer, size=%dx%d\n", r->width, r->height);
+        ZCSR_LOG_DEBUG("glrender", "bound backbuffer %dx%d", r->width, r->height);
         return;
     }
     e = zcsr_gl_find_tex(r, target_or_zero);
     if (!e) {
-        printf("[GL_SET_TARGET] ERROR: texture %d not found!\n", (int)target_or_zero);
+        ZCSR_LOG_ERROR("glrender", "set_target: texture %d not found", (int)target_or_zero);
         return;
     }
     glBindFramebuffer(GL_FRAMEBUFFER, r->fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target_or_zero, 0);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        printf("[GL_SET_TARGET] ERROR: framebuffer incomplete, falling back to backbuffer!\n");
+        ZCSR_LOG_ERROR("glrender", "set_target: framebuffer incomplete, falling back");
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         r->target = 0;
         zcsr_gl_update_size(r);
         return;
     }
     r->target = target_or_zero;
-    printf("[GL_SET_TARGET] -> bound RTT texture %d, size=%dx%d\n", (int)target_or_zero, e->w, e->h);
+    ZCSR_LOG_DEBUG("glrender", "bound RTT texture %d, %dx%d",
+                   (int)target_or_zero, e->w, e->h);
     r->width = e->w;
     r->height = e->h;
 }

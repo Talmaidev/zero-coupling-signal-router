@@ -105,6 +105,16 @@ typedef struct {
     bool     apply_failed;
 } zcsr_ui_context;
 
+/* Pointer capture over the same flat node array used by zcsr_ui_hit_test.
+ * down: stores the topmost hit id as pressed_id/hot_id and returns it.
+ * up: returns the captured id only when released over the same node; always clears capture.
+ * owner: current captured id (ZCSR_UI_ID_NONE when no button is down). */
+zcsr_ui_id zcsr_ui_pointer_down(zcsr_ui_context* ctx, const zcsr_ui_node* nodes,
+                                size_t count, float x, float y);
+zcsr_ui_id zcsr_ui_pointer_up(zcsr_ui_context* ctx, const zcsr_ui_node* nodes,
+                              size_t count, float x, float y);
+zcsr_ui_id zcsr_ui_pointer_owner(const zcsr_ui_context* ctx);
+
 /* 面板运行时（旧链）的函数声明已全部移除：它们从未有过实现，也没有任何调用者。
  *
  * 移除的直接原因是一个硬冲突：

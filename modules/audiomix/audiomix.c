@@ -5,6 +5,7 @@
  */
 #include <stdlib.h>
 #include "zcsr/audio_mix.h"
+#include "zcsr/diagnostics.h"
 #include "audiomix_internal.h"
 
 #include <stdatomic.h>
@@ -1694,11 +1695,11 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
         UINT dev_count = waveOutGetNumDevs();
         UINT chosen_device = WAVE_MAPPER;
         for (UINT i = 0; i < dev_count; i++) {
-            WAVEOUTCAPS caps;
+            WAVEOUTCAPSA caps;
             memset(&caps, 0, sizeof(caps));
-            if (waveOutGetDevCaps(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
-                if (wcsstr(caps.szPname, L"FxSound") == NULL &&
-                    wcsstr(caps.szPname, L"Virtual") == NULL) {
+            if (waveOutGetDevCapsA(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
+                if (strstr(caps.szPname, "FxSound") == NULL &&
+                    strstr(caps.szPname, "Virtual") == NULL) {
                     chosen_device = i;
                     break;
                 }
@@ -1729,18 +1730,22 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
                         pv.vt == VT_LPWSTR && pv.pwszVal) {
                         int matched = 0;
                         for (UINT wi = 0; wi < dev_count; ++wi) {
-                            WAVEOUTCAPS wc;
+                            WAVEOUTCAPSA wc;
+                            WCHAR wname[MAXPNAMELEN];
                             memset(&wc, 0, sizeof(wc));
-                            if (waveOutGetDevCaps(wi, &wc, sizeof(wc)) == MMSYSERR_NOERROR &&
-                                (wcsstr(wc.szPname, pv.pwszVal) || wcsstr(pv.pwszVal, wc.szPname))) {
+                            if (waveOutGetDevCapsA(wi, &wc, sizeof(wc)) == MMSYSERR_NOERROR &&
+                                MultiByteToWideChar(CP_ACP, 0, wc.szPname, -1,
+                                                    wname, MAXPNAMELEN) > 0 &&
+                                (wcsstr(wname, pv.pwszVal) || wcsstr(pv.pwszVal, wname))) {
                                 chosen_device = wi;
                                 matched = 1;
-                                printf("[audio] waveout selected endpoint (%u)\n", wi);
+                                ZCSR_LOG_INFO("audiomix", "waveout selected endpoint (%u)", wi);
                                 break;
                             }
                         }
                         if (!matched)
-                            printf("[audio] waveout selected endpoint: no name match, fallback\n");
+                            ZCSR_LOG_INFO("audiomix",
+                                          "waveout selected endpoint: no name match, fallback");
                     }
                     PropVariantClear(&pv);
                     ps->lpVtbl->Release(ps);
@@ -1820,8 +1825,9 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
     hr = b->audio_client->lpVtbl->Start(b->audio_client);
     if (FAILED(hr)) goto fail;
 
-    printf("[audio] backend opened endpoint '%s'\n",
-           (owner && owner->output_device_id[0]) ? owner->output_device_id : "system-default");
+    ZCSR_LOG_INFO("audiomix", "backend opened endpoint '%s'",
+                  (owner && owner->output_device_id[0]) ? owner->output_device_id
+                                                        : "system-default");
     b->opened = true;
     b->timeout_count = 0;
     b->retry_after_tick = 0;
@@ -2499,6 +2505,21 @@ void zcsr_mix_backend_write(
     }
 }
 
+#elif defined(__linux__) && !defined(__ANDROID__) && !defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
+/* Headless/no-PipeWire Linux: keep the mixer contract and consume periods
+ * silently.  This is a real backend implementation, not a fake success path. */
+void zcsr_mix_backend_close(zcsr_mix_backend* b) {
+    zcsr_mixer* owner;
+    if (!b) return;
+    owner = b->owner;
+    *b = (zcsr_mix_backend){ 0 };
+    b->owner = owner;
+}
+void zcsr_mix_backend_open(zcsr_mix_backend* b) { if (b) b->opened = false; }
+void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned frames) {
+    (void)b; (void)pcm; (void)frames; zcsr_mix_sleep_period();
+}
+
 #elif !defined(__linux__)
 
 void zcsr_mix_backend_close(zcsr_mix_backend* b) { if (b) *b = (zcsr_mix_backend){ 0 }; }
@@ -2561,9 +2582,7 @@ static bool zcsr_mix_backend_close_ex(zcsr_mixer* m) {
 #  if defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
     return !m->backend.opened && m->backend.pw.loop == NULL;
 #  else
-    return !m->backend.opened &&
-           m->backend.pcm == NULL &&
-           m->backend.lib == NULL;
+    return !m->backend.opened;
 #  endif
 #elif defined(_WIN32)
     return !m->backend.opened &&
@@ -3202,10 +3221,23 @@ bool zcsr_mix_register_wav(zcsr_mixer* m, const char* id, const char* wav_path) 
 #if defined(_WIN32)
 /* 枚举当前活动的渲染端点。不做设备切换，只给 UI 一个真实列表。 */
 bool zcsr_mix_set_output_device(zcsr_mixer* m, const char* endpoint_id) {
+    zcsr_mix_device_info devices[16];
+    int count;
+    int i;
+    bool found = false;
     if (!m) return false;
     if (!endpoint_id) endpoint_id = "";
     if (strlen(endpoint_id) >= sizeof(m->output_device_id)) return false;
-    strcpy(m->output_device_id, endpoint_id);
+    if (endpoint_id[0] == '\0') {
+        found = true;  /* empty = system default */
+    } else {
+        count = zcsr_mix_list_output_devices(devices, (int)(sizeof(devices) / sizeof(devices[0])));
+        for (i = 0; i < count; ++i) {
+            if (strcmp(devices[i].id, endpoint_id) == 0) { found = true; break; }
+        }
+    }
+    if (!found) return false;  /* unknown id: keep the current endpoint */
+    snprintf(m->output_device_id, sizeof(m->output_device_id), "%s", endpoint_id);
     /* 请求线程只写字符串 + pending 标志；关流/重开由 worker 做。 */
     zcsr_mix_device_set_pending(m, ZCSR_MIX_DEVICE_PENDING_CHANGED);
     return true;
@@ -3222,6 +3254,17 @@ static int zcsr_mix_wide_to_utf8(const wchar_t* w, char* out, int cap) {
     if (n <= 0) { out[0] = '\0'; return 0; }
     out[n] = '\0';
     return n;
+}
+#else
+/* R5 contract: unsupported hosts fail explicitly; they do not pretend success. */
+bool zcsr_mix_set_output_device(zcsr_mixer* m, const char* endpoint_id) {
+    (void)m; (void)endpoint_id;
+    return false;
+}
+
+const char* zcsr_mix_get_output_device(const zcsr_mixer* m) {
+    (void)m;
+    return "";
 }
 #endif
 
@@ -3286,6 +3329,7 @@ int zcsr_mix_list_output_devices(zcsr_mix_device_info* out, int max) {
         }
         if (slot->name[0] == '\0') {
             strncpy(slot->name, slot->id, sizeof(slot->name) - 1);
+            slot->name[sizeof(slot->name) - 1] = '\0';
         }
         dev->lpVtbl->Release(dev);
         ++count;

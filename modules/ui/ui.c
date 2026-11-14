@@ -554,7 +554,8 @@ ZCSR_Result zcsr_ui_process_input(ZCSR_UI* ui, const ZCSR_Input* in)
             n = ui_find_node(ui, ui->pressed_id);
             if (n && n->component == ZCSR_COMPONENT_SLIDER && n->enabled) {
                 float t = (in->pointer_position.x - n->local_rect.x) / n->local_rect.width;
-                if (t < 0) t = 0; if (t > 1) t = 1;
+                if (t < 0) t = 0;
+                if (t > 1) t = 1;
                 n->float_val = n->float_min + t * (n->float_max - n->float_min);
                 ui_emit_event(ui, ZCSR_EVENT_SLIDER_CHANGED, n->id, n->component);
             }
@@ -628,7 +629,8 @@ ZCSR_Result zcsr_ui_process_input(ZCSR_UI* ui, const ZCSR_Input* in)
                 /* Slider: set value immediately. */
                 if (n->component == ZCSR_COMPONENT_SLIDER) {
                     float t = (in->pointer_position.x - n->local_rect.x) / n->local_rect.width;
-                    if (t < 0) t = 0; if (t > 1) t = 1;
+                    if (t < 0) t = 0;
+                if (t > 1) t = 1;
                     n->float_val = n->float_min + t * (n->float_max - n->float_min);
                     ui_emit_event(ui, ZCSR_EVENT_SLIDER_CHANGED, n->id, n->component);
                 }
@@ -914,7 +916,8 @@ ZCSR_Result zcsr_ui_build_draw_list(ZCSR_UI* ui)
             /* Knob position */
             float range = n->float_max - n->float_min;
             float frac = range > 0.001f ? (n->float_val - n->float_min) / range : 0.5f;
-            if (frac < 0) frac = 0; if (frac > 1) frac = 1;
+            if (frac < 0) frac = 0;
+            if (frac > 1) frac = 1;
             float knob_x = r.x + frac * r.width;
             ZCSR_Rect knob = { knob_x - 6.0f, cy - 8.0f, 12.0f, 16.0f };
             push_rect(ui, n->id, &knob, n->hovered ? bg_hover : knob_col, layer + 1);

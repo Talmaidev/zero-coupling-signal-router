@@ -177,6 +177,15 @@ typedef ptrdiff_t GLintptr;
 #ifndef GL_LINEAR_MIPMAP_LINEAR
 #define GL_LINEAR_MIPMAP_LINEAR 0x2703
 #endif
+#ifndef GL_TIME_ELAPSED
+#define GL_TIME_ELAPSED 0x88BF
+#endif
+#ifndef GL_QUERY_RESULT
+#define GL_QUERY_RESULT 0x8866
+#endif
+#ifndef GL_QUERY_RESULT_AVAILABLE
+#define GL_QUERY_RESULT_AVAILABLE 0x8867
+#endif
 
 /* Function-pointer typedefs for the GL 2.0+ subset used below (Khronos signatures). */
 typedef void (GLAPIENTRY *PFNGLGENVERTEXARRAYSPROC)(GLsizei n, GLuint* arrays);
@@ -244,6 +253,19 @@ typedef void (GLAPIENTRY *PFNGLBLITFRAMEBUFFERPROC)(GLint srcX0, GLint srcY0, GL
                                                     GLbitfield mask, GLenum filter);
 typedef void (GLAPIENTRY *PFNGLDELETEBUFFERSPROC_RB)(GLsizei n, const GLuint* renderbuffers);
 typedef void (GLAPIENTRY *PFNGLGENERATEMIPMAPPROC)(GLenum target);
+/* GL 3.3 / GLES3 elapsed-time query entry points used by zcsr_gl_gpu_timer_*.
+ * Windows' GL/gl.h and Android's GLES3 header do not provide these PFNGL typedefs;
+ * Linux' GL/glext.h and Apple's OpenGL/gl3.h already provide the exact types, and
+ * redeclaring them there collides with GLuint64's unsigned long on LP64. */
+#if defined(_WIN32) || defined(__ANDROID__)
+typedef void (GLAPIENTRY *PFNGLGENQUERIESPROC)(GLsizei n, GLuint* ids);
+typedef void (GLAPIENTRY *PFNGLDELETEQUERIESPROC)(GLsizei n, const GLuint* ids);
+typedef void (GLAPIENTRY *PFNGLBEGINQUERYPROC)(GLenum target, GLuint id);
+typedef void (GLAPIENTRY *PFNGLENDQUERYPROC)(GLenum target);
+typedef void (GLAPIENTRY *PFNGLGETQUERYOBJECTIVPROC)(GLuint id, GLenum pname, GLint* params);
+typedef void (GLAPIENTRY *PFNGLGETQUERYOBJECTUI64VPROC)(GLuint id, GLenum pname,
+                                                        unsigned long long* params);
+#endif
 #endif /* !__APPLE__ */
 
 #ifdef __cplusplus
@@ -304,6 +326,12 @@ extern PFNGLFRAMEBUFFERRENDERBUFFERPROC glad_glFramebufferRenderbuffer;
 extern PFNGLBLITFRAMEBUFFERPROC glad_glBlitFramebuffer;
 extern PFNGLDELETEBUFFERSPROC_RB glad_glDeleteRenderbuffers;
 extern PFNGLGENERATEMIPMAPPROC glad_glGenerateMipmap;
+extern PFNGLGENQUERIESPROC glad_glGenQueries;
+extern PFNGLDELETEQUERIESPROC glad_glDeleteQueries;
+extern PFNGLBEGINQUERYPROC glad_glBeginQuery;
+extern PFNGLENDQUERYPROC glad_glEndQuery;
+extern PFNGLGETQUERYOBJECTIVPROC glad_glGetQueryObjectiv;
+extern PFNGLGETQUERYOBJECTUI64VPROC glad_glGetQueryObjectui64v;
 
 #ifdef __cplusplus
 }
@@ -361,5 +389,11 @@ extern PFNGLGENERATEMIPMAPPROC glad_glGenerateMipmap;
 #define glBlitFramebuffer glad_glBlitFramebuffer
 #define glDeleteRenderbuffers glad_glDeleteRenderbuffers
 #define glGenerateMipmap glad_glGenerateMipmap
+#define glGenQueries glad_glGenQueries
+#define glDeleteQueries glad_glDeleteQueries
+#define glBeginQuery glad_glBeginQuery
+#define glEndQuery glad_glEndQuery
+#define glGetQueryObjectiv glad_glGetQueryObjectiv
+#define glGetQueryObjectui64v glad_glGetQueryObjectui64v
 
 #endif /* ZCSR_THIRD_PARTY_GLAD_H */
