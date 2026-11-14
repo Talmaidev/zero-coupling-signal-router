@@ -1,21 +1,21 @@
-/* modules/runtime_viewport/runtime_viewport.c — Engine-Owned Runtime Viewport
+/* modules/viewport/viewport.c — Engine-Owned Viewport
  *
  * 实现 Contain Fit 等比例适配和坐标变换
  */
-#include "zcsr/runtime_viewport.h"
+#include "zcsr/viewport.h"
 #include "zcsr/diagnostics.h"
 
 #include <math.h>
 #include <stddef.h>
 
-void zcsr_runtime_viewport_init(zcsr_runtime_viewport* vp,
+void zcsr_viewport_init(zcsr_viewport* vp,
                                 float ref_width, float ref_height) {
     if (vp == NULL) {
-        ZCSR_LOG_ERROR("runtime_viewport", "init: vp is NULL");
+        ZCSR_LOG_ERROR("viewport", "init: vp is NULL");
         return;
     }
     if (ref_width <= 0 || ref_height <= 0) {
-        ZCSR_LOG_ERROR("runtime_viewport", "init: invalid ref size %.1f x %.1f", ref_width, ref_height);
+        ZCSR_LOG_ERROR("viewport", "init: invalid ref size %.1f x %.1f", ref_width, ref_height);
         return;
     }
 
@@ -37,24 +37,24 @@ void zcsr_runtime_viewport_init(zcsr_runtime_viewport* vp,
     vp->pillarbox_left = 0.0f;
     vp->pillarbox_right = 0.0f;
 
-    ZCSR_LOG_INFO("runtime_viewport", "Initialized (ref=%.0fx%.0f)", ref_width, ref_height);
+    ZCSR_LOG_INFO("viewport", "Initialized (ref=%.0fx%.0f)", ref_width, ref_height);
 }
 
-void zcsr_runtime_viewport_set_workspace(zcsr_runtime_viewport* vp,
+void zcsr_viewport_set_workspace(zcsr_viewport* vp,
                                          float x, float y, float w, float h) {
     if (vp == NULL) return;
     if (w < 0 || h < 0) {
-        ZCSR_LOG_WARN("runtime_viewport", "set_workspace: negative size %.1f x %.1f", w, h);
+        ZCSR_LOG_WARN("viewport", "set_workspace: negative size %.1f x %.1f", w, h);
         w = 0; h = 0;
     }
     vp->workspace_rect.x = x;
     vp->workspace_rect.y = y;
     vp->workspace_rect.w = w;
     vp->workspace_rect.h = h;
-    zcsr_runtime_viewport_update(vp);
+    zcsr_viewport_update(vp);
 }
 
-void zcsr_runtime_viewport_update(zcsr_runtime_viewport* vp) {
+void zcsr_viewport_update(zcsr_viewport* vp) {
     if (vp == NULL) return;
 
     float ws_w = vp->workspace_rect.w;
@@ -116,7 +116,7 @@ void zcsr_runtime_viewport_update(zcsr_runtime_viewport* vp) {
     vp->pillarbox_right = vp->workspace_rect.x + ws_w - (content_x + content_w);
 }
 
-void zcsr_runtime_viewport_display_to_logic(const zcsr_runtime_viewport* vp,
+void zcsr_viewport_display_to_logic(const zcsr_viewport* vp,
                                             float display_x, float display_y,
                                             float* logic_x, float* logic_y) {
     if (vp == NULL) return;
@@ -134,7 +134,7 @@ void zcsr_runtime_viewport_display_to_logic(const zcsr_runtime_viewport* vp,
     }
 }
 
-void zcsr_runtime_viewport_logic_to_display(const zcsr_runtime_viewport* vp,
+void zcsr_viewport_logic_to_display(const zcsr_viewport* vp,
                                           float logic_x, float logic_y,
                                           float* display_x, float* display_y) {
     if (vp == NULL) return;
@@ -146,7 +146,7 @@ void zcsr_runtime_viewport_logic_to_display(const zcsr_runtime_viewport* vp,
     }
 }
 
-bool zcsr_runtime_viewport_hit_content(const zcsr_runtime_viewport* vp,
+bool zcsr_viewport_hit_content(const zcsr_viewport* vp,
                                        float display_x, float display_y) {
     if (vp == NULL) return false;
     return display_x >= vp->content_rect.x &&

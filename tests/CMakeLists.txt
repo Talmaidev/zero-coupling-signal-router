@@ -23,3 +23,11 @@ if(WIN32)
     target_link_libraries(music_api_test PRIVATE ole32)
 endif()
 add_test(NAME music_api COMMAND music_api_test "${CMAKE_CURRENT_SOURCE_DIR}/data")
+
+add_executable(collision_save_test test_collision_save.c)
+target_link_libraries(collision_save_test PRIVATE zcsr_collision zcsr_save zcsr_core)
+add_test(NAME collision_save COMMAND collision_save_test)
+
+add_executable(viewport_test test_viewport.c)
+target_link_libraries(viewport_test PRIVATE zcsr_viewport zcsr_core)
+add_test(NAME viewport COMMAND viewport_test)
