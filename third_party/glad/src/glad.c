@@ -50,6 +50,12 @@ PFNGLFRAMEBUFFERRENDERBUFFERPROC glad_glFramebufferRenderbuffer;
 PFNGLBLITFRAMEBUFFERPROC glad_glBlitFramebuffer;
 PFNGLDELETEBUFFERSPROC_RB glad_glDeleteRenderbuffers;
 PFNGLGENERATEMIPMAPPROC glad_glGenerateMipmap;
+PFNGLGENQUERIESPROC glad_glGenQueries;
+PFNGLDELETEQUERIESPROC glad_glDeleteQueries;
+PFNGLBEGINQUERYPROC glad_glBeginQuery;
+PFNGLENDQUERYPROC glad_glEndQuery;
+PFNGLGETQUERYOBJECTIVPROC glad_glGetQueryObjectiv;
+PFNGLGETQUERYOBJECTUI64VPROC glad_glGetQueryObjectui64v;
 
 typedef union {
     GLADgenericproc generic;
@@ -103,6 +109,12 @@ typedef union {
     PFNGLBLITFRAMEBUFFERPROC glBlitFramebuffer;
     PFNGLDELETEBUFFERSPROC_RB glDeleteRenderbuffers;
     PFNGLGENERATEMIPMAPPROC glGenerateMipmap;
+    PFNGLGENQUERIESPROC glGenQueries;
+    PFNGLDELETEQUERIESPROC glDeleteQueries;
+    PFNGLBEGINQUERYPROC glBeginQuery;
+    PFNGLENDQUERYPROC glEndQuery;
+    PFNGLGETQUERYOBJECTIVPROC glGetQueryObjectiv;
+    PFNGLGETQUERYOBJECTUI64VPROC glGetQueryObjectui64v;
 } zcsr_glad_proc;
 
 #define ZCSR_LOAD(name) do { zcsr_glad_proc p; p.generic = load(#name); glad_##name = p.name; if (!glad_##name) return 0; } while (0)
@@ -159,6 +171,12 @@ int gladLoadGLLoader(GLADloadproc load) {
     ZCSR_LOAD(glFramebufferRenderbuffer);
     ZCSR_LOAD(glBlitFramebuffer);
     ZCSR_LOAD(glDeleteRenderbuffers);
+    ZCSR_LOAD(glGenQueries);
+    ZCSR_LOAD(glDeleteQueries);
+    ZCSR_LOAD(glBeginQuery);
+    ZCSR_LOAD(glEndQuery);
+    ZCSR_LOAD(glGetQueryObjectiv);
+    ZCSR_LOAD(glGetQueryObjectui64v);
     return 1;
 }
 

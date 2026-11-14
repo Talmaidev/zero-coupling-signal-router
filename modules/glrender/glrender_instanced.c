@@ -165,12 +165,10 @@ static void zcsr_gl_draw_instances_prepared(zcsr_gl_renderer* r, zcsr_gl_texture
     glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0, (GLsizei)count);
 }
 
-void zcsr_gl_draw_instances(zcsr_gl_renderer* r, zcsr_gl_texture texture,
-                            const zcsr_gl_instance* instances, size_t count) {
-    if (!r || !instances || count == 0 || texture == 0) return;
-    if (!zcsr_gl_find_tex(r, texture)) return;
-    if (!zcsr_gl_make_current(r)) return;
-
+/* Set up the shared instanced GL state once for a sequence of texture runs. */
+static bool zcsr_gl_instanced_begin_state(zcsr_gl_renderer* r) {
+    if (!r) return false;
+    if (!zcsr_gl_make_current(r)) return false;
     if (r->target == 0) {
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         zcsr_gl_update_size(r);
@@ -180,27 +178,45 @@ void zcsr_gl_draw_instances(zcsr_gl_renderer* r, zcsr_gl_texture texture,
                                r->target, 0);
     }
     glViewport(0, 0, r->width, r->height);
-
     glUseProgram(r->inst_program);
     glUniform2f(r->inst_uniform_view, (float)r->width, (float)r->height);
     glUniform1i(r->inst_uniform_tex, 0);
-
     glBindVertexArray(r->inst_vao);
-    /* Draw every instance. The VBO holds ZCSR_GL_MAX_INSTANCES, so a larger
-     * request is issued as consecutive batches instead of silently dropping
-     * instances past the cap. */
-    {
-        size_t remaining = count;
-        const zcsr_gl_instance* batch = instances;
-        while (remaining > 0u) {
-            size_t n = remaining > (size_t)ZCSR_GL_MAX_INSTANCES
-                     ? (size_t)ZCSR_GL_MAX_INSTANCES : remaining;
-            zcsr_gl_draw_instances_prepared(r, texture, batch, n);
-            batch += n;
-            remaining -= n;
-        }
-    }
+    return true;
+}
+
+static void zcsr_gl_instanced_end_state(void) {
     glBindVertexArray(0);
+}
+
+/* Draw one texture run, splitting it into upload-cap-sized chunks. Shared state
+ * (framebuffer/program/VAO) is already set by the caller. Returns submitted count. */
+static size_t zcsr_gl_draw_run_batched(zcsr_gl_renderer* r, zcsr_gl_texture texture,
+                                       const zcsr_gl_instance* instances, size_t count) {
+    size_t remaining;
+    const zcsr_gl_instance* batch;
+    if (!r || !instances || count == 0 || texture == 0) return 0;
+    if (!zcsr_gl_find_tex(r, texture)) return 0;
+    remaining = count;
+    batch = instances;
+    while (remaining > 0u) {
+        size_t n = remaining > (size_t)ZCSR_GL_MAX_INSTANCES
+                 ? (size_t)ZCSR_GL_MAX_INSTANCES : remaining;
+        zcsr_gl_draw_instances_prepared(r, texture, batch, n);
+        batch += n;
+        remaining -= n;
+    }
+    return count;
+}
+
+size_t zcsr_gl_draw_instances(zcsr_gl_renderer* r, zcsr_gl_texture texture,
+                              const zcsr_gl_instance* instances, size_t count) {
+    size_t submitted;
+    if (!r || !instances || count == 0 || texture == 0) return 0;
+    if (!zcsr_gl_instanced_begin_state(r)) return 0;
+    submitted = zcsr_gl_draw_run_batched(r, texture, instances, count);
+    zcsr_gl_instanced_end_state();
+    return submitted;
 }
 
 /* ===========================================================================================
@@ -283,38 +299,36 @@ void zcsr_instance_run(const zcsr_gl_instance* sorted, size_t count, size_t run_
     *out_len = 0;
 }
 
-void zcsr_gl_submit_instance_batch(zcsr_gl_renderer* r, zcsr_gl_instance* instances,
-                                   size_t count, void* temp, size_t temp_bytes) {
-    size_t runs, i;
-    if (!r || !instances || !temp || count == 0) return;
-    if (count > ZCSR_GL_MAX_INSTANCES) return;
-    if (temp_bytes < count * sizeof(zcsr_gl_instance)) return;
+size_t zcsr_gl_submit_instance_batch(zcsr_gl_renderer* r, zcsr_gl_instance* instances,
+                                     size_t count, void* temp, size_t temp_bytes) {
+    size_t runs, i, submitted = 0;
+    if (!r || !instances || !temp || count == 0) return 0;
+    if (temp_bytes < count * sizeof(zcsr_gl_instance)) return 0;
     runs = zcsr_sort_instances(instances, count, temp, temp_bytes);
 
-    /* Set up shared GL state once for all texture runs (O2: state hoisting). */
-    if (!zcsr_gl_make_current(r)) return;
-    if (r->target == 0) {
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        zcsr_gl_update_size(r);
-    } else {
-        glBindFramebuffer(GL_FRAMEBUFFER, r->fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                               r->target, 0);
-    }
-    glViewport(0, 0, r->width, r->height);
-    glUseProgram(r->inst_program);
-    glUniform2f(r->inst_uniform_view, (float)r->width, (float)r->height);
-    glUniform1i(r->inst_uniform_tex, 0);
-    glBindVertexArray(r->inst_vao);
-
+    /* Shared GL state once for all texture runs (O2: state hoisting). */
+    if (!zcsr_gl_instanced_begin_state(r)) return 0;
     for (i = 0; i < runs; ++i) {
         zcsr_gl_texture tex;
         size_t start, len;
         zcsr_instance_run(instances, count, i, &tex, &start, &len);
-        if (tex && zcsr_gl_find_tex(r, tex))
-            zcsr_gl_draw_instances_prepared(r, tex, instances + start, len);
+        submitted += zcsr_gl_draw_run_batched(r, tex, instances + start, len);
     }
-    glBindVertexArray(0);
+    zcsr_gl_instanced_end_state();
+    return submitted;
+}
+
+size_t zcsr_gl_submit_sorted_runs(zcsr_gl_renderer* r, const zcsr_gl_sorted_run* runs,
+                                  size_t run_count) {
+    size_t i, submitted = 0;
+    if (!r || !runs || run_count == 0) return 0;
+    if (!zcsr_gl_instanced_begin_state(r)) return 0;
+    for (i = 0; i < run_count; ++i) {
+        submitted += zcsr_gl_draw_run_batched(r, runs[i].texture,
+                                              runs[i].instances, runs[i].count);
+    }
+    zcsr_gl_instanced_end_state();
+    return submitted;
 }
 
 /* ===========================================================================================
@@ -364,14 +378,16 @@ size_t zcsr_sort_state(zcsr_gl_instance* instances, size_t count, void* temp, si
     }
 }
 
-void zcsr_gl_submit_state(zcsr_gl_renderer* r, zcsr_gl_instance* instances, size_t count,
-                          void* temp, size_t temp_bytes) {
+size_t zcsr_gl_submit_state(zcsr_gl_renderer* r, zcsr_gl_instance* instances, size_t count,
+                            void* temp, size_t temp_bytes) {
     size_t opaque;
-    size_t i;
-    if (!r || !instances || !temp || count == 0) return;
-    if (count > ZCSR_GL_MAX_INSTANCES) return;
-    if (temp_bytes < count * sizeof(zcsr_gl_instance)) return;
+    size_t i, submitted = 0;
+    if (!r || !instances || !temp || count == 0) return 0;
+    if (temp_bytes < count * sizeof(zcsr_gl_instance)) return 0;
     zcsr_sort_state(instances, count, temp, temp_bytes, &opaque);
+
+    /* One shared state setup for both opaque and translucent runs. */
+    if (!zcsr_gl_instanced_begin_state(r)) return 0;
 
     /* opaque: draw in texture runs (order irrelevant) */
     i = 0;
@@ -379,7 +395,7 @@ void zcsr_gl_submit_state(zcsr_gl_renderer* r, zcsr_gl_instance* instances, size
         size_t start = i;
         uint32_t tex = instances[i].tex;
         while (i < opaque && instances[i].tex == tex) ++i;
-        if (tex) zcsr_gl_draw_instances(r, tex, instances + start, i - start);
+        submitted += zcsr_gl_draw_run_batched(r, tex, instances + start, i - start);
     }
     /* translucent: back-to-front, gather only adjacent same-texture (z order preserved) */
     i = opaque;
@@ -387,6 +403,8 @@ void zcsr_gl_submit_state(zcsr_gl_renderer* r, zcsr_gl_instance* instances, size
         size_t start = i;
         uint32_t tex = instances[i].tex;
         while (i < count && instances[i].tex == tex) ++i;
-        if (tex) zcsr_gl_draw_instances(r, tex, instances + start, i - start);
+        submitted += zcsr_gl_draw_run_batched(r, tex, instances + start, i - start);
     }
+    zcsr_gl_instanced_end_state();
+    return submitted;
 }
