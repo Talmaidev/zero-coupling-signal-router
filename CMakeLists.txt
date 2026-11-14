@@ -51,7 +51,7 @@ function(zcsr_module name)
   target_link_libraries(zcsr_${name} PUBLIC zcsr_contracts)
   # 每个模块都可能通过 ZCSR_LOG_* / zcsr_log_write 打日志，而 log 实现在 core。
   # 之前没有声明这条依赖，Windows(link.exe) 靠重扫静态库掩盖了问题；GNU ld 单遍
-  # 扫描时，libzcsr_ui.a / libzcsr_file_service.a / libzcsr_runtime_viewport.a 里的
+  # 扫描时，libzcsr_ui.a / libzcsr_file_service.a / libzcsr_viewport.a 里的
   # zcsr_log_write 全都解析不到（undefined reference）。在宏里统一声明，链接顺序
   # 与传递依赖一次性闭合。
   if(NOT name STREQUAL "core")
@@ -65,7 +65,6 @@ endfunction()
 zcsr_module(core)      # 
 zcsr_module(signal)    # 
 zcsr_module(hsm)       # 
-zcsr_module(overlay)   # 
 zcsr_module(platform)  # 
 if(NOT WIN32)
   set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/modules/platform/platform_win32.c
@@ -79,7 +78,8 @@ zcsr_module(audio)     #  — WAV audio (signals only)
 #                       批渲染归 modules/glrender + modules/sprite。
 #                       原 modules/render 全仓零引用（仅 android_main.c 里一个同名局部变量
 #                       zcsr_renderer_storage，不是该模块的 API），故整目录移除。
-zcsr_module(gamelogic) #  — AABB collision + binary save/load
+zcsr_module(collision) #  — AABB collision only
+zcsr_module(save)      #  — binary save/load only
 
 # --- Engine extension (Game-Usable Core): additive, zero-coupling, optional next to the above ---
 zcsr_module(glrender)  #  — OpenGL 3.3 renderer (vendors glad; coexists w/ software render)
@@ -103,22 +103,22 @@ if(UNIX AND NOT APPLE)
 endif()
 zcsr_module(music)     # Streaming music player (OGG/MP3, depends on audiomix)
 zcsr_module(ui)        # Generic UI runtime (node/input/focus/apply/preset/draw-list + GL backend)
-zcsr_module(app_shell) # App shell: window skeleton + main menu + settings overlay
 zcsr_module(camera)    # 2.5D orthographic camera (world units + shear)
 if(UNIX AND NOT APPLE)
   target_link_libraries(zcsr_camera PUBLIC m) # camera pitch uses cosf/sinf/atan2f
 endif()
 zcsr_module(camera3d)  # software perspective camera (3D -> screen px)
 zcsr_module(sprite)     # Lit sprite renderer (uses G-buffer from light2d)
-zcsr_module(runtime_viewport) # Engine-Owned Runtime Viewport (Contain Fit + 坐标变换)
+zcsr_module(viewport)  # Engine-owned viewport fit + coordinate transform
 zcsr_module(file_service) # Unified File Service + VFS/Mount + Win32(file_win32.c) / POSIX(file_posix.c) backends
 if(NOT WIN32)
   set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/modules/file_service/file_win32.c
       PROPERTIES HEADER_FILE_ONLY TRUE)
 endif()
 zcsr_module(resource)      # Resource Manager + Handle + Generation + Cache
-target_link_libraries(zcsr_app_shell PUBLIC
-    zcsr_glrender zcsr_platform zcsr_input zcsr_inputext zcsr_ui)
+# zcsr_module(app_shell) removed: settings is zcsr_ui_page_manager/pages/settings.
+# zcsr_module(overlay) removed: debug overlay is zcsr_tools/zcsr_debug_overlay.
+# zcsr_module(gamelogic) split: collision + save, each one responsibility.
 # Per-backend system libs are added by the implementer when each backend lands, e.g.:
 #   glrender: opengl32+gdi32 (Win) / GL+X11 (Linux, find_package(OpenGL)) / -framework OpenGL (mac)
 #   audiomix: (Win WASAPI: ole32) / ALSA (Linux: find_package(ALSA), asound) / -framework AudioToolbox,AudioUnit (mac)

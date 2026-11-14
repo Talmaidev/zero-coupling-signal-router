@@ -1,6 +1,7 @@
 build/
 build-*/
 build-release/
+build_arch/
 out/
 *.o
 *.a
@@ -17,3 +18,4 @@ zcsr_audiomix_test.wav
 
 #   working dir
 .zcode/
+build_merge/
