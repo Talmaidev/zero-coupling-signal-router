@@ -166,8 +166,8 @@
 - [FROZEN] Light2D geo 路径**无 per-vertex color**：颜色走 uniform u_albedo 或 u_tint（`glrender_l2d_geo.c:39,84`）。
 - [FROZEN] 立即精灵路径顶点格式是另一套：x2 + uv2 + rgba4 + mode2（`glrender_core.c:252-259`），
   与 Light2D geo 不共享 VAO/VBO/attrib 布局。两条路径各自独立，不要在契约里强行统一。
-- [FROZEN] 实例化顶点 `zcsr_gl_instance` = 15 float + uint32 tex + float z = 68 字节，
-  tex/z 是 CPU-only 排序键。证据：`include/zcsr/gl_render.h:97-108`。
+- [FROZEN] 实例化顶点 `zcsr_gl_instance` = 15 float + uint32 tex + float z + bool has_alpha = 72 字节，
+  tex/z/has_alpha 是 CPU-only 排序键。证据：`include/zcsr/gl_render.h` 的 `zcsr_gl_instance`。
 - [CURRENT-LIMITED] Light2D geo 路径 = 每面一次 draw call，无合并、无实例化、无跨面批处理。
   证据：`glrender_l2d_geo.c:373,433` 每面独立 draw。
 - [FROZEN] 立即精灵路径批处理：同纹理图集 sprite 合并成一次 draw；实例化路径按纹理 run 分组。
@@ -201,6 +201,10 @@
 - [UNSUPPORTED] 九宫格多区域 UV：见 §3。
 - [CURRENT-LIMITED] atlas padding 只有 1px gutter（打包期固定），不支持运行时可调 inset。
   证据：`texture_atlas.h:36`。
+- [UNSUPPORTED] 引擎不提供 `GL_TEXTURE_2D_ARRAY` / bindless / 多纹理数组采样路径。图集页（atlas page）
+  是资产管线责任：同一页的所有 clip 共用一个 `zcsr_gl_texture`，`zcsr_gl_instance` 的 u0/v0/u1/v1
+  直接指向页内子矩形；这样 `zcsr_gl_submit_sorted_runs` 只需一次共享状态设置，按 run 绑纹理并 draw。
+  PVZ 的 31 张独立动画纹理若希望减少 draw call，应先在资产侧打成图集页，而不是等待引擎 texture array。
 
 ---
 
@@ -209,6 +213,9 @@
 - [FROZEN] 普通纹理上传 = 8-bit RGBA，内部 `GL_RGBA`，`GL_UNSIGNED_BYTE`，上传时 GPU 不做 sRGB 解码。
   **这只是上传行为，不代表路径 A 与路径 B 共享同一套颜色处理流程**。
   证据：`glrender_core.c:313`（create）、`:330`（带 linear 标志的 create）。
+- [CONTRACT] “0 堆”范围：引擎 renderer 状态、实例/顶点批、arena 都在调用方提供的固定缓冲区；
+  `zcsr_arena_alloc_count` 只统计引擎 arena 的成功分配，不统计 libc malloc、GL 驱动或操作系统内部分配。
+  需要严格拆 CPU/GPU 时用 `zcsr_gl_gpu_timer_begin/end/last_ms`（桌面 GL 3.3；Android 返回 false）。
 - [FROZEN] Light2D 路径 B 的颜色图处理：G0 Albedo 在合成阶段由 `pow(albedo, vec3(2.2))` 手动线性化。
   路径 A 的立即 Sprite/UI 不经过 Light2D 合成，**不得把这条颜色空间契约推广到路径 A**。
   上传入口当前不区分颜色图与数据图（`gl_render.h:36` 签名只有 rgba/w/h，无 internalformat 参数）；

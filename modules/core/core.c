@@ -10,6 +10,7 @@ struct zcsr_arena {
     unsigned char* data;
     size_t capacity;
     size_t used;
+    size_t alloc_count;
 };
 
 typedef struct {
@@ -93,6 +94,7 @@ zcsr_arena* zcsr_arena_init(void* buffer, size_t bytes) {
     arena->data = (unsigned char*)data_at;
     arena->capacity = (raw + bytes) - data_at;
     arena->used = 0;
+    arena->alloc_count = 0;
     return arena;
 }
 
@@ -107,11 +109,15 @@ void* zcsr_arena_alloc(zcsr_arena* a, size_t bytes, size_t align) {
     if (offset > a->capacity) return 0;
     if (bytes > a->capacity - offset) return 0;
     a->used = offset + bytes;
+    ++a->alloc_count;
     return (void*)aligned_ptr;
 }
 
 void zcsr_arena_reset(zcsr_arena* a) {
-    if (a) a->used = 0;
+    if (a) {
+        a->used = 0;
+        a->alloc_count = 0;
+    }
 }
 
 size_t zcsr_arena_used(const zcsr_arena* a) {
@@ -120,6 +126,10 @@ size_t zcsr_arena_used(const zcsr_arena* a) {
 
 size_t zcsr_arena_capacity(const zcsr_arena* a) {
     return a ? a->capacity : 0;
+}
+
+size_t zcsr_arena_alloc_count(const zcsr_arena* a) {
+    return a ? a->alloc_count : 0;
 }
 
 zcsr_state* zcsr_state_init(void* buffer, size_t bytes) {
