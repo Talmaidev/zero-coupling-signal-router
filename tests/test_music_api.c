@@ -162,7 +162,7 @@ static zcsr_music* load_music(const char* data_dir, const char* name,
 }
 
 static void test_metadata(const char* data_dir, const char* name,
-                          zcsr_music_format fmt) {
+                          zcsr_music_format fmt, size_t expected_cover) {
     unsigned char* buffer = NULL;
     unsigned char* cover = NULL;
     zcsr_music* music = load_music(data_dir, name, fmt, &buffer);
@@ -180,7 +180,7 @@ static void test_metadata(const char* data_dir, const char* name,
     CHECK(info.year == 2026u, "year parsed");
     CHECK(info.track == 2u, "track parsed");
     cover_bytes = zcsr_music_cover_bytes_required(music);
-    CHECK(cover_bytes == 70u, "cover byte count");
+    CHECK(cover_bytes == expected_cover, "cover byte count");
     CHECK(!zcsr_music_get_cover(music, NULL, cover_bytes), "null cover buffer rejected");
     cover = (unsigned char*)malloc(cover_bytes);
     if (cover && cover_bytes > 0) {
@@ -307,11 +307,29 @@ int main(int argc, char** argv) {
     test_format(data_dir, "sample.ogg", ZCSR_MUSIC_OGG);
     printf("music_api: mp3 start\n");
     test_format(data_dir, "sample.mp3", ZCSR_MUSIC_MP3);
+    printf("music_api: flac start\n");
+    test_format(data_dir, "sample.flac", ZCSR_MUSIC_FLAC);
+    printf("music_api: wav start\n");
+    test_format(data_dir, "sample.wav", ZCSR_MUSIC_WAV);
+#if defined(_WIN32)
+    printf("music_api: aac start\n");
+    test_format(data_dir, "sample.aac", ZCSR_MUSIC_AAC);
+    printf("music_api: m4a start\n");
+    test_format(data_dir, "sample.m4a", ZCSR_MUSIC_M4A);
+#else
+    printf("SKIP aac/m4a on non-Windows (Media Foundation backend)\n");
+#endif
     printf("music_api: metadata start\n");
-    test_metadata(data_dir, "sample_meta.ogg", ZCSR_MUSIC_OGG);
-    test_metadata(data_dir, "sample_meta.mp3", ZCSR_MUSIC_MP3);
+    test_metadata(data_dir, "sample_meta.ogg", ZCSR_MUSIC_OGG, 70u);
+    test_metadata(data_dir, "sample_meta.mp3", ZCSR_MUSIC_MP3, 70u);
+    test_metadata(data_dir, "sample_meta.flac", ZCSR_MUSIC_FLAC, 98u);
+#if defined(_WIN32)
+    test_metadata(data_dir, "sample_meta.m4a", ZCSR_MUSIC_M4A, 98u);
+#endif
     test_empty_metadata(data_dir, "sample.ogg", ZCSR_MUSIC_OGG);
     test_empty_metadata(data_dir, "sample.mp3", ZCSR_MUSIC_MP3);
+    test_empty_metadata(data_dir, "sample.flac", ZCSR_MUSIC_FLAC);
+    test_empty_metadata(data_dir, "sample.wav", ZCSR_MUSIC_WAV);
     printf("music_api: threadless start\n");
     test_threadless_pump(data_dir);
     printf("music_api: device contract start\n");

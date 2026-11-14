@@ -1,8 +1,9 @@
 #ifndef ZCSR_MUSIC_H
 #define ZCSR_MUSIC_H
-/* Streaming music player (OGG Vorbis / MP3). Decodes in a background thread,
- * feeds PCM into an audiomix stream channel. No heap: caller provides buffer.
- * Implemented in modules/music. Depends on zcsr/audio_mix.h. */
+/* Streaming music player (OGG/MP3/FLAC/WAV; AAC/M4A via Windows Media
+ * Foundation). Decodes in a background thread, feeds PCM into an audiomix
+ * stream channel. No heap: caller provides buffer. Implemented in modules/music.
+ * Depends on zcsr/audio_mix.h. */
 #include "audio_mix.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -12,7 +13,11 @@ typedef struct zcsr_music zcsr_music;
 
 typedef enum {
     ZCSR_MUSIC_OGG = 0,
-    ZCSR_MUSIC_MP3 = 1
+    ZCSR_MUSIC_MP3 = 1,
+    ZCSR_MUSIC_FLAC = 2,
+    ZCSR_MUSIC_WAV = 3,
+    ZCSR_MUSIC_AAC = 4,
+    ZCSR_MUSIC_M4A = 5
 } zcsr_music_format;
 
 typedef enum {
@@ -75,7 +80,8 @@ bool zcsr_music_duration_ms(const zcsr_music* music, uint64_t* out_ms);
  * Does not restart or join the decoder thread. Returns true when the request is
  * accepted; position_ms() is based on the target immediately after acceptance.
  * MP3 seek re-decodes from the first frame because no index buffer is allocated;
- * OGG seek uses stb_vorbis's sample index. */
+ * OGG/FLAC use their sample indexes; WAV seeks by PCM frame offset; AAC/M4A
+ * use Media Foundation SetCurrentPosition (Windows only). */
 bool zcsr_music_seek_ms(zcsr_music* music, uint64_t ms);
 
 #define ZCSR_MUSIC_TEXT_CAP 128u
@@ -100,8 +106,8 @@ bool zcsr_music_get_info(const zcsr_music* music, zcsr_music_info* out_info);
 /* Embedded cover bytes in their original encoded form (JPEG/PNG/etc.).
  * `bytes_required` returns 0 when there is no cover. `get_cover` copies into
  * the caller buffer only when cap is large enough; it does not decode the
- * image. OGG METADATA_BLOCK_PICTURE is base64-decoded on the fly, MP3 APIC is
- * copied directly. */
+ * image. OGG METADATA_BLOCK_PICTURE is base64-decoded on the fly, MP3 APIC,
+ * FLAC PICTURE and M4A covr are copied directly. */
 size_t zcsr_music_cover_bytes_required(const zcsr_music* music);
 bool zcsr_music_get_cover(const zcsr_music* music, void* buffer, size_t capacity);
 

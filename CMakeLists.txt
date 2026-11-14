@@ -101,7 +101,7 @@ target_link_libraries(zcsr_glrender PUBLIC zcsr_platform zcsr_font zcsr_atlas)
 if(UNIX AND NOT APPLE)
   target_link_libraries(zcsr_font PUBLIC m)  # stb_truetype uses sqrt/floor/ceil/fmod/pow
 endif()
-zcsr_module(music)     # Streaming music player (OGG/MP3, depends on audiomix)
+zcsr_module(music)     # Streaming music player (OGG/MP3/FLAC/WAV + Windows MF AAC/M4A)
 zcsr_module(ui)        # Generic UI runtime (node/input/focus/apply/preset/draw-list + GL backend)
 zcsr_module(app_shell) # App shell: window skeleton + main menu + settings overlay
 zcsr_module(camera)    # 2.5D orthographic camera (world units + shear)
@@ -146,6 +146,10 @@ target_include_directories(zcsr_glrender PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thi
 
 # music depends on audiomix (stream channels)
 target_link_libraries(zcsr_music PUBLIC zcsr_audiomix)
+if(WIN32)
+  # AAC/M4A decoding uses the OS Media Foundation source reader.
+  target_link_libraries(zcsr_music PUBLIC mfplat mfreadwrite mfuuid propsys ole32)
+endif()
 if(UNIX AND NOT APPLE)
   target_link_libraries(zcsr_music PUBLIC m)  # stb_vorbis uses log/exp/pow/sin/cos
 endif()
