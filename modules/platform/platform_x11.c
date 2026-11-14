@@ -309,6 +309,8 @@ void zcsr_surface_get_client_size(const zcsr_surface* s, int* w, int* h) {
 
 bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
     if (!s || w <= 0 || h <= 0 || !s->x_display) return false;
+    /* 契约：fullscreen 期间不允许改 client size（与 Win32/Wayland 一致）。 */
+    if (s->mode == ZCSR_WINDOW_FULLSCREEN) return false;
     XResizeWindow(X_DISPLAY(s), X_WIN(s), (unsigned)w, (unsigned)h);
     XFlush(X_DISPLAY(s));
     s->width = w;
