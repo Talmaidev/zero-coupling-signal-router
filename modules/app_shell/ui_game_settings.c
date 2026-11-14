@@ -1257,14 +1257,14 @@ bool zcsr_game_settings_save_overrides(const zcsr_game_settings* s, const char* 
 bool zcsr_game_settings_load_overrides(zcsr_game_settings* s, const char* path)
 {
     FILE* f;
-    char kind[8];
+    char kind[16];
     int a = 0, b = 0, applied = 0;
     zcsr_game_settings_rect r;
 
     if (!s || !path) return false;
     f = fopen(path, "rb");
     if (!f) return false;
-    while (fscanf(f, "%7s", kind) == 1) {
+    while (fscanf(f, "%15s", kind) == 1) {
         if (strcmp(kind, "tab") == 0) {
             if (fscanf(f, "%d %f %f %f %f", &a, &r.x, &r.y, &r.w, &r.h) != 5) break;
             if (zcsr_game_settings_override_tab(s, a, &r)) ++applied;
