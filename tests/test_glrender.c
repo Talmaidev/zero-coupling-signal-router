@@ -152,6 +152,40 @@ int main(void) {
         printf("PASS: single-texture instance batch fast path\n");
     }
 
+    /* A batch that spans two textures must still use the sorted multi-run path. */
+    {
+        zcsr_gl_texture tex2 = zcsr_gl_texture_create(renderer, rgba, 2, 2);
+        zcsr_gl_instance batch[2] = {0};
+        zcsr_gl_instance scratch[2];
+        size_t submitted;
+        if (!tex2) {
+            printf("FAIL: second texture upload failed\n");
+            zcsr_gl_texture_destroy(renderer, tex);
+            zcsr_gl_destroy(renderer);
+            zcsr_surface_destroy(surface);
+            return 1;
+        }
+        batch[0].tex = tex;
+        batch[0].cx = 16.0f; batch[0].cy = 16.0f;
+        batch[0].w = 8.0f; batch[0].h = 8.0f;
+        batch[0].u1 = 1.0f; batch[0].v1 = 1.0f;
+        batch[0].r = 1.0f; batch[0].g = 1.0f; batch[0].b = 1.0f; batch[0].a = 1.0f;
+        batch[1] = batch[0];
+        batch[1].tex = tex2;
+        batch[1].cx = 32.0f;
+        submitted = zcsr_gl_submit_instance_batch(renderer, batch, 2u,
+                                                  scratch, sizeof scratch);
+        zcsr_gl_texture_destroy(renderer, tex2);
+        if (submitted != 2u) {
+            printf("FAIL: multi-texture instance batch submitted %zu/2\n", submitted);
+            zcsr_gl_texture_destroy(renderer, tex);
+            zcsr_gl_destroy(renderer);
+            zcsr_surface_destroy(surface);
+            return 1;
+        }
+        printf("PASS: multi-texture instance batch sort path\n");
+    }
+
     zcsr_gl_sprite sprite = { tex, { 16.0f, 16.0f, 64.0f, 64.0f }, 0.25f, 1.0f, 1.0f, 1.0f, 1.0f,
                               ZCSR_MOD_MULTIPLY, 0.0f };
     zcsr_gl_begin(renderer);
