@@ -134,7 +134,8 @@ static const zcsr_input_ext* g_ptr_owner = NULL;
 
 /* ---- backend entry points (called from inputext.c common code) ---- */
 
-void zcsr_select_mouse_events(zcsr_surface* window) {
+void zcsr_select_mouse_events(zcsr_input_ext* in, zcsr_surface* window) {
+    (void)in;
     struct wl_seat* seat;
     if (!window || g_wl_pointer) return;  /* bind once */
     seat = (struct wl_seat*)zcsr_platform_wayland_seat(window);
@@ -188,3 +189,7 @@ void zcsr_close_gamepads(zcsr_input_ext* in) {
 void zcsr_pump_gamepads(zcsr_input_ext* in) { (void)in; }
 
 #endif /* defined(__linux__) && !defined(__ANDROID__) */
+
+/* Keep the translation unit non-empty on platforms where this backend is
+ * compiled out; MSVC C4206 is an error under /WX. */
+typedef struct zcsr_inputext_wayland_tu_anchor { int reserved; } zcsr_inputext_wayland_tu_anchor;

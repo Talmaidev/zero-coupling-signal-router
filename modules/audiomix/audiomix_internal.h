@@ -90,6 +90,7 @@ typedef struct {
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
+#if defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
 #include <pipewire/pipewire.h>
 #include <spa/utils/ringbuffer.h>
 
@@ -115,6 +116,7 @@ typedef struct {
     bool core_connected;
 } zcsr_pw_backend;
 #endif
+#endif
 
 struct zcsr_mixer;
 typedef struct zcsr_mixer zcsr_mixer;
@@ -133,8 +135,10 @@ typedef struct {
     zcsr_aaudio_api api;
     bool stream_started;
 #elif defined(__linux__) && !defined(__ANDROID__)
+#if defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
     /* PipeWire backend state embedded directly (zero heap). */
     zcsr_pw_backend pw;
+#endif
     zcsr_mixer* owner;
 #elif defined(_WIN32)
     IMMDeviceEnumerator* enumerator;
