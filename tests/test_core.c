@@ -27,8 +27,10 @@ int main(void) {
     if (fail_if(((uintptr_t)a % 8u) != 0u)) return 5;
     if (fail_if(((uintptr_t)b % 16u) != 0u)) return 6;
     if (fail_if(zcsr_arena_used(arena) == 0)) return 7;
+    if (fail_if(zcsr_arena_alloc_count(arena) != 2u)) return 30;
     zcsr_arena_reset(arena);
     if (fail_if(zcsr_arena_used(arena) != 0)) return 8;
+    if (fail_if(zcsr_arena_alloc_count(arena) != 0u)) return 31;
     capacity = zcsr_arena_capacity(arena);
     if (fail_if(!zcsr_arena_alloc(arena, capacity - 1u, 1))) return 9;
     if (fail_if(zcsr_arena_alloc(arena, 1u, 64u) != 0)) return 10;

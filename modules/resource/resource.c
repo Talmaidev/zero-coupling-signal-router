@@ -201,9 +201,9 @@ zcsr_resource_handle_t zcsr_resource_load(
     entry->metadata.size = (uint32_t)data_size;
     entry->metadata.version = 1;
 
-    /* 安全复制路径，保证 NUL 终止 */
-    strncpy(entry->metadata.path, path, ZCSR_MAX_PATH_LEN);
-    entry->metadata.path[ZCSR_MAX_PATH_LEN] = '\0';
+    /* 安全复制路径：metadata.path 是 char[256]，允许最长 255 字符 + NUL。
+     * ZCSR_MAX_PATH_LEN 是“最大字符数”，不是数组长度。 */
+    snprintf(entry->metadata.path, sizeof(entry->metadata.path), "%s", path);
 
     entry->data = data;
     entry->data_size = data_size;

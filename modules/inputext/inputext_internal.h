@@ -12,6 +12,7 @@
 
 struct zcsr_input_ext {
     zcsr_mouse_state mouse;
+    uint8_t mouse_prev_buttons;  /* held mask from the previous pump, for edge derivation */
     zcsr_pad_state pads[ZCSR_PAD_MAX];
     zcsr_surface* surface;
     bool initialized;
@@ -38,7 +39,7 @@ struct zcsr_input_ext {
 void zcsr_scan_gamepads(zcsr_input_ext* in);
 void zcsr_close_gamepads(zcsr_input_ext* in);
 void zcsr_pump_gamepads(zcsr_input_ext* in);
-void zcsr_select_mouse_events(zcsr_surface* window);
+void zcsr_select_mouse_events(zcsr_input_ext* in, zcsr_surface* window);
 void zcsr_pump_mouse(zcsr_input_ext* in, zcsr_surface* window);
 
 #endif /* ZCSR_INPUTEXT_INTERNAL_H */

@@ -24,56 +24,71 @@ struct zcsr_file_service {
     zcsr_mount_entry_t mounts[ZCSR_MAX_MOUNTS];
 };
 
-/* 内部：路径规范化 + 防止 .. 穿越 */
+/* 内部：路径规范化 + 防止 .. 穿越
+ *
+ * 必须保留路径的根语义：
+ *   C:\Users\x  -> C:/Users/x      （Windows 盘符，不能变成 /C:/...）
+ *   uirtest     -> uirtest         （相对路径，不能变成 /uirtest）
+ *   /tmp/x      -> /tmp/x
+ *   //srv/share -> //srv/share
+ * 旧实现用 strtok 指针直接回写同一缓冲区，且无条件补前导 '/'，既破坏盘符也
+ * 破坏相对路径；这里改为独立输出缓冲区逐段归一化。 */
 static void normalize_path(char* path) {
-    if (!path || path[0] == '\0') return;
+    char src[1024];
+    char out[1024];
+    size_t i = 0u, o = 0u, prefix = 0u;
 
-    /* 第一步：把所有反斜杠换成正斜杠 */
-    for (char* p = path; *p; p++) {
+    if (!path || path[0] == '\0') return;
+    snprintf(src, sizeof(src), "%s", path);
+    for (char* p = src; *p; p++) {
         if (*p == '\\') *p = '/';
     }
 
-    /* 第二步：去掉重复的斜杠 */
-    char* src = path;
-    char* dst = path;
-    while (*src) {
-        if (*src == '/' && src > path && *(src - 1) == '/') {
-            src++;
-        } else {
-            *dst++ = *src++;
+    /* 保留根前缀：盘符、UNC 双斜杠、POSIX 单斜杠。 */
+    if (((src[0] >= 'A' && src[0] <= 'Z') || (src[0] >= 'a' && src[0] <= 'z')) &&
+        src[1] == ':' && (src[2] == '/' || src[2] == '\0')) {
+        out[o++] = src[0];
+        out[o++] = ':';
+        i = 2u;
+        prefix = 2u;
+    } else if (src[0] == '/' && src[1] == '/') {
+        out[o++] = '/';
+        out[o++] = '/';
+        i = 2u;
+        prefix = 2u;
+    } else if (src[0] == '/') {
+        out[o++] = '/';
+        i = 1u;
+        prefix = 1u;
+    }
+
+    while (src[i] != '\0') {
+        size_t start, len;
+        while (src[i] == '/') i++;
+        if (src[i] == '\0') break;
+        start = i;
+        while (src[i] != '\0' && src[i] != '/') i++;
+        len = i - start;
+
+        if (len == 1u && src[start] == '.') continue;
+        if (len == 2u && src[start] == '.' && src[start + 1] == '.') {
+            while (o > prefix && out[o - 1] != '/') o--;
+            if (o > prefix && out[o - 1] == '/') o--;
+            continue;
         }
-    }
-    *dst = '\0';
 
-    /* 第三步：处理 . 和 .. */
-    /* 用栈的方式处理 */
-    char* parts[128];
-    int part_count = 0;
-
-    char* token = strtok(path, "/");
-    while (token && part_count < 128) {
-        if (strcmp(token, ".") == 0) {
-            /* 跳过 . */
-        } else if (strcmp(token, "..") == 0) {
-            if (part_count > 0) {
-                part_count--;  /* 出栈 */
-            }
-            /* 否则就是越过根目录，忽略 */
-        } else {
-            parts[part_count++] = token;
-        }
-        token = strtok(NULL, "/");
+        if (o > 0u && out[o - 1] != '/') out[o++] = '/';
+        if (o + len >= sizeof(out)) break;
+        memcpy(out + o, src + start, len);
+        o += len;
     }
 
-    /* 重新拼接 */
-    char* p = path;
-    for (int i = 0; i < part_count; i++) {
-        *p++ = '/';
-        size_t len = strlen(parts[i]);
-        memcpy(p, parts[i], len);
-        p += len;
+    if (o == 0u) {
+        path[0] = '\0';
+        return;
     }
-    *p = '\0';
+    out[o] = '\0';
+    snprintf(path, 1024u, "%s", out);
 }
 
 /* 内部：把 URI 解析成原生路径 */
@@ -235,6 +250,7 @@ zcsr_file_result_t zcsr_dir_open(zcsr_file_service_t* fs,
 zcsr_file_result_t zcsr_dir_next(zcsr_file_service_t* fs,
                                   zcsr_dir_t* dir,
                                   zcsr_dir_entry_t* out_entry) {
+    (void)fs; /* Directory iteration is backend-global; fs is kept for API symmetry. */
     /* 注意：这是现有 API 的设计缺陷，使用静态缓冲区
      * 连续调用会覆盖上一次的结果，非线程安全
      * 未来应该改 API 让调用者提供缓冲区 */
@@ -245,6 +261,7 @@ zcsr_file_result_t zcsr_dir_next(zcsr_file_service_t* fs,
 
 zcsr_file_result_t zcsr_dir_close(zcsr_file_service_t* fs,
                                    zcsr_dir_t* dir) {
+    (void)fs; /* Backend handle is global; fs is kept for API symmetry. */
     return zcsr_platform_file_ops.dir_close((void*)dir);
 }
 
@@ -327,6 +344,7 @@ zcsr_file_result_t zcsr_file_read(zcsr_file_service_t* fs,
                                    void* buffer,
                                    size_t capacity,
                                    size_t* out_bytes_read) {
+    (void)fs; /* Backend handle is global; fs is kept for API symmetry. */
     return zcsr_platform_file_ops.read((void*)file, buffer, capacity, out_bytes_read);
 }
 
@@ -335,6 +353,7 @@ zcsr_file_result_t zcsr_file_write(zcsr_file_service_t* fs,
                                      const void* data,
                                      size_t size,
                                      size_t* out_bytes_written) {
+    (void)fs; /* Backend handle is global; fs is kept for API symmetry. */
     return zcsr_platform_file_ops.write((void*)file, data, size, out_bytes_written);
 }
 
@@ -343,11 +362,13 @@ zcsr_file_result_t zcsr_file_seek(zcsr_file_service_t* fs,
                                    int64_t offset,
                                    zcsr_file_seek_origin_t origin,
                                    uint64_t* out_position) {
+    (void)fs; /* Backend handle is global; fs is kept for API symmetry. */
     return zcsr_platform_file_ops.seek((void*)file, offset, (int)origin, out_position);
 }
 
 zcsr_file_result_t zcsr_file_close(zcsr_file_service_t* fs,
                                     zcsr_file_t* file) {
+    (void)fs; /* Backend handle is global; fs is kept for API symmetry. */
     return zcsr_platform_file_ops.close((void*)file);
 }
 

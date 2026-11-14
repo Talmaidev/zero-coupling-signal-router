@@ -18,15 +18,16 @@ Keeping them apart means the correctness suite stays fast, deterministic and CI-
 
 ## tests/ — unit & contract suite (`ctest`)
 
-One test executable per module, registered with CTest:
+The engine repository now has its own CTest entry points via the top-level
+`enable_testing()` and `tests/CMakeLists.txt`. The core registration is:
 
-`signal_router`, `core`, `log`, `platform_api`, `overlay`, `hsm`, `state_reuse`,
-`integration`, `gamelogic`, `input`, `render`, `audio`, `glrender`, `audiomix`,
-`inputext`, `image`, `font`, `music_logic`, `music_codec`, `atlas`, `culling`, `state_sort`.
+`core`, `instance_alpha_sort`, `ui_hit`, `music_api`.
 
-That is **22 test targets** total, all registered with `add_test()`.
-
-GPU/audio/window-touching tests (`test_glrender`, `test_overlay`, `test_platform`, …) keep their headless-safe checks always on and guard the parts that need a real display behind a runtime check, so the suite passes on a headless box.
+The wider consumer harness in `game_test` still registers the full cross-project
+suite (18 tests) and is not a substitute for the engine-native entry. GPU/audio/
+window-touching tests keep their headless-safe checks always on and guard the
+parts that need a real display behind a runtime check, so the suite passes on a
+headless box.
 
 ## Build & run
 

@@ -68,9 +68,10 @@ static void zcsr_log_default(
     }
     __android_log_print(prio, "%s", tag, "%s", msg);
 #else
-    /* Common formatted line for stderr (Windows mirrors it to the debugger too). */
+    /* Canonical line: [LEVEL][TAG] [FUNC:LINE] message
+     * (diagnostics.h already prefixes [FUNC:LINE]; direct callers may omit it). */
     char line[ZCSR_LOG_BUF_SIZE];
-    int n = snprintf(line, sizeof(line), "[%s] %s: %s\n",
+    int n = snprintf(line, sizeof(line), "[%s][%s] %s\n",
                      zcsr_log_level_tag(level), tag, msg);
     if (n < 0) {
         line[0] = '\0';

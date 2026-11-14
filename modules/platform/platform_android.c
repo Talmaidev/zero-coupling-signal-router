@@ -125,3 +125,7 @@ bool zcsr_surface_reset_cursor(zcsr_surface* s) { (void)s; return false; }
 /* Android 没有显示器刷新率可申请。 */
 bool zcsr_surface_set_refresh_hz(zcsr_surface* s, int hz) { (void)s; (void)hz; return false; }
 #endif /* __ANDROID__ */
+
+/* Keep the translation unit non-empty on platforms where the Android backend
+ * is compiled out; MSVC C4206 is an error under /WX. */
+typedef struct zcsr_platform_android_tu_anchor { int reserved; } zcsr_platform_android_tu_anchor;

@@ -65,6 +65,7 @@ void zcsr_gl_destroy(zcsr_gl_renderer* r) {
     if (!r) return;
     zcsr_gl_make_current(r);
     zcsr_gl_l2d_destroy(r);
+    zcsr_gl_gpu_timer_destroy(r);
     zcsr_gl_instanced_destroy(r);
     zcsr_gl_core_destroy(r);
     zcsr_gl_platform_destroy(r);

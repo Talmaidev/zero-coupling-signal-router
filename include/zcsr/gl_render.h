@@ -152,14 +152,29 @@ typedef struct {
     float mode;            /* zcsr_color_mode as float */
     uint32_t tex;          /* CPU-only: texture handle, used for sorting into runs */
     float z;               /* CPU-only: depth/layer; larger = farther, drawn first (painter's) */
+    bool has_alpha;        /* CPU-only: texture has non-opaque pixels; sort as translucent.
+                            * Do not set this for fully opaque textures: it changes batching. */
     /* 约束：z 值必须为非 NaN 的有限浮点数。若传入 NaN，排序行为未定义。 */
-} zcsr_gl_instance;        /* 15 float attrs + uint32 + float = 68 bytes; tex/z are CPU-only */
+} zcsr_gl_instance;        /* 15 float attrs + uint32 + float + bool = 72 bytes; tex/z/has_alpha are CPU-only */
 
-/* Draw `count` instances sharing one bound texture, in one instanced draw call. Instances are
- * drawn as-is (no sorting). For a batch spanning multiple textures, sort it first (see
- * zcsr_sort_instances) then call this once per texture run, or use submit_instance_batch. */
-void zcsr_gl_draw_instances(zcsr_gl_renderer*, zcsr_gl_texture texture,
-                            const zcsr_gl_instance* instances, size_t count);
+/* Draw `count` instances sharing one bound texture. Instances are drawn in
+ * submission order (no sorting); the implementation splits requests larger than
+ * its internal instance cap into consecutive batches, so no instance is dropped.
+ * Returns the number of instances actually submitted (count on success, 0 on
+ * invalid renderer/texture/array). Compare with count to detect failure.
+ * For a batch spanning multiple textures, sort it first (see
+ * zcsr_sort_instances) then call this once per texture run, or use
+ * zcsr_gl_submit_sorted_runs. */
+size_t zcsr_gl_draw_instances(zcsr_gl_renderer*, zcsr_gl_texture texture,
+                              const zcsr_gl_instance* instances, size_t count);
+
+/* One caller-ordered texture run for zcsr_gl_submit_sorted_runs. `instances` must
+ * remain valid for the duration of the call; runs are not copied or reordered. */
+typedef struct zcsr_gl_sorted_run {
+    zcsr_gl_texture texture;
+    const zcsr_gl_instance* instances;
+    size_t count;
+} zcsr_gl_sorted_run;
 
 /* Sort a writable instance array into texture runs (and blend mode within a texture) so that
  * drawing needs one state setup per run. Pure CPU, no heap: `temp` is caller scratch of at least
@@ -183,18 +198,31 @@ void zcsr_instance_run(const zcsr_gl_instance* sorted, size_t count, size_t run_
  * caller scratch (>= count * sizeof instance).
  * CONTRACT (N2): sorts the input array in place via zcsr_sort_instances, then draws runs in
  * texture order. The relative order of instances across texture boundaries is not preserved;
- * callers with overlap dependencies must sort first with zcsr_sort_state and draw manually. */
-void zcsr_gl_submit_instance_batch(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count,
-                                   void* temp, size_t temp_bytes);
+ * callers with overlap dependencies must sort first with zcsr_sort_state and draw manually.
+ * Returns the number of instances actually submitted; 0 on invalid arguments.
+ * The 10k instance cap is applied per uploaded chunk, not as a whole-batch rejection. */
+size_t zcsr_gl_submit_instance_batch(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count,
+                                     void* temp, size_t temp_bytes);
+
+/* Draw caller-ordered, already-sorted runs with one shared GL state setup:
+ * make_current / framebuffer / viewport / program / uniforms / VAO are set once,
+ * then each run only binds its texture, uploads its slice and draws. Runs are
+ * submitted in the array order given by the caller; no internal sorting or
+ * reordering is performed, so opaque/translucent and z order are preserved.
+ * A single run larger than ZCSR_GL_MAX_INSTANCES is split into consecutive
+ * upload/draw chunks. `instances` pointers remain caller-owned.
+ * Returns the number of instances actually submitted (sum of valid runs' counts),
+ * or 0 on invalid arguments. Does NOT present; call zcsr_gl_present afterwards. */
+size_t zcsr_gl_submit_sorted_runs(zcsr_gl_renderer*, const zcsr_gl_sorted_run* runs,
+                                  size_t run_count);
 
 /* ---- full state sort (opaque vs translucent) ----
- * An instance is treated as translucent when its alpha < 1.0 or its color mode is MIX/ADD.
- * NOTE (N1): translucency is classified from INSTANCE FIELDS ONLY. Texture pixel alpha is not
- * inspected (it lives on the GPU and is not readable here). If a texture contains transparent
- * pixels, instances using it MUST be marked translucent by the caller (set alpha < 1.0 or use
- * a MIX/ADD mode), otherwise they sort into the opaque group and may blend incorrectly when
- * overlapping translucent instances. This is a documented caller contract, not a bug to be
- * silently papered over.
+ * An instance is treated as translucent when its alpha < 1.0, its color mode is MIX/ADD,
+ * or its CPU-only `has_alpha` flag is true.
+ * NOTE (N1): the renderer does not read texture pixels. If a texture contains transparent
+ * pixels, set `has_alpha = true` on every instance that samples it. Leaving the flag false
+ * keeps the old caller contract (mark translucent via alpha/mode); correctly setting it
+ * allows alpha-cutout sprites to sort behind/above each other without changing their color.
  * Partitions the array into opaque instances first (sorted by texture, for batching) then
  * translucent instances sorted back-to-front by z (larger z = farther, painter's algorithm).
  * Returns the number of opaque instances. After sorting:
@@ -205,10 +233,24 @@ size_t zcsr_sort_state(zcsr_gl_instance* instances, size_t count, void* temp, si
                        size_t* out_opaque);
 
 /* Convenience: full state sort + draw. Opaque instances are drawn in texture runs;
- * translucent instances are drawn back-to-front, flushing on texture changes. Presents at the
- * end when targeting the window. `temp` is caller scratch (>= count * sizeof instance). */
-void zcsr_gl_submit_state(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count,
-                          void* temp, size_t temp_bytes);
+ * translucent instances are drawn back-to-front, flushing on texture changes.
+ * Does NOT swap/present buffers: call zcsr_gl_present afterwards when targeting the
+ * window. `temp` is caller scratch (>= count * sizeof instance).
+ * Returns the number of instances actually submitted; 0 on invalid arguments.
+ * The 10k instance cap is applied per uploaded chunk, not as a whole-batch rejection. */
+size_t zcsr_gl_submit_state(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count,
+                            void* temp, size_t temp_bytes);
+
+/* ---- GPU elapsed-time query (desktop GL 3.3) ----
+ * Measures GPU time between begin/end using GL_TIME_ELAPSED query objects. The
+ * renderer owns two query objects lazily created inside its caller-provided
+ * buffer (no heap). Pair every begin with end; at most one measurement is
+ * pending. last_ms polls the completed query and returns false while the result
+ * is not ready or when the backend has no timer support (currently Android/
+ * GLES). This does not call glFinish. `out_ms` is written only on true. */
+bool zcsr_gl_gpu_timer_begin(zcsr_gl_renderer*);
+bool zcsr_gl_gpu_timer_end(zcsr_gl_renderer*);
+bool zcsr_gl_gpu_timer_last_ms(zcsr_gl_renderer*, float* out_ms);
 
 /* ---- Basic geometry (additive, white-texture quads) ----
  * Enqueue into the current sprite batch; caller still owns flush/present semantics. */

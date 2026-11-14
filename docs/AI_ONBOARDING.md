@@ -197,7 +197,7 @@ cmake --build build-box2d --parallel
 
 - `glrender_instanced.c`：`zcsr_gl_radix` 已是 ping-pong；`zcsr_gl_draw_instances_prepared` 是 static（假设状态已设置，只做 VBO 上传+纹理绑定+draw）；`submit_instance_batch` 已状态外提
 - `glrender_core.c`：`zcsr_gl_find_tex` 已是 hash 查找（`zcsr_tex_index_lookup/insert/remove`），不再 O(128) 线性扫
-- `zcsr_gl_instance` = 68 字节（15 float + uint32_t tex + float z），tex/z 是 CPU-only 字段（仅排序用，不进 GPU 顶点属性）
+- `zcsr_gl_instance` = 72 字节（15 float + uint32_t tex + float z + bool has_alpha + 3 字节尾部对齐），tex/z/has_alpha 是 CPU-only 字段（仅排序用，不进 GPU 顶点属性）
 - `glrender_text.c` = ~130 行，8x8 bitmap font（ASCII 32-126，font8x8_basic PD），font atlas + push_quad_uv 每字符 1 quad
 
 ### Release 基线（build-release，Ninja -O2，MSVC）
@@ -206,7 +206,7 @@ D1 排序 0.114ms / A 0.487ms / B 0.616ms / D2 0.335ms / D3 0.607ms。CPU 路径
 
 ### 额外方向评估（GPT 分析，暂不实现）
 
-- **VBO stride**（拆出 tex/z）：节省仅 8B/实例=11.76%，打包 CPU 成本可能超收益，暂不实现
+- **VBO stride**（拆出 tex/z）：节省仅 8B/实例=11.11%，打包 CPU 成本可能超收益，暂不实现
 - **text 字形缓存**：当前无字形差异（所有字节同一矩形），缓存无意义，等引入真实点阵字体时再做
 
 ---

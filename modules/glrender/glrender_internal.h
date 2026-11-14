@@ -151,6 +151,13 @@ struct zcsr_gl_renderer {
     int inst_uniform_view;
     int inst_uniform_tex;
 
+    /* ---- optional GPU elapsed-time query (desktop GL 3.3) ---- */
+    unsigned int gpu_timer_queries[2];
+    int gpu_timer_write;
+    int gpu_timer_read;
+    bool gpu_timer_active;
+    bool gpu_timer_pending;
+
     /* ---- Light2D extension (driven by modules/light2d through the public
      * gl_render_light2d_ext.h contract; state is zeroed by zcsr_gl_create's memset) ---- */
     zcsr_gl_l2d_mrt l2d_targets[ZCSR_GL_L2D_MAX_TARGETS];
@@ -339,6 +346,9 @@ void zcsr_gl_record_draw(zcsr_gl_renderer* r, unsigned int texture, size_t first
 /* ---- Instanced (program/init/destroy/draw/radix sort/state sort) --------------------------- */
 bool zcsr_gl_instanced_init(zcsr_gl_renderer* r);
 void zcsr_gl_instanced_destroy(zcsr_gl_renderer* r);
+
+/* ---- GPU elapsed-time query (desktop GL 3.3; no-op/false on Android) ---------------------- */
+void zcsr_gl_gpu_timer_destroy(zcsr_gl_renderer* r);
 
 /* ---- Light2D extension (MRT G-buffer targets, state stack, radial/deferred programs) ------- */
 /* Called from zcsr_gl_create/destroy only; every public entry point of the extension contract

@@ -13,7 +13,7 @@ bool zcsr_assets_set_base_dir(const char* dir) {
         return true;
     }
     if (strlen(dir) >= sizeof(g_asset_base)) return false;
-    strcpy(g_asset_base, dir);
+    snprintf(g_asset_base, sizeof(g_asset_base), "%s", dir);
     return true;
 }
 
@@ -30,7 +30,7 @@ bool zcsr_assets_resolve(const char* relative, char* out, int cap) {
     if (!relative || !relative[0] || !out || cap <= 1) return false;
     if (is_absolute(relative)) {
         if ((int)strlen(relative) >= cap) return false;
-        strcpy(out, relative);
+        snprintf(out, (size_t)cap, "%s", relative);
         return true;
     }
     base = g_asset_base[0] ? g_asset_base : getenv("ZCSR_ASSET_DIR");

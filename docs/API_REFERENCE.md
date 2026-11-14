@@ -26,6 +26,7 @@ Agent 1 — stack-only memory manager (no runtime/heap allocation). Implementer:
 | `void zcsr_arena_reset(zcsr_arena*)` | free all (LIFO) |
 | `size_t zcsr_arena_used(const zcsr_arena*)` |  |
 | `size_t zcsr_arena_capacity(const zcsr_arena*)` |  |
+| `size_t zcsr_arena_alloc_count(const zcsr_arena*)` | successful allocations since init/reset; does not count libc/driver/internal allocs |
 
 ### `zcsr/state_buffer.h`
 
@@ -207,14 +208,15 @@ Engine-ext Agent 1 — GPU rendering (OpenGL 3.3 Core). OPTIONAL renderer, besid
 
 **Instanced sprite path (Phase 3):**
 
-`zcsr_gl_instance` struct = 68 bytes; the last 8 bytes (tex, z) are CPU-only metadata for sort, not read by the shader. GPU attrs occupy the first 60 bytes.
+`zcsr_gl_instance` struct = 72 bytes; the last 12 bytes (tex, z, has_alpha + 3 bytes tail padding) are CPU-only metadata for sort, not read by the shader. GPU attrs occupy the first 60 bytes.
 
 | Function | Notes |
 |---|---|
-| `void zcsr_gl_draw_instances(zcsr_gl_renderer*, zcsr_gl_texture texture, const zcsr_gl_instance* instances, size_t count)` | single glDrawElementsInstanced call; count clamped to ZCSR_GL_MAX_INSTANCES |
+| `size_t zcsr_gl_draw_instances(zcsr_gl_renderer*, zcsr_gl_texture texture, const zcsr_gl_instance* instances, size_t count)` | draws all instances; requests above ZCSR_GL_MAX_INSTANCES are split into consecutive instanced batches; returns submitted count or 0 |
 | `size_t zcsr_sort_instances(zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes)` | LSD radix by tex; temp must be >= count * sizeof(zcsr_gl_instance) |
 | `void zcsr_instance_run(const zcsr_gl_instance* sorted, size_t count, size_t run_index, zcsr_gl_texture* out_texture, size_t* out_start, size_t* out_len)` |  |
-| `void zcsr_gl_submit_instance_batch(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes)` | sort + draw in texture runs |
+| `size_t zcsr_gl_submit_instance_batch(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes)` | sort + draw in texture runs; returns submitted count; no whole-batch 10k rejection |
+| `size_t zcsr_gl_submit_sorted_runs(zcsr_gl_renderer*, const zcsr_gl_sorted_run* runs, size_t run_count)` | caller-ordered, already-sorted runs; one shared make_current/framebuffer/viewport/program/VAO setup, then per-run texture bind/upload/draw; preserves opaque/translucent and z order; returns submitted count |
 
 **Full state sort (opaque batching + translucent painter order):**
 
@@ -223,7 +225,17 @@ Opaque instances (a >= 1 and mode not MIX/ADD) are sorted by tex for batching. T
 | Function | Notes |
 |---|---|
 | `size_t zcsr_sort_state(zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes, size_t* out_opaque)` | returns opaque count; temp >= count * sizeof(instance) |
-| `void zcsr_gl_submit_state(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes)` | sort + draw + present when targeting the window |
+| `size_t zcsr_gl_submit_state(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes)` | sort + draw; returns submitted count; does NOT present — caller calls `zcsr_gl_present` |
+
+**GPU timing:**
+
+| Function | Notes |
+|---|---|
+| `bool zcsr_gl_gpu_timer_begin(zcsr_gl_renderer*)` | starts a `GL_TIME_ELAPSED` query; false if already active/unsupported |
+| `bool zcsr_gl_gpu_timer_end(zcsr_gl_renderer*)` | ends the query; pair with begin |
+| `bool zcsr_gl_gpu_timer_last_ms(zcsr_gl_renderer*, float* out_ms)` | polls the completed query without `glFinish`; false while unavailable or on Android |
+
+“0 堆”范围：renderer 状态、实例/顶点批和 arena 都位于调用方固定缓冲区；`zcsr_arena_alloc_count` 只统计引擎 arena，不覆盖 libc、GPU 驱动或操作系统内部分配。纹理数组/bindless 不是引擎能力；同一图集页的实例共用纹理句柄并可用 `zcsr_gl_submit_sorted_runs` 批提交。
 
 ### `zcsr/culling.h`
 
