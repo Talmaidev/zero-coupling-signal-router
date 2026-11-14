@@ -1,6 +1,14 @@
 # Repository-native engine contract tests.
 # These targets build against the engine's own module targets; they do not
 # depend on game_test or any external harness.
+
+# Tests use assert() as their oracle; keep assertions active in Release builds.
+if(MSVC)
+    add_compile_options(/UNDEBUG)
+else()
+    add_compile_options(-UNDEBUG)
+endif()
+
 add_executable(core_test test_core.c)
 target_link_libraries(core_test PRIVATE zcsr_core)
 add_test(NAME core COMMAND core_test)
@@ -23,3 +31,6 @@ if(WIN32)
     target_link_libraries(music_api_test PRIVATE ole32)
 endif()
 add_test(NAME music_api COMMAND music_api_test "${CMAKE_CURRENT_SOURCE_DIR}/data")
+
+# Engine module tests (real module/platform dependencies, not pure-CPU fakes).
+add_subdirectory(engine)
