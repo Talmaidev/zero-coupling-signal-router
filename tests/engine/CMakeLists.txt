@@ -9,11 +9,11 @@ set(ZCSR_ENGINE_TEST_LIBS
     zcsr_core
     zcsr_signal
     zcsr_hsm
-    zcsr_overlay
     zcsr_platform
     zcsr_input
     zcsr_audio
-    zcsr_gamelogic
+    zcsr_collision
+    zcsr_save
     zcsr_glrender
     zcsr_audiomix
     zcsr_inputext
@@ -25,11 +25,10 @@ set(ZCSR_ENGINE_TEST_LIBS
     zcsr_font
     zcsr_music
     zcsr_ui
-    zcsr_app_shell
     zcsr_camera
     zcsr_camera3d
     zcsr_sprite
-    zcsr_runtime_viewport
+    zcsr_viewport
     zcsr_file_service
     zcsr_resource
 )
@@ -61,17 +60,13 @@ zcsr_add_engine_test(audio test_audio.c)
 zcsr_add_engine_test(audiomix test_audiomix.c)
 zcsr_add_engine_test(culling test_culling.c)
 zcsr_add_engine_test(font test_font.c)
-zcsr_add_engine_test(gamelogic test_gamelogic.c)
 zcsr_add_engine_test(glrender test_glrender.c)
 zcsr_add_engine_test(hsm test_hsm.c)
 zcsr_add_engine_test(image test_image.c)
 zcsr_add_engine_test(input test_input.c)
 zcsr_add_engine_test(inputext test_inputext.c)
-zcsr_add_engine_test(integration test_integration.c)
 zcsr_add_engine_test(log test_log.c)
-zcsr_add_engine_test(overlay test_overlay.c)
 zcsr_add_engine_test(platform test_platform.c)
 zcsr_add_engine_test(signal test_signal.c)
 zcsr_add_engine_test(state_reuse test_state_reuse.c)
 zcsr_add_engine_test(state test_state.c)
-zcsr_add_engine_test(game_settings_overrides test_game_settings_overrides.c)

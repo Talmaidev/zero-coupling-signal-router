@@ -1,8 +1,7 @@
 #ifndef ZCSR_SAVE_H
 #define ZCSR_SAVE_H
-/* Agent 4 (Game Core) — binary save/load of game state. No heap, no file I/O in the contract
- * (caller persists the bytes). Writes a small header (magic + version + length + checksum) so
- * loads can be validated. Implementer: modules/gamelogic. */
+/* zcsr_save — binary save/load of game state. No heap, no file I/O in the contract
+ * (caller persists the bytes). Implementer: modules/save. */
 #include <stddef.h>
 #include <stdint.h>
 
