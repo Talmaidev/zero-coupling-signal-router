@@ -93,7 +93,7 @@ tonemap 与 gamma 在同一合成 FS。
 实现不符，自 v1.1 起视为已纠正的契约说明。需要真正线性 tint 的
 调用者不能把当前路径当作已支持该语义；要在线性空间做颜色调制，
 必须单独设计纹理解码 + 光照域 + 输出编码的完整 sRGB 工作流，
-并重新跑合成回归——本次不做。
+并重新跑合成回归——暂不实现。
 数学推论：`(texel·tint)^2.2 = texel^2.2 · tint^2.2`，tint 本身
 也被 gamma 化。
 
@@ -111,7 +111,7 @@ accumulation RGBA16F）。
 （shader 内 dist<1e-6 时取 (0,0,1) 保护）。
 
 ### 4.2 漫反射 【CURRENT】
-`d = max(0, N·L̂)`，N 按本文件 §2.3 解码（纯项，无底薪——历史缺陷
+`d = max(0, N·L̂)`，N 按本文 §2.3 解码（纯项，无底薪——历史缺陷
 0.45 底薪已在第八轮移除）。朝上面受光完全来自光高的仰角贡献：
 `N=(0,0,1)` 时 `d = lz/dist`。
 
@@ -194,7 +194,7 @@ x_tip = xmax·Lz/(Lz−H) 含 Lz=3/5 双光高与 near-H 长影边界 + 退化�
 | 光累积 | G-buffer+光 | 光缓冲 RGBA16F | ext.c light program | emit 失败=false |
 | 合成 | 光缓冲+G0+G3 | 窗口默认目标 | ext.c deferred/bloom FS | 目标绑定失败=false |
 
-同一约定唯一权威：投影/逆变换/往返→本文档 §1 + camera.h；alpha→§3.1
+同一约定唯一权威：投影/逆变换/往返→本文 §1 + camera.h；alpha→§3.1
 + geo 头注释；遮挡语义→§5.2 + light2d.h。其他文档引用不复制。
 
 ## 7. 验证矩阵（项目→不变量→方式）
@@ -231,7 +231,7 @@ x_tip = xmax·Lz/(Lz−H) 含 Lz=3/5 双光高与 near-H 长影边界 + 退化�
 - **GPU 射线阴影像素探针**：当前**缺失**。若未来需要直接证明 GLSL
   slab 测试在真实 GPU 上的遮挡结果，应补一个在阴影落影区采样像素
   的探针（光源照亮区 vs 遮挡暗区的亮度差）。这是后续专项验收项，
-  本次不扩建。
+  暂不扩建。
 
 源码层面已逐行核对 GLSL zcsr_ray_blocked 与 CPU seg_blocked 的 slab
 公式、t 区间 (1e-4, 1-1e-4)、平行退化处理一致——这是审计证据，不是
@@ -247,7 +247,7 @@ x_tip = xmax·Lz/(Lz−H) 含 Lz=3/5 双光高与 near-H 长影边界 + 退化�
 6. 射线=线段（非无限射线）；遮挡体=footprint×[0,H] 棱柱（§5.1-5.2）。
 7. 排序=painter's order（无深度测试），q 仅参考键（§5.3）。
 8. 改任意管线后的回归矩阵：PIPELINE_MAP §14 + INTEGRATION §8 +
-   本文档 §7。
+   本文 §7。
 9. 证据分级已逐项标注（CURRENT/PROPOSED/UNSUPPORTED/未验证）。
 10. 宿主接入不可变约定：世界系、height_shear 单源、G-buffer 四通道、
     alpha-cutout 阈值、painter 排序责任、地面鼠标反投影。
