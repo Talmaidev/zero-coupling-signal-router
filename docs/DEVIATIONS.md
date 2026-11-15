@@ -14,7 +14,7 @@
 
 ## DEV-002 — MSVC C4996 对 `getenv` 的局部抑制
 
-- 位置：`UIR_Editor/src/runtime.c` 的 `uir_getenv()`
+- 位置：`zcsr_editor/src/editor_host.c` 的 `uir_getenv()`
 - 状态：**接受为局部偏差**
 - 原因：`getenv` 是 ISO C11 只读查询；MSVC 的 C4996 是 CRT 弃用提示，不是缓冲区或类型安全缺陷。
 - 约束：抑制只在 `uir_getenv()` 函数体周围生效；UIR/UIM 中真实的 `strcpy/strncpy/_wfopen` 调用已替换（引擎既有 `strncpy` 均有显式终止，不属本轮误报），没有用同一宏全仓关闭 C4996。

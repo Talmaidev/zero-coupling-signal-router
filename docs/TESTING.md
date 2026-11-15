@@ -19,15 +19,13 @@ Keeping them apart means the correctness suite stays fast, deterministic and CI-
 ## tests/ — unit & contract suite (`ctest`)
 
 The engine repository now has its own CTest entry points via the top-level
-`enable_testing()` and `tests/CMakeLists.txt`. The core registration is:
+`enable_testing()` and `tests/CMakeLists.txt`. The current suite has 21 tests,
+covering core, signal, hsm, platform, glrender, light2d, audio, music, input,
+collision, save, ui and viewport, plus the cross-module checks.
 
-`core`, `instance_alpha_sort`, `ui_hit`, `music_api`.
-
-The wider consumer harness in `game_test` still registers the full cross-project
-suite (18 tests) and is not a substitute for the engine-native entry. GPU/audio/
-window-touching tests keep their headless-safe checks always on and guard the
-parts that need a real display behind a runtime check, so the suite passes on a
-headless box.
+`game_test` is retired. The consumer builds in `zcsr_runtime` and `zcsr_editor`
+register their own UIM page/settings tests; they are not part of this engine
+suite.
 
 ## Build & run
 

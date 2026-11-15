@@ -1,84 +1,69 @@
-# Zero-Coupling UI Signal Router
+# ZCSR
 
-Pure data + signals. A minimal, dependency-light zero-coupling UI/game-core foundation whose
-modules compile independently and talk only through shared interface contracts — never by
-including another module.
+ZCSR 是一个纯 C11 的 2.5D 游戏/渲染内核。它提供静态库和契约头，不是可直接运行的游戏。
 
-> Status: signal router + overlay + classic 2D game core are implemented; the game-usable engine
-> extension is landing additively (OpenGL renderer, audio mixer, universal input). Language:
-> **C11/C17** (no runtime heap, no STL; vendored single-file dependencies only where documented).
+开发者的入口是 `zcsr_editor`。引擎、UIM、runtime、tools 都由 editor 或宿主工程按需链接。
 
-## Why this layout enables zero-coupling
-The apparent conflict — *"no cross-module includes"* vs *"all modules compile independently"* —
-is resolved by a **shared contract layer** (`include/zcsr/`). Every module includes only those
-contract headers; it never includes another module's source. Each contract declares an **opaque
-handle** (`typedef struct zcsr_foo zcsr_foo;`) plus C function prototypes — the stable ABI.
-Integration calls those functions, so it depends on **interfaces, not implementations**. The
-guard `tools/check_no_cross_includes.sh` fails the build if any module includes another module
-or a relative path.
+## 仓库分工
 
-When a later feature exposes an integration bug inside an earlier module, the repo treats the
-feature contract (`.h`) and its implementation (`.c` / same-module native shim) as one cohesive
-unit. Small behavior-preserving fixes to an earlier module are allowed when required to complete
-the same functional requirement, provided the public contract and accepted behavior are preserved
-and the change is reviewed explicitly.
+ZCSR 按三层拆分，engine 不知道上层产品存在：
 
-## Modules ↔ Agents
-| Agent | Module            | Owns                                                            |
-|-------|-------------------|-----------------------------------------------------------------|
-| 1     | `modules/core`    | stack-only arena + read-only state buffer (string/int/bool, <256KB, no heap) |
-| 2     | `modules/signal`  | signal/slot (`void signal(string)` / `bool slot(string)`); compile-time table, no heap |
-| 3     | `modules/hsm`     | hierarchical state machine; transitions via signals; persists to state buffer |
-| 4     | `modules/overlay` | native overlay: text + 1 bitmap + 3 buttons; <1ms/frame         |
-| 5     | `modules/platform`| Win32 / Wayland / Cocoa, auto-selected at compile time; no GL/DX/Vulkan |
-| 6     | `integration/`    | wiring, demo, benchmark, validation (architecture/review owned) |
-
-Additional game-core modules live under `modules/input`, `modules/audio`, `modules/render`,
-`modules/gamelogic`, `modules/glrender`, `modules/audiomix`, and `modules/inputext`; see
-`docs/AI_ONBOARDING.md` for the full module map and onboarding guide.
-
-## Build
-```sh
-cmake -S . -B build && cmake --build build
-./build/zcsr_demo      # prints module wiring status
-./build/zcsr_bench     # render benchmark (once overlay lands)
-cmake --build build --target check_coupling   # zero-coupling guard
+```
+zcsr_editor                        开发者入口，编辑页面/布局/资产
+  ├── UIM                          UI Instance Model + page manager
+  ├── zcsr_runtime_shell           窗口、主循环、宿主生命周期
+  ├── zcsr_tools                   debug overlay + 2.5D workspace
+  └── zcsr engine                  25 个静态库
+       ├── core / signal / hsm / platform
+       ├── glrender / light2d / sprite / camera / camera3d / culling / atlas / font / image
+       ├── audio / audiomix / music / input / inputext / assets / resource / file_service
+       └── collision / save / ui / viewport
 ```
 
-## Contracts (the only thing modules may include)
-`include/zcsr/`: `value.h`, `arena.h`, `state_buffer.h`, `signal.h`, `hsm.h`, `platform.h`,
-`overlay.h`. Each module implements the prototypes from its own contract header. See
-`docs/API_REFERENCE.md` for the full API contract and `docs/AI_ONBOARDING.md` for architecture.
+`zcsr_ui_page_manager` 是 UIM 内的 target；`settings`、`menu` 是 page manager 下的页面源码目录，不是独立仓库。
 
-## macOS Build
+## 这个仓库包含什么
 
-The macOS audio backend uses AudioUnit DefaultOutput, minimum macOS 12.0.
-Requires Xcode Command Line Tools and CMake 3.16 or newer.
+- `include/zcsr/`：模块唯一允许包含的契约头。
+- `modules/`：25 个模块，每个模块独立编译，不 include 另一个模块的源码。
+- `tests/`：无窗口、可重复的 CTest 用例。
+- `integration/`：需要真实窗口、GPU 或音频设备的示例和手工验证，不作为自动测试。
+- `third_party/`：单文件第三方依赖，只在对应模块内部使用。
 
-```sh
-cmake -S . -B build -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
-cmake --build build --parallel
-ctest --test-dir build --output-on-failure
+引擎自己的运行期代码不使用 `malloc/free`。固定池和调用方缓冲区承担状态存储；系统库/驱动内部的分配不计入这个约束。
+
+## 构建
+
+需要 CMake 3.16+、C11 编译器；Windows 使用 MSVC。
+
+```powershell
+cmake -S . -B build -G "Visual Studio 18 2026" -A x64
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-To build and run the manual device-switch verification:
+当前基线是 25 个模块库、21 个 CTest。测试覆盖 core、signal、hsm、platform、glrender、light2d、audio、music、input、collision、save、ui、viewport 等模块。
 
-```sh
-cmake --build build --target verify_macos
-./build/verify_macos
-```
+## 开发者入口
 
-The program plays a 440 Hz tone and waits 30 seconds. During that time, switch
-the default output device in System Settings or plug/unplug headphones to
-observe LOST / CHANGED / RECOVERED events. This is a manual integration test,
-not an automated ctest.
+不要从引擎 demo 开始做产品。编辑器仓库 `zcsr_editor` 负责窗口、页面编辑、资产和工程文件；它通过公开 target 链接 engine/runtime/UIM/tools，不复制这些仓库的源码。
 
-## License
+editor 的构建和运行说明放在 `zcsr_editor/README.md`。
 
-This project is licensed under the **GNU Affero General Public License v3.0** (AGPLv3).
+## 文档
 
-- You may freely use, modify, and distribute this code.
-- Any derivative work (including network/SaaS use) must be open-sourced under the same AGPLv3 license.
-- You may not incorporate this code into a closed-source proprietary product.
+| 文件 | 内容 |
+|---|---|
+| `docs/ARCHITECTURE.md` | 零堆、零耦合、平台/音频/输入后端和线程模型 |
+| `docs/API_REFERENCE.md` | 契约头索引和 API 使用规则 |
+| `docs/RENDER2D_CONTRACT.md` | 2D 渲染坐标、颜色空间和 G-buffer 契约 |
+| `docs/LIGHT2D_MATH_MODEL.md` | Light2D 数学约定 |
+| `docs/LIGHT2D_INTEGRATION.md` | Light2D 接入说明 |
+| `docs/TESTING.md` | 自动测试与手工验证的分工 |
+| `docs/DEVIATIONS.md` | 已知偏差和明确不采纳的条目 |
 
-See `LICENSE` for the full license text.
+`docs/archive/` 是历史材料，只用于追溯，不代表当前实现。
+
+## 许可
+
+AGPLv3。衍生作品（包括网络服务）必须按同一许可开源；不能并入闭源商业产品。
