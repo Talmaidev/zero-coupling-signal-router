@@ -47,4 +47,4 @@ zcsr    : 1C.2 instanced PASS: 202 instances submitted
 
 ## Phase 1 (complete)
 
-Phase 1 handover is recorded in commit `b541845`. The separate `PHASE1.md` file is no longer kept in this directory.
+Phase 1 handover is recorded in commit `b541845`; this directory keeps no separate handover file.
