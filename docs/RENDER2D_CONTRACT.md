@@ -1,10 +1,7 @@
-# RENDER2D_CONTRACT.md — 2D 渲染基础契约 v1
+# RENDER2D_CONTRACT.md — 2D 渲染基础契约
 
-基线：`light2d-baseline-v1.1` = commit `1911e3b`。
-本文件不是新设计，而是把"现在已经定了什么 / 当前只有一半能力 / 建议以后这么定 / 明确不做 / 没查清"
-逐条分开写清楚，给第一款 2D 游戏当不返工的边界。已有文档：
-`LIGHT2D_INTEGRATION.md`（接入）、`LIGHT2D_MATH_MODEL.md`（公式）、`LIGHT2D_PIPELINE_MAP.md`（结构）。
-本文件不复制它们的公式，只在每条后给源码位置做交叉锚点。
+基线：tag `light2d-baseline-v1.1`，commit `1911e3b`。
+本文记录当前 2D 渲染契约，并与 `LIGHT2D_INTEGRATION.md`、`LIGHT2D_MATH_MODEL.md`、`LIGHT2D_PIPELINE_MAP.md` 交叉引用；公式不在这里重复，条款后的源码位置用于核对。
 
 状态标签（每条必须挂一个）：
 
@@ -237,8 +234,8 @@
   证据：`glrender_l2d_geo.c:393-394`（`zcsr_gl_find_tex` 返回 NULL/0 → false）。
 - [FROZEN] CPU 侧资源缓存：`zcsr_texture_cache` 按 PNG 路径去重，同路径返回同一 `zcsr_texture*`。
   证据：`include/zcsr/texture.h:17-19`。注意这是 CPU 图像缓存，不是 GPU 纹理去重。
-- [FROZEN] 子区域上传 `zcsr_gl_texture_upload_region`（公开头文件 `gl_render.h:191-195` 有声明——
-   那份 API 摘要漏列，以头文件为准）。实际 GL 状态行为（`glrender_sprite.c:246-252`）：
+- [FROZEN] 子区域上传 `zcsr_gl_texture_upload_region`（公开头文件 `gl_render.h:191-195` 有声明，
+  旧 API 摘要漏列，以头文件为准）。实际 GL 状态行为（`glrender_sprite.c:246-252`）：
   上传前 `glPixelStorei(GL_UNPACK_ALIGNMENT, 1)`、`GL_UNPACK_ROW_LENGTH = src_stride/4`；
   上传后把 `GL_UNPACK_ROW_LENGTH` 设回 0——**不保存、也不恢复调用前原值**；
   `GL_UNPACK_ALIGNMENT=1` 也不还原。`src_stride % 4 != 0` 或平台无 `GL_UNPACK_ROW_LENGTH` 时退化为
@@ -315,7 +312,7 @@
 - [FROZEN] 光数量无上限（数组上限已移除），多光 ADD 交换律无排序问题。
   证据：`LIGHT2D_PIPELINE_MAP.md` §6。
 - [PROPOSED] Sprite/Tilemap 与 Light2D 的桥接应放在显式适配层（宿主或独立模块），
-  不改写 geo/light2d 核心契约；触发条件=首款游戏需求出现。依据： 计划 §五。
+  不改写 geo/light2d 核心契约；触发条件是首款游戏出现需要被光照的 Sprite/Tilemap。
 
 ---
 
@@ -362,7 +359,7 @@
 
 ---
 
-## 12. 交付报告（本文件 v1 自检）
+## 12. 状态统计
 
 各领域状态计数（按本文实际条目逐条数，FROZEN / CURRENT-LIMITED / PROPOSED / UNSUPPORTED / UNKNOWN）：
 
@@ -379,15 +376,11 @@
 合计：FROZEN 75 / CURRENT-LIMITED 11 / PROPOSED 5 / UNSUPPORTED 14 / UNKNOWN 2。
 UNKNOWN 两项（负 scale 镜像、像素对齐）源码无证据，未猜。
 
-未做的事（对应  计划 §6）：未改任何 shader/数学/基线；未新增测试；未动 light2d core；
-未把未验证能力标成已支持；未重构文件布局；未 push/merge。本文件唯一新增产物。
-两个已登记限制（GPU 射线阴影同像素因果、nl 不对称）维持原状，不重开诊断。
-
 ---
 
-## 13. v1.2 证据补记（-web/DS-web plan 回本地源码核对后关闭的 UNKNOWN）
+## 13. 源码核对补记
 
-以下条目全部来自 `modules/glrender/glrender_light2d_ext.c` 的 light FS 逐行核对，
+以下条目来自 `modules/glrender/glrender_light2d_ext.c` 的 light FS 逐行核对，
 状态一律 FROZEN（已读代码，非运行证据）。这一节只补精度，不改 §1-§11 的既有结论。
 
 - [FROZEN] 衰减公式里的 "1.0" 不是硬编码常数，是 uniform `u_dist_scale`：
@@ -396,10 +389,10 @@ UNKNOWN 两项（负 scale 镜像、像素对齐）源码无证据，未猜。
   实际可配置。`u_radius` 为 0 时不会除零。
 - [FROZEN] dist=0 保护：`ldir = (tl < 1e-6) ? vec3(0,0,1) : to_light/tl`（`:336`）；
   法线零长保护 `n = (dot(n_raw,n_raw) < 1e-6) ? up : normalize(n_raw,0)`（`:333-334`）。
-   标 UNKNOWN 的两个除零点都已在 shader 内保护，不会出 NaN。
+  此前标为 UNKNOWN 的两个除零点都已在 shader 内保护，不会出 NaN。
 - [FROZEN] 法线解码口径：`n_raw = texture(u_Normal).xy * 2.0 - 1.0`（`:332`）。
   "xy=(0,0) 取朝上"指的是**解码后**的 n_raw=(0,0)，对应 G2 存储值 (0.5,0.5)（=清屏值）。
-  不是存储值 (0,0)。DS 提的歧义已澄清。
+  不是存储值 (0,0)。此前的歧义已澄清。
 - [FROZEN] ray slab 测试完整式：d = P - L（光→片元方向）；逐轴 t_enter/t_exit 取 max/min，
   z slab 范围是 `[0, hgt]`（地面到遮挡顶，不是 `[L.z, L.z+H]`，`:295-301`）；
   某轴 |d|<1e-6 时判 L 是否落在该轴 slab 内，不在则 `continue` 跳过该盒（`:280,288,296`）；
@@ -423,8 +416,7 @@ UNKNOWN 两项（负 scale 镜像、像素对齐）源码无证据，未猜。
   是引擎内部采样约定，§6 UV 条对宿主仍然成立。
 
 未在本节关闭、仍保持 UNKNOWN 的：负 scale 镜像、pixel snapping（§3/§6 原两条不动）。
-/DS 提的其他"建议措辞"（Emissive 被调制、tint 显示域、px_to_world 只地面、viewport 权威、
-q 键非通用深度）在 §1/§2/§8/§11 原文已经写清楚，不重复改。
+其余条款已在 §1/§2/§8/§11 写明，不再重复。
 
 ---
 

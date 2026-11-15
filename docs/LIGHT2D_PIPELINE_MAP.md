@@ -1,11 +1,10 @@
-# LIGHT2D_PIPELINE_MAP.md — 维护者视角的管线结构、文件职责与风险矩阵
+# LIGHT2D_PIPELINE_MAP.md — 管线结构、文件职责与风险矩阵
 
-面向维护者（接入者请读 `LIGHT2D_INTEGRATION.md`，数学约定请读
-`LIGHT2D_MATH_MODEL.md`）。所有行号对应 `light2d-hardening-v1.1` 分支工作树，
-源码改动会使行号漂移——函数名/符号优先于行号。
+面向维护者（接入者读 `LIGHT2D_INTEGRATION.md`，数学约定读
+`LIGHT2D_MATH_MODEL.md`）。所有行号对应当前工作树，
+源码改动会使行号漂移，函数名/符号优先于行号。
 
-基线：tag `light2d-baseline-v1` = commit `9ba19f4`（分支 linux-wayland-pipewire）。
-本文件所在分支：`light2d-hardening-v1.1`。
+基线：tag `light2d-baseline-v1`，commit `9ba19f4`。
 
 ---
 
@@ -127,7 +126,7 @@ discard 的附件一致性：cutout 在 FS 最前，四附件同生同灭，无�
 - CPU 掩码路径并存：`zcsr_l2d_emit_occluders`（light2d.c）按属性选择
   边/面，挤出进 R8 掩码（MAX 混合），光照 FS 5-tap 采样。ray 与 mask
   的选择：点光+ray_shadows → FS 射线；平行光（无论 ray 开关）→ 掩码
-  （light2d.c:727-729 掩码分支内 `use_shadow=1` ——本轮流查确认该组合
+  （light2d.c:727-729 掩码分支内 `use_shadow=1`，源码核对确认该组合
   正确，"parallel+ray 丢阴影"假设不成立）。
 - **G1 逐参数裁决**（结论类型见执行令 §六）：
   - `factor`：结论 3。2D 掩码路径支持（逐遮挡体浓度）；ray 路径硬 1.0。
@@ -266,9 +265,9 @@ flowchart TD
 
 ## 14. 风险矩阵
 
-| ID | 等级 | 位置 | 实际行为 | 预期/依据 | 证据 | 影响 | 处理 | 本次 |
+| ID | 等级 | 位置 | 实际行为 | 预期/依据 | 证据 | 影响 | 处理 | 状态 |
 |---|---|---|---|---|---|---|---|---|
-| R1 | **P1** | glrender_l2d_geo.c :126 门卫/:406 tex_face | 平色建成功+纹理建失败→ensure 早退 true→tex_face glUseProgram(0) 静默无渲染 | 契约：失败必须可见（false），u_ppu=0 同类教训 | 源码走查（本轮） | 纹理路径 | **已修**：门卫要求双 program+失败整组回滚+tex_face 守卫 | ✅ |
+| R1 | **P1** | glrender_l2d_geo.c :126 门卫/:406 tex_face | 平色建成功+纹理建失败→ensure 早退 true→tex_face glUseProgram(0) 静默无渲染 | 契约：失败必须可见（false），u_ppu=0 同类教训 | 源码核对 | 纹理路径 | **已修**：门卫要求双 program+失败整组回滚+tex_face 守卫 | ✅ |
 | R2 | P2 | light2d.h ray_shadows 注释 vs 实现 | ray 路径忽略 factor/distance/reverse/self_shadow | G1 裁决=结论 3（文档已声明，非缺陷） | 源码走查+契约对照 | 阴影表现 | 保持文档；触发=宿主要求 | 登记 |
 | R3 | P2 | ext.c light FS 法线解码 | Normal.z 写而不读（D2） | 斜面 N·L 需 3D 解码 | 源码+窗格对照 | 斜面光照 | 能力说明（MATH_MODEL §4.3）；触发=斜面需求 | 登记 |
 | R4 | P2 | 测试覆盖 | light2d 视觉路径无自动断言（D3 部分缓解：数学 ctest 24 断言；视觉仍靠探针） | 回归保护 | ctest 23 项 | 回归 | 已加 test_light2d_math；视觉探针流程固化 | ✅部分 |
