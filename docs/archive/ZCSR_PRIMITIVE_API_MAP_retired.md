@@ -1,6 +1,6 @@
 # ZCSR Primitive API Map
 
-本文档是 ZCSR UI Runtime 全部基础 Primitive 的公开 API 清单。
+本文是 ZCSR UI Runtime 全部基础 Primitive 的公开 API 清单。
 基于实际头文件和实现，标注每个 Primitive 的当前状态。
 状态：IMPLEMENTED=已实现可编译，PARTIAL=部分实现有缺口，MISSING=未实现。
 
@@ -213,7 +213,7 @@ typedef struct {
   - text_input_len
   - （方向键已有 ZCSR_UI_KEY_LEFT/RIGHT/UP/DOWN/HOME/END）
 
-## 7. 与 GPT Receiver 的对接边界
+## 7. 与 UI Receiver 的对接边界
 
 Receiver 接收：
   - VALUE_CHANGED (binding_key + value)
@@ -229,7 +229,7 @@ Receiver 不接收：
 
 ## 8. 差异说明
 
-GPT 曾报告 17 个 Primitive。当前仓库实际只有 8 个 widget type 枚举值。
+历史报告曾提到 17 个 Primitive；当前仓库实际只有 8 个 widget type 枚举值。
 Shared Contract (contract_registry.json) 不在仓库。
 其余 9 个 Primitive ID 未确认，不自行编造。
-待 GPT 提供 contract 后补充。
+待 contract 补充后更新。
