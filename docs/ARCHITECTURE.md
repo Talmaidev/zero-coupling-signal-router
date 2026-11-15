@@ -1,5 +1,11 @@
 # ZCSR Architecture
 
+## Repository boundaries
+
+This repository is the engine layer. It contains 25 independently built module libraries and the shared contract headers under `include/zcsr/`.
+
+UIM, the runtime shell, the editor and the 2.5D tools are separate repositories. They consume engine targets through CMake; the engine does not include their sources or know their product types.
+
 ## Zero-Heap Policy
 
 **Definition:** zcsr's own code does not call `malloc`, `free`, `calloc`, or `realloc`.
@@ -14,8 +20,9 @@
 
 **Implementation:** Fixed-size pools are used for all zcsr-managed objects:
 - `zcsr_surface`: pool of 4 (`ZCSR_SURFACE_POOL`)
-- `zcsr_overlay`: pool of 4 (`ZCSR_OVERLAY_POOL`)
 - Other modules use static buffers or caller-provided memory
+
+The native debug overlay and 2.5D workspace live in the `zcsr_tools` repository, not in this engine.
 
 ## Zero-Coupling Policy
 
