@@ -74,6 +74,6 @@ modulation fields; backends follow):
   sound device, gamepad needs a controller — same gate model as the overlay `<1ms` / Cocoa gates.
 
 ## Ownership
-Phase 0 (contracts + skeletons + CMake + this doc) = Claude. Agent 1–4 backends = Codex.
-Agent 5 (ctests/benches) + reviews = Claude. Modules are independent → buildable in parallel.
+Phase 0 完成 contracts、skeletons、CMake 和本文；后端 1–4 分别实现 input/audio/render/gamelogic。
+Validation（ctests/benches）和评审单独执行。模块彼此独立，可并行构建。
 Suggested priority: GPU > audio mixer > input.

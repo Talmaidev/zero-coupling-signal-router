@@ -11,9 +11,9 @@ include **only** `include/zcsr/*` contracts (never each other); no heap (fixed/c
 | 2 | `modules/audio`     | `audio.h` | WAV player in ONE dedicated thread; **signals only** (`PLAY_SOUND`/`STOP_SOUND`) |
 | 3 | `modules/render`    | `texture.h`, `sprite.h` | PNG via stb_image (single-header) + resource cache; batch sprite renderer |
 | 4 | `modules/gamelogic` | `collision.h`, `save.h` | AABB collision; binary save/load (header + checksum) |
-| 5 | integration/tests   | — | update ctests; bench (200 sprites <1ms/frame); zero-coupling guard (Claude) |
+| 5 | integration/tests   | — | update ctests; bench (200 sprites <1ms/frame); zero-coupling guard |
 
-Division: **Claude** = these Phase-0 contracts + Agent 5 validation + review. **Codex** = implement Agents 1–4.
+分工：Phase-0 契约、Validation 和评审单独执行；后端 1–4 分别实现。
 
 ## Key invariants
 - Audio talks to the rest of the game ONLY through the **signal router** (`signal.h`): wire
@@ -33,5 +33,5 @@ Division: **Claude** = these Phase-0 contracts + Agent 5 validation + review. **
 
 ## Phase plan
 - **Phase 0 (this):** contracts (`include/zcsr/` headers) + module stub skeleton + build wiring.
-- **Phase 1 (Codex, parallel):** Agent 1 input/clock/window, Agent 2 audio, Agent 3 render, Agent 4 gamelogic.
-- **Phase 2 (Claude):** integration demo (input → game logic → render + audio-via-signals) + tests + bench.
+- **Phase 1（并行实现）：** 后端 1 input/clock/window，后端 2 audio，后端 3 render，后端 4 gamelogic。
+- **Phase 2：** integration demo（input → game logic → render + audio-via-signals）+ tests + bench。
