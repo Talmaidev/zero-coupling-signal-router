@@ -47,5 +47,4 @@ zcsr    : 1C.2 instanced PASS: 202 instances submitted
 
 ## Phase 1 (complete)
 
-See PHASE1.md for the full handover record.
-Baseline commit: b541845.
+Phase 1 handover is recorded in commit `b541845`. The separate `PHASE1.md` file is no longer kept in this directory.

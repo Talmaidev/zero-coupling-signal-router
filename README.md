@@ -48,7 +48,7 @@ ctest --test-dir build -C Release --output-on-failure
 
 不要从引擎 demo 开始做产品。编辑器仓库 `zcsr_editor` 负责窗口、页面编辑、资产和工程文件；它通过公开 target 链接 engine/runtime/UIM/tools，不复制这些仓库的源码。
 
-editor 的构建和运行说明放在 `zcsr_editor/README.md`。
+editor 的构建和运行说明在 `zcsr_editor` 仓库的 README。
 
 ## 文档
 
