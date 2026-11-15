@@ -1,6 +1,6 @@
 # ZCSR Receiver Emitter Map
 
-本文档列出 ZCSR UI Runtime 当前实际发出的所有语义事件，供 UI Receiver（Layer 2）编写接收端。
+本文列出 ZCSR UI Runtime 当前实际发出的所有语义事件，供 UI Receiver（Layer 2）编写接收端。
 所有引用均指向仓库真实文件和行号。状态：IMPLEMENTED=已落盘可编译，DESIGNED=仅规划未实现。
 
 ## 1. 事件基础设施

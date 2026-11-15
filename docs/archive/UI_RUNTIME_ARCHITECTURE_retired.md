@@ -1,6 +1,6 @@
 # ZCSR UI Runtime 四层隔离架构
 
-本文档是 UI 子系统的权威架构规定。任何新增 UI 功能必须遵守此分层，不得跨层调用。
+本文是 UI 子系统的权威架构规定。任何新增 UI 功能必须遵守此分层，不得跨层调用。
 
 ## 1. 四层隔离
 
@@ -94,7 +94,7 @@ Receiver 只接收 Composite 对外语义信号，不接收：
 - Layer 2 Receiver：未开始。旧 Settings Window 在 integration/，待迁移
 - Layer 3 Editor：未开始
 - Layer 4 Game/Develop：未开始
-- Shared Contract：仓库中不存在，待  提供
+- Shared Contract：仓库中不存在，待补充
 
 ## 6. 禁止事项
 
