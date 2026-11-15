@@ -19,3 +19,4 @@ zcsr_audiomix_test.wav
 #   working dir
 .zcode/
 build_merge/
+build_main/
