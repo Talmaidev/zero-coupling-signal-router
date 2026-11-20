@@ -13,6 +13,16 @@ add_executable(core_test test_core.c)
 target_link_libraries(core_test PRIVATE zcsr_core)
 add_test(NAME core COMMAND core_test)
 
+if(WIN32)
+    # Real OS message path: PostMessage WM_KEYDOWN/WM_KEYUP into a Win32
+    # surface and drain via zcsr_input_pump(); not a synthetic queue injection.
+    add_executable(input_win32_pump_test test_input_win32_pump.c)
+    target_link_libraries(input_win32_pump_test PRIVATE
+        zcsr_input zcsr_platform zcsr_core user32 gdi32)
+    add_test(NAME input_win32_pump COMMAND input_win32_pump_test)
+    set_tests_properties(input_win32_pump PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+endif()
+
 add_executable(instance_alpha_sort_test test_instance_alpha_sort.c)
 target_link_libraries(instance_alpha_sort_test PRIVATE
     zcsr_glrender zcsr_platform zcsr_font zcsr_atlas zcsr_image zcsr_core)
