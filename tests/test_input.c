@@ -61,6 +61,20 @@ static void test_input(void) {
     CK("poll NULL out -> false",          zcsr_input_poll(in, NULL) == false);
     CK("is_down NULL -> false",           zcsr_input_is_down(NULL, 65) == false);
     CK("is_down out-of-range -> false",   zcsr_input_is_down(in, 60000) == false);
+
+    /* The test/tool injection path must use the same ring and key_down state
+     * as the platform pump, not a second input model. */
+    CK("inject NULL input -> false",      zcsr_input_inject_key(NULL, ZCSR_KEY_A, ZCSR_KEY_DOWN) == false);
+    CK("inject NONE -> false",            zcsr_input_inject_key(in, ZCSR_KEY_NONE, ZCSR_KEY_DOWN) == false);
+    CK("inject out-of-range -> false",    zcsr_input_inject_key(in, ZCSR_KEY_COUNT, ZCSR_KEY_DOWN) == false);
+    CK("inject A down -> true",           zcsr_input_inject_key(in, ZCSR_KEY_A, ZCSR_KEY_DOWN) == true);
+    CK("inject A down state",             zcsr_input_is_down(in, ZCSR_KEY_A) == true);
+    CK("inject A event queued",           zcsr_input_poll(in, &ev) == true);
+    CK("inject A event code",             ev.key == ZCSR_KEY_A && ev.action == ZCSR_KEY_DOWN && ev.text == false);
+    CK("inject A up -> true",             zcsr_input_inject_key(in, ZCSR_KEY_A, ZCSR_KEY_UP) == true);
+    CK("inject A up state",               zcsr_input_is_down(in, ZCSR_KEY_A) == false);
+    CK("inject A up event queued",        zcsr_input_poll(in, &ev) == true);
+    CK("inject A up event code",          ev.key == ZCSR_KEY_A && ev.action == ZCSR_KEY_UP);
 }
 
 static void test_window_close(void) {

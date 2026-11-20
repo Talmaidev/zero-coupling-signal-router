@@ -1,4 +1,6 @@
 /* integration/testmain.c — minimal 2.5D debug slice (Geometry Proof v1 runtime).
+ * Build/run owner: zcsr_runtime target zcsr_light2d_integration_slice (same
+ * zcsr_window_game_run window/loop), CTest name zcsr_light2d_integration_slice.
  * World: X east, Y south, Z up, ground z=0. Projection = GAME SHEAR (contract C):
  *   screen_x = (x-cam)*ppu + w/2 ; screen_y = (y-cam)*ppu + h/2 - z*k*ppu
  * Scene: floor, ONE real-height receiving wall (vertical face, real 3D pixels),
@@ -6,7 +8,7 @@
  * (mouse = x/y, W/S = z). Shadows = per-pixel segment-vs-prism (ray_shadows).
  * Debug insets show the G-buffer Position and Normal channels directly.
  * The four Geometry Proof occlusion cases are checked host-side at init. */
-#include "window.h"
+#include "zcsr_runtime_shell.h"
 #include "zcsr/gl_render.h"
 #include "zcsr/gl_render_l2d_geo.h"
 #include "zcsr/input.h"
@@ -18,8 +20,6 @@
 
 #include <stdio.h>
 #include <string.h>
-
-extern void zcsr_window_get_mouse_position(int* x, int* y);
 
 /* ---- world constants (Geometry Proof scene) ---- */
 #define BOX_MIN_X 2.0f
@@ -559,7 +559,7 @@ static void light_module_frame(zcsr_gl_renderer* r, int cw, int ch, void* user)
         }
     }
 
-    zcsr_window_get_mouse_position(&raw_mouse_x, &raw_mouse_y);
+    zcsr_runtime_shell_get_mouse_position(&raw_mouse_x, &raw_mouse_y);
     if (!s->autoquit) {
         if (frame_index == 0) {
             s->last_mouse_x = raw_mouse_x;
@@ -709,7 +709,7 @@ static bool light_module_key(int key, void* user)
 
 int main(int argc, char** argv)
 {
-    static const zcsr_window_module modules[1] = {
+    static const zcsr_runtime_shell_module modules[1] = {
         {
             "LIGHT 2.5D",
             &g_light,
@@ -717,6 +717,9 @@ int main(int argc, char** argv)
             light_module_shutdown,
             light_module_frame,
             light_module_key,
+            NULL,
+            NULL,
+            NULL
         },
     };
     memset(&g_light, 0, sizeof(g_light));
@@ -724,5 +727,5 @@ int main(int argc, char** argv)
     g_light.light_z = LIGHT_Z_DEFAULT;
     zcsr_camera_init(&g_light.cam, 0, 0, 4.0f, 0.0f, PPU_DEFAULT, SHEAR_DEFAULT);
     g_light.autoquit = (argc > 1 && argv[1] != NULL && strcmp(argv[1], "autoquit") == 0);
-    return zcsr_window_main(modules, 1, argc, argv);
+    return zcsr_window_game_run(modules, 1, argc, argv);
 }
