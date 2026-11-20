@@ -9,6 +9,7 @@
 #include "window.h"
 #include "zcsr/gl_render.h"
 #include "zcsr/gl_render_l2d_geo.h"
+#include "zcsr/input.h"
 #include "zcsr/light2d.h"
 #include "zcsr/sprite.h"
 #include "zcsr/transform.h"
@@ -55,8 +56,6 @@ typedef struct {
 
 static unsigned char light2d_buf[64 * 1024];
 static light_state g_light;
-
-#define LIGHT_KEY_SPACE 0x20
 
 /* ---- host-side mirror of the shader slab test (proof cross-check) ------- */
 static int seg_blocked(float lx, float ly, float lz,
@@ -681,7 +680,7 @@ static bool light_module_key(int key, void* user)
     light_state* s = (light_state*)user;
     if (s->ctx == NULL) return false;
     if (s->autoquit) return false; /* autoquit: no interactive key handling */
-    if (key == LIGHT_KEY_SPACE) {
+    if (key == ZCSR_KEY_SPACE) {
         zcsr_light_quality next = (s->quality == (int)ZCSR_LIGHT_QUALITY_LOW)
             ? ZCSR_LIGHT_QUALITY_HIGH : ZCSR_LIGHT_QUALITY_LOW;
         if (zcsr_light2d_set_quality(s->ctx, next)) {
@@ -691,14 +690,14 @@ static bool light_module_key(int key, void* user)
         }
         return true;
     }
-    if (key == 'W' || key == 'w') {
+    if (key == ZCSR_KEY_W) {
         s->light_z += 0.25f;
         if (s->light_z > 8.0f) s->light_z = 8.0f;
         printf("[light] light z -> %.2f (tip x=%.1f)\n", s->light_z,
                3.0f * BOX_MAX_X / s->light_z);
         return true;
     }
-    if (key == 'S' || key == 's') {
+    if (key == ZCSR_KEY_S) {
         s->light_z -= 0.25f;
         if (s->light_z < 0.5f) s->light_z = 0.5f;
         printf("[light] light z -> %.2f (tip x=%.1f)\n", s->light_z,
