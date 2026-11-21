@@ -42,7 +42,29 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-当前基线是 25 个模块库、21 个 CTest。测试覆盖 core、signal、hsm、platform、glrender、light2d、audio、music、input、collision、save、ui、viewport 等模块。
+当前基线是 25 个模块库、23 个 CTest。测试覆盖 core、signal、hsm、platform、glrender、light2d、audio、music、input、collision、save、ui、viewport 等模块。
+
+## Release 1.0 口径
+
+1.0 只收可构建、可回归、产品实际使用的契约：
+
+- 输入链路包含 `zcsr/input_keymap.h` 的原生码到 `ZCSR_KEY_*` 映射，以及 Win32 真实消息泵测试。
+- 不随发布提交计划、审计、一次性报告、实验性 format/fuzz/logging 门禁。
+- 测试只保留最终稳定项；`zcsr_bench` 是测量工具，不是发布测试，也不能把不同条件的采样混成一张性能表。
+- editor 仍为 Windows-only，非 Windows 编译在 `editor_app.cpp` 显式 `#error`；不声明 Linux/macOS 编辑器支持。
+
+## 性能基线（唯一可引用口径）
+
+条件：1920×1080、VSync off、65,535 个相同 sprite、Windows 10、Intel Arc B580；热机 60 帧预热后采样 300 帧，记录端到端帧时间（CPU submit + GPU 完成）。
+
+| 实现 | ms/frame | FPS | update ms | render ms |
+|---|---:|---:|---:|---:|
+| Unity GL Burst | 0.948 | 1056 | 0.655 | 0.293 |
+| Unity D3D11 Burst | 1.049 | 954 | 0.455 | 0.594 |
+| ZCSR | 1.210 | 826 | 0.510 | 0.700 |
+| Unity D3D11 Job（无 Burst） | 1.821 | 550 | 1.239 | 0.571 |
+
+边界：ZCSR submit-only 0.873/0.943 ms、`glFinish` 4.86–5.62 ms 是不同测量面，不能与上表端到端数字混用；冷机、不同分辨率、不同批次的 CSV 属于探索数据，不作为 1.0 发布结论。
 
 ## 开发者入口
 
@@ -51,6 +73,8 @@ ctest --test-dir build -C Release --output-on-failure
 editor 的构建和运行说明在 `zcsr_editor` 仓库的 README。
 
 ## 文档
+
+README 负责所有模块的用法总览和发布口径；`docs/` 只放底层架构、函数参数、API 调用和契约详解，不放计划、审计或一次性报告。
 
 | 文件 | 内容 |
 |---|---|
