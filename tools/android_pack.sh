@@ -11,6 +11,8 @@
 #   ZCSR_ANDROID_VERSION_CODE         override versionCode [from AndroidManifest.xml]
 #   ZCSR_ANDROID_VERSION_NAME         override versionName [from AndroidManifest.xml]
 #   ZCSR_DEBUG_STOREPASS              keystore password (required, env only)
+#   ZCSR_DEBUG_KEYSTORE               keystore path [android/keystore/zcsr-debug.keystore]
+#   ZCSR_DEBUG_KEY_ALIAS              key alias [zcsr-debug]
 #
 # Output: $ZCSR_ANDROID_APK (signed v2+v3). versionCode/versionName default to
 # manifest values and can be overridden via ZCSR_ANDROID_VERSION_CODE / _NAME.
@@ -48,8 +50,8 @@ SO_PATH="$(to_abs "${ZCSR_ANDROID_SO:-build/android/out/arm64-v8a/libzcsr_phase0
 BUILD_DIR="$(to_abs "${ZCSR_ANDROID_BUILD_DIR:-build/android/t3_1c}")"
 APK_OUT="$(to_abs "${ZCSR_ANDROID_APK:-build/android/zcsr_phase1c.apk}")"
 
-KEYSTORE="$ROOT/android/keystore/zcsr-debug.keystore"
-KEY_ALIAS="zcsr-debug"
+KEYSTORE="${ZCSR_DEBUG_KEYSTORE:-$ROOT/android/keystore/zcsr-debug.keystore}"
+KEY_ALIAS="${ZCSR_DEBUG_KEY_ALIAS:-zcsr-debug}"
 : "${ZCSR_DEBUG_STOREPASS:?Set ZCSR_DEBUG_STOREPASS in the environment}"
 
 MANIFEST="$ROOT/android/AndroidManifest.xml"

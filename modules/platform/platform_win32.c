@@ -50,6 +50,24 @@ static zcsr_surface* zcsr_surface_find_by_hwnd(HWND hwnd) {
     return NULL;
 }
 
+/* Take + clear the WM_CLOSE request recorded by the window proc.
+ * Mirrors zcsr_platform_x11_take_close / zcsr_platform_wayland_take_close. */
+bool zcsr_platform_win32_take_close(zcsr_surface* s) {
+    bool r;
+    size_t i;
+    if (!s) return false;
+    /* Identity check before touching any field: zcsr_window_close_requested()
+     * is public and a caller may pass a surface this backend never created
+     * (or a stale one). Dereferencing such a pointer is undefined behaviour. */
+    for (i = 0; i < ZCSR_SURFACE_POOL; ++i) {
+        if (s == &zcsr_surfaces[i]) break;
+    }
+    if (i == ZCSR_SURFACE_POOL || !s->in_use) return false;
+    r = s->close_requested;
+    s->close_requested = false;
+    return r;
+}
+
 static LRESULT CALLBACK zcsr_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_NCHITTEST) {
         zcsr_surface* s = zcsr_surface_find_by_hwnd(hwnd);
@@ -146,18 +164,23 @@ static ATOM zcsr_window_class(void) {
     return atom;
 }
 
-zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
+static zcsr_surface* zcsr_surface_create_impl(const char* title, zcsr_rect bounds,
+                                              bool layered) {
     HWND hwnd;
     zcsr_surface* surface;
+    DWORD ex_style = WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
+    DWORD style = WS_POPUP;
+    if (layered) ex_style |= WS_EX_LAYERED;
+    else style |= WS_VISIBLE; /* opaque benchmark/presentation path: show at creation */
     if (!zcsr_window_class()) return 0;
     if (bounds.w <= 0) bounds.w = 320;
     if (bounds.h <= 0) bounds.h = 120;
-    hwnd = CreateWindowExA(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-                           "zcsr_overlay_surface", title ? title : "zcsr", WS_POPUP,
+    hwnd = CreateWindowExA(ex_style,
+                           "zcsr_overlay_surface", title ? title : "zcsr", style,
                            bounds.x, bounds.y, bounds.w, bounds.h,
                            0, 0, GetModuleHandleA(0), 0);
     if (!hwnd) return 0;
-    SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+    if (layered) SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
     surface = zcsr_surface_acquire();
     if (!surface) {
         DestroyWindow(hwnd);
@@ -194,6 +217,14 @@ zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
     return surface;
 }
 
+zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
+    return zcsr_surface_create_impl(title, bounds, true);
+}
+
+zcsr_surface* zcsr_surface_create_opaque(const char* title, zcsr_rect bounds) {
+    return zcsr_surface_create_impl(title, bounds, false);
+}
+
 void zcsr_surface_destroy(zcsr_surface* s) {
     if (!s || !s->in_use) return;
     if (s->hwnd) DestroyWindow((HWND)s->hwnd);
@@ -206,6 +237,18 @@ void* zcsr_surface_native_handle(const zcsr_surface* s) {
 
 void* zcsr_surface_native_display(const zcsr_surface* s) {
     (void)s; return 0; /* Win32 has no separate display connection; the HWND suffices */
+}
+
+/* Android lifecycle binding is not supported on Win32. Define the contract
+ * explicitly so consumers linking the platform API do not hit an unresolved
+ * symbol; do not pretend a native window was attached. */
+bool zcsr_surface_attach_native(zcsr_surface* s, void* native_window) {
+    (void)s; (void)native_window;
+    return false;
+}
+
+void zcsr_surface_detach_native(zcsr_surface* s) {
+    (void)s;
 }
 
 void zcsr_surface_pump_events(zcsr_surface* s) {
@@ -367,22 +410,6 @@ bool zcsr_display_get(int index, zcsr_display_info* out) {
     slot = zcsr_win_index_to_slot(index);
     if (slot < 0) return false;
     return zcsr_win_fill_info(slot, out);
-}
-
-bool zcsr_platform_win32_take_close(zcsr_surface* s) {
-    bool r;
-    size_t i;
-    if (!s) return false;
-    /* Identity check before touching any field: zcsr_window_close_requested()
-     * is public and a caller may pass a surface this backend never created
-     * (or a stale one). Dereferencing such a pointer is undefined behaviour. */
-    for (i = 0; i < ZCSR_SURFACE_POOL; ++i) {
-        if (s == &zcsr_surfaces[i]) break;
-    }
-    if (i == ZCSR_SURFACE_POOL || !s->in_use) return false;
-    r = s->close_requested;
-    s->close_requested = false;
-    return r;
 }
 
 /* Resolve a stable display id to a current HMONITOR and its monitor rect. */
@@ -671,6 +698,28 @@ float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
 
 static HCURSOR g_custom_cursor = NULL;
 static bool g_cursor_visible = true;
+
+bool zcsr_surface_set_cursor_shape(zcsr_surface* s, zcsr_cursor_shape shape) {
+    LPCSTR id;
+    HCURSOR cursor;
+    HWND hwnd;
+    if (!s || !s->hwnd) return false;
+    hwnd = (HWND)s->hwnd;
+    if (shape == ZCSR_CURSOR_HIDDEN) return zcsr_surface_set_cursor_visible(s, false);
+    switch (shape) {
+    case ZCSR_CURSOR_IBEAM:     id = IDC_IBEAM; break;
+    case ZCSR_CURSOR_CROSSHAIR: id = IDC_CROSS; break;
+    case ZCSR_CURSOR_HAND:      id = IDC_HAND; break;
+    case ZCSR_CURSOR_ARROW:
+    default:                    id = IDC_ARROW; break;
+    }
+    cursor = LoadCursorA(NULL, id);
+    if (!cursor) return false;
+    if (!g_cursor_visible) zcsr_surface_set_cursor_visible(s, true);
+    SetClassLongPtrW(hwnd, GCLP_HCURSOR, (LONG_PTR)cursor);
+    SetCursor(cursor);
+    return true;
+}
 
 bool zcsr_surface_set_cursor_visible(zcsr_surface* s, bool visible) {
     (void)s;

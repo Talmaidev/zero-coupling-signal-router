@@ -81,12 +81,13 @@ UV：(u0,v0)=子矩形图像左上，v 向图像底（与 sprite 管线一致；
 纹理以普通 GL_RGBA 上传（无 sRGB 内部格式）→ GPU 无解码。
 **全链路唯一线性化 = 合成 FS 的 `A_lin = pow(max(A_stored,0), 2.2)`**
 （ext.c deferred/bloom FS）。因此 texel 直写 G0（同平色路径编码），
-纹理路径禁止二次解码。输出：`C_out = (C_lin/(C_lin+1))^(1/2.2)`，
-tonemap 与 gamma 在同一合成 FS。
+纹理路径禁止二次解码。输出：`C_out = DisplayEncode(C_lin/(C_lin+1))`，
+其中 `DisplayEncode` 来自 `zcsr_color_pipeline` 的可替换 LUT；tonemap 在合成
+FS，显示编码不在 shader 内写死公式。
 
 **tint / albedo 的实际乘法空间（v1.1 契约裁决）**：geo FS 在
-显示域直接做 `rgba = texture(UV) ⊙ tint` 后写入 G0（RGBA8），
-合成时才整体 `pow(2.2)`。因此 tint 与平色 albedo_rgba 实际是
+显示域直接做 `rgba = texture(UV) ⊙ tint` 后写入 G0（GL_SRGB8_ALPHA8），
+合成采样 G0 时由硬件整体解码为线性。因此 tint 与平色 albedo_rgba 实际是
 **显示域（gamma）乘子**，与纹理想素同空间相乘——**不是线性空间
 乘法**。
 **裁决**：旧版头文件曾将 tint/albedo 标注为 "linear"，该描述与实际

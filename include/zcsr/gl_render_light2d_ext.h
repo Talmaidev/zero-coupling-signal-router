@@ -222,11 +222,11 @@ bool zcsr_gl_l2d_lightbuf_end(zcsr_gl_renderer* renderer);
 bool zcsr_gl_l2d_bind_light_texture(zcsr_gl_renderer* renderer,
                                     int texture_unit);
 
+/* 设置 composite 目标的多采样数（0=关，2/4/8）。上下文不支持时返回 false，
+ * 调用方必须保留“未生效”，不能假装打开。下次 bind 时按新尺寸/采样数重建。 */
+bool zcsr_gl_l2d_set_msaa(zcsr_gl_renderer* renderer, int samples);
+
 #ifdef __cplusplus
 }
 #endif
 #endif
-
-/* 设置 composite 目标的多采样数（0=关，2/4/8）。上下文不支持时返回 false，
- * 调用方必须保留“未生效”，不能假装打开。下次 bind 时按新尺寸/采样数重建。 */
-bool zcsr_gl_l2d_set_msaa(zcsr_gl_renderer* renderer, int samples);

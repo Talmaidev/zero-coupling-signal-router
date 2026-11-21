@@ -40,6 +40,15 @@ int main(void) {
     int count = zcsr_display_count();
     int i;
     int found_primary = 0;
+    unsigned caps = zcsr_platform_capabilities();
+
+    /* Capability report is truthful for every real window backend. */
+    CHECK((caps & ZCSR_PLATFORM_CAP_DISPLAY) == 0u, 100);
+    CHECK((caps & ZCSR_PLATFORM_CAP_INPUT) == 0u, 101);
+    CHECK((caps & ZCSR_PLATFORM_CAP_FOCUS_EVENTS) == 0u, 102);
+    CHECK((caps & ZCSR_PLATFORM_CAP_CONTENT_SIZE) == 0u, 103);
+    /* No backend claims an IME preedit UI or soft keyboard yet. */
+    CHECK((caps & ZCSR_PLATFORM_CAP_SOFT_KEYBOARD) != 0u, 105);
 
     /* count() is always at least 1. */
     CHECK(count < 1, 1);
@@ -61,6 +70,9 @@ int main(void) {
         CHECK(!nul_found, 5);
         /* is_primary is 0 or 1. */
         CHECK(info.is_primary != 0 && info.is_primary != 1, 6);
+        printf("display %d: %s %dx%d refresh=%dHz dpi=%.2f primary=%d\n",
+               i, info.name, info.width, info.height, info.refresh_hz,
+               (double)info.dpi_scale, info.is_primary);
     }
     /* At least one display is primary when we have real records. */
     CHECK(!found_primary, 7);
@@ -112,16 +124,24 @@ int main(void) {
             CHECK(zcsr_surface_set_client_size(s, 0, 100) != false, 22);
             CHECK(zcsr_surface_set_client_size(s, 100, -1) != false, 23);
 
-            /* Set an explicit client size and read it back. */
-            CHECK(zcsr_surface_set_client_size(s, 240, 160) == false, 24);
-            {
-                int cw = 0, ch = 0;
-                zcsr_surface_get_client_size(s, &cw, &ch);
-                /* Allow a small tolerance for windowing backends. */
-                if (cw < 230 || cw > 250 || ch < 150 || ch > 170) {
-                    printf("client size readback got %dx%d (expected ~240x160)\n",
-                           cw, ch);
-                    /* Not fatal on headless/tiling WMs; report only. */
+            /* A kiosk-style Wayland compositor can place a newly created
+             * toplevel directly in FULLSCREEN. Normalize to WINDOWED before
+             * asserting client-size behavior; the fullscreen rejection is
+             * still covered below. */
+            if (!zcsr_surface_set_mode(s, ZCSR_WINDOW_WINDOWED)) {
+                printf("client-size check skipped: backend cannot enter windowed mode\n");
+            } else {
+                /* Set an explicit client size and read it back. */
+                CHECK(zcsr_surface_set_client_size(s, 240, 160) == false, 24);
+                {
+                    int cw = 0, ch = 0;
+                    zcsr_surface_get_client_size(s, &cw, &ch);
+                    /* Allow a small tolerance for windowing backends. */
+                    if (cw < 230 || cw > 250 || ch < 150 || ch > 170) {
+                        printf("client size readback got %dx%d (expected ~240x160)\n",
+                               cw, ch);
+                        /* Not fatal on headless/tiling WMs; report only. */
+                    }
                 }
             }
 

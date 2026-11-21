@@ -1,8 +1,8 @@
 /* audiomix_internal.h — shared types for the audio mixer backend split.
  *
- * zcsr_mix_backend is fully defined here so both audiomix.c (core + ALSA)
- * and audiomix_pipewire.c can access its fields.  Platform-specific headers
- * are included per-branch.
+ * zcsr_mix_backend is fully defined here so both audiomix.c (core + ALSA +
+ * silent fallback) and audiomix_pipewire.c can access its fields. Linux output
+ * prefers PipeWire when available and otherwise uses ALSA when CMake found it.
  */
 #ifndef ZCSR_AUDIOMIX_INTERNAL_H
 #define ZCSR_AUDIOMIX_INTERNAL_H
@@ -115,6 +115,8 @@ typedef struct {
     bool stream_connected;
     bool core_connected;
 } zcsr_pw_backend;
+#elif defined(ZCSR_AUDIO_BACKEND_ALSA)
+#include <alsa/asoundlib.h>
 #endif
 #endif
 
@@ -138,6 +140,8 @@ typedef struct {
 #if defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
     /* PipeWire backend state embedded directly (zero heap). */
     zcsr_pw_backend pw;
+#elif defined(ZCSR_AUDIO_BACKEND_ALSA)
+    snd_pcm_t* alsa_pcm;
 #endif
     zcsr_mixer* owner;
 #elif defined(_WIN32)
@@ -153,7 +157,7 @@ typedef struct {
     WAVEHDR wave_hdr;
     HANDLE wave_event;
     bool use_waveout;
-    int16_t* wave_buffer;
+    int16_t wave_buffer[ZCSR_MIX_PERIOD_FRAMES * 4 * 2];
     unsigned wave_buffer_frames;
     zcsr_mixer* owner;
 #elif defined(__APPLE__)

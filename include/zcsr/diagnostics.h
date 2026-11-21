@@ -11,14 +11,27 @@
 #ifndef ZCSR_DIAGNOSTICS_H
 #define ZCSR_DIAGNOSTICS_H
 
-#include "zcsr/log.h"
 #include <stdbool.h>
+#ifdef __cplusplus
+/* C++17 has no C11 _Atomic; rate-limited macros use std::atomic instead. */
+#include <atomic>
+#else
+/* C11 <stdatomic.h> is not a C++17 header (GCC rejects its _Atomic typedefs;
+ * MSVC only warns). */
+#include <stdatomic.h>
+#endif
+#include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Keep the C logger declaration inside this header's C-linkage region. This
+ * matters when a C++ caller includes diagnostics.h directly and does not wrap
+ * the include in its own extern "C" block. */
+#include "zcsr/log.h"
 
 /* ============================================================
  * 日志宏：自动记录 file / line / function
@@ -99,6 +112,115 @@ extern "C" {
 #else
 #define ZCSR_LOG_FATAL(module, fmt, ...) ((void)0)
 #endif
+
+/* ============================================================
+ * 限流宏：每个调用点一个私有计数器，无堆分配
+ * ============================================================
+ *
+ *   ZCSR_LOG_ONCE(level, module, fmt, ...)          仅第一次执行
+ *   ZCSR_LOG_FIRST_N(level, module, n, fmt, ...)    前 n 次执行
+ *   ZCSR_LOG_EVERY_N(level, module, n, fmt, ...)    第 1、1+n、1+2n… 次执行
+ *
+ * `n` 必须大于 0；非正数不输出。计数器是展开点内的 static 原子变量，
+ * 每个调用点独立，跨调用保留。低于 ZCSR_LOG_COMPILE_LEVEL 时整个展开被
+ * 编译期条件裁掉，不会产生计数器或参数求值。
+ *
+ * C11 用 <stdatomic.h> 的 _Atomic / atomic_*；C++17 用 <stdatomic.h> 不可用，
+ * 这里改用 std::atomic 适配，保证同一组宏在两种语言下都能编译。
+ */
+#ifdef __cplusplus
+#  define ZCSR_LOG_ATOMIC_TYPE(T) std::atomic<T>
+#  define ZCSR_LOG_ATOMIC_EXCHANGE(p, v) \
+       ((p)->exchange((v), std::memory_order_relaxed))
+#  define ZCSR_LOG_ATOMIC_FETCH_ADD(p, v) \
+       ((p)->fetch_add((v), std::memory_order_relaxed))
+#  define ZCSR_LOG_ATOMIC_LOAD(p) \
+       ((p)->load(std::memory_order_relaxed))
+#  define ZCSR_LOG_ATOMIC_CAS(p, expected, desired) \
+       ((p)->compare_exchange_strong(*(expected), (desired), \
+                                     std::memory_order_relaxed))
+#else
+#  define ZCSR_LOG_ATOMIC_TYPE(T) _Atomic T
+#  define ZCSR_LOG_ATOMIC_EXCHANGE(p, v) \
+       atomic_exchange_explicit((p), (v), memory_order_relaxed)
+#  define ZCSR_LOG_ATOMIC_FETCH_ADD(p, v) \
+       atomic_fetch_add_explicit((p), (v), memory_order_relaxed)
+#  define ZCSR_LOG_ATOMIC_LOAD(p) \
+       atomic_load_explicit((p), memory_order_relaxed)
+#  define ZCSR_LOG_ATOMIC_CAS(p, expected, desired) \
+       atomic_compare_exchange_strong_explicit((p), (expected), (desired), \
+                                                memory_order_relaxed, \
+                                                memory_order_relaxed)
+#endif
+
+#define ZCSR_LOG_ONCE(level_value, module_value, fmt, ...) \
+    do { \
+        int zcsr_log_level_value = (int)(level_value); \
+        if (zcsr_log_level_value >= ZCSR_LOG_COMPILE_LEVEL) { \
+            static ZCSR_LOG_ATOMIC_TYPE(int) zcsr_log_once_flag = 0; \
+            if (ZCSR_LOG_ATOMIC_EXCHANGE(&zcsr_log_once_flag, 1) == 0) { \
+                ZCSR_LOG_EMIT((zcsr_log_level)zcsr_log_level_value, \
+                              (module_value), fmt, ##__VA_ARGS__); \
+            } \
+        } \
+    } while (0)
+
+#define ZCSR_LOG_FIRST_N(level_value, module_value, n, fmt, ...) \
+    do { \
+        int zcsr_log_level_value = (int)(level_value); \
+        if (zcsr_log_level_value >= ZCSR_LOG_COMPILE_LEVEL) { \
+            static ZCSR_LOG_ATOMIC_TYPE(unsigned) zcsr_log_first_n_counter = 0; \
+            unsigned zcsr_log_first_n_index = ZCSR_LOG_ATOMIC_FETCH_ADD( \
+                &zcsr_log_first_n_counter, 1u); \
+            int zcsr_log_first_n_limit = (int)(n); \
+            if (zcsr_log_first_n_limit > 0 && \
+                zcsr_log_first_n_index < (unsigned)zcsr_log_first_n_limit) { \
+                ZCSR_LOG_EMIT((zcsr_log_level)zcsr_log_level_value, \
+                              (module_value), fmt, ##__VA_ARGS__); \
+            } \
+        } \
+    } while (0)
+
+#define ZCSR_LOG_EVERY_N(level_value, module_value, n, fmt, ...) \
+    do { \
+        int zcsr_log_level_value = (int)(level_value); \
+        if (zcsr_log_level_value >= ZCSR_LOG_COMPILE_LEVEL) { \
+            static ZCSR_LOG_ATOMIC_TYPE(unsigned) zcsr_log_every_n_counter = 0; \
+            unsigned zcsr_log_every_n_index = ZCSR_LOG_ATOMIC_FETCH_ADD( \
+                &zcsr_log_every_n_counter, 1u); \
+            int zcsr_log_every_n_step = (int)(n); \
+            if (zcsr_log_every_n_step > 0 && \
+                (zcsr_log_every_n_index % (unsigned)zcsr_log_every_n_step) == 0u) { \
+                ZCSR_LOG_EMIT((zcsr_log_level)zcsr_log_level_value, \
+                              (module_value), fmt, ##__VA_ARGS__); \
+            } \
+        } \
+    } while (0)
+
+/* 第 1 次执行，以及之后每隔 ms 毫秒执行一次；ms <= 0 不输出。
+ * 时间源是 zcsr_log_now_ms()（单调时钟，不受系统时间回拨影响）。多线程同时
+ * 命中时由 CAS 保证一个间隔内只有一个线程输出。 */
+#define ZCSR_LOG_EVERY_MS(level_value, module_value, ms, fmt, ...) \
+    do { \
+        int zcsr_log_level_value = (int)(level_value); \
+        long long zcsr_log_every_ms_interval = (long long)(ms); \
+        if (zcsr_log_level_value >= ZCSR_LOG_COMPILE_LEVEL && \
+            zcsr_log_every_ms_interval > 0) { \
+            static ZCSR_LOG_ATOMIC_TYPE(uint64_t) zcsr_log_every_ms_last = 0; \
+            uint64_t zcsr_log_every_ms_now = zcsr_log_now_ms(); \
+            uint64_t zcsr_log_every_ms_prev = ZCSR_LOG_ATOMIC_LOAD( \
+                &zcsr_log_every_ms_last); \
+            if ((zcsr_log_every_ms_prev == 0 || \
+                 zcsr_log_every_ms_now - zcsr_log_every_ms_prev >= \
+                     (uint64_t)zcsr_log_every_ms_interval) && \
+                ZCSR_LOG_ATOMIC_CAS(&zcsr_log_every_ms_last, \
+                                    &zcsr_log_every_ms_prev, \
+                                    zcsr_log_every_ms_now)) { \
+                ZCSR_LOG_EMIT((zcsr_log_level)zcsr_log_level_value, \
+                              (module_value), fmt, ##__VA_ARGS__); \
+            } \
+        } \
+    } while (0)
 
 /* ============================================================
  * Assert：Debug 启用，Release 关闭

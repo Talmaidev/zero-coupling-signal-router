@@ -5,7 +5,8 @@
  * zcsr_mix_backend_write(), and the PipeWire process callback pulls from a
  * fixed SPSC ring buffer.
  *
- * Format: 44100 Hz, stereo, 16-bit signed little-endian (SPA_AUDIO_FORMAT_S16_LE).
+ * Format: 44100 Hz, stereo, signed 32-bit little-endian (SPA_AUDIO_FORMAT_S32_LE).
+ * The mixer produces int16 PCM; backend_write widens it to int32 into the ring.
  * Accumulation: int32 scratch buffer with clamp to int16 range (avoids int16
  * overflow when multiple channels sum).
  *
@@ -16,12 +17,12 @@
  * Lifecycle:
  *   backend_open  — pw_init → pw_thread_loop_new/start → pw_context_new →
  *                   pw_context_connect → pw_stream_new → add_listener →
- *                   pw_stream_connect (S16_LE stereo 44100)
+ *                   pw_stream_connect (S32_LE stereo 44100)
  *   backend_close — pw_stream_disconnect → pw_stream_destroy →
  *                   pw_context_disconnect/destroy → pw_thread_loop_stop/destroy
  *   backend_write — lock thread loop, write into SPSC ring, signal process
  */
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
 
 #include <stdio.h>
 #include "audiomix_internal.h"
@@ -42,6 +43,9 @@ static void zcsr_pw_on_stream_state_changed(void* data,
     zcsr_pw_backend* pw = (zcsr_pw_backend*)data;
     (void)old;
     if (state == PW_STREAM_STATE_STREAMING) {
+        if (!pw->stream_connected) {
+            fprintf(stderr, "[zcsr-pw] stream connected\n");
+        }
         pw->stream_connected = true;
     } else if (state == PW_STREAM_STATE_ERROR || state == PW_STREAM_STATE_UNCONNECTED) {
         pw->stream_connected = false;
@@ -63,7 +67,7 @@ static void zcsr_pw_on_stream_process(void* data) {
     buf = pw_stream_dequeue_buffer(pw->stream);
     if (!buf) return;
 
-    if (!buf->buffer || !buf->buffer->datas) {
+    if (!buf->buffer || !buf->buffer->datas || !buf->buffer->datas[0].chunk) {
         pw_stream_queue_buffer(pw->stream, buf);
         return;
     }
@@ -131,7 +135,7 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
     uint8_t buffer[1024];
     struct spa_pod_builder pod_builder = SPA_POD_BUILDER_INIT(buffer, sizeof buffer);
     static const struct spa_audio_info_raw raw_info = {
-        .format = SPA_AUDIO_FORMAT_S16_LE,
+        .format = SPA_AUDIO_FORMAT_S32_LE,
         .rate = ZCSR_MIX_RATE,
         .channels = 2,
         .position = { SPA_AUDIO_CHANNEL_FL, SPA_AUDIO_CHANNEL_FR },
@@ -206,6 +210,7 @@ fail_context:
 fail_thread:
     pw_thread_loop_destroy(pw->loop);
 fail_loop:
+    pw_deinit();
     memset(pw, 0, sizeof(*pw));
 }
 
@@ -236,6 +241,10 @@ void zcsr_mix_backend_close(zcsr_mix_backend* b) {
     pw_thread_loop_stop(pw->loop);
     pw_thread_loop_destroy(pw->loop);
 
+    /* pw_init() allocates process-global state; without pw_deinit() every
+     * open/close cycle leaks it (LSan: ~8 KB from libpipewire). */
+    pw_deinit();
+
     memset(pw, 0, sizeof(*pw));
     b->opened = false;
 }
@@ -250,6 +259,7 @@ void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned fr
         zcsr_mix_sleep_period();
         return;
     }
+    if (frames > ZCSR_MIX_PERIOD_FRAMES) frames = ZCSR_MIX_PERIOD_FRAMES;
 
     pw = &b->pw;
     scratch = pw->mix_scratch;

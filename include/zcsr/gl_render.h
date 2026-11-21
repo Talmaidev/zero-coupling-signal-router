@@ -1,6 +1,6 @@
 #ifndef ZCSR_GL_RENDER_H
 #define ZCSR_GL_RENDER_H
-/*  — GPU rendering.
+/* GPU rendering.
  * Desktop: OpenGL 3.3 Core. Android: OpenGL ES 3.x.
  * OPTIONAL renderer, beside the existing
  * software/overlay path (which stays unchanged). Implementer: modules/glrender (vendors glad;
@@ -9,6 +9,7 @@
 #include "platform.h"       /* zcsr_surface */
 #include "sprite.h"         /* zcsr_rectf */
 #include "color.h"          /* zcsr_color_mode */
+#include "color_pipeline.h" /* replaceable display-transfer descriptor */
 #include "texture_atlas.h"  /* zcsr_atlas_region */
 #include <stdbool.h>
 #include <stdint.h>
@@ -25,6 +26,56 @@ typedef uint32_t zcsr_gl_texture;                 /* GPU texture handle; 0 = inv
  * never heap-allocated; an oversized static/arena buffer is the intended usage. */
 zcsr_gl_renderer* zcsr_gl_create(zcsr_surface* surface, void* buffer, size_t bytes);
 void              zcsr_gl_destroy(zcsr_gl_renderer*);
+
+/* Runtime GPU identity. This is diagnostics only: Intel and AMD integrated GPUs
+ * both take the same GL 3.3 Core path, and no renderer algorithm branches on
+ * these values. Applications never need to call this to make an iGPU work; it
+ * exists so a field report can name the vendor/driver/backend instead of
+ * guessing from a screenshot. */
+typedef enum {
+    ZCSR_GPU_VENDOR_UNKNOWN = 0,
+    ZCSR_GPU_VENDOR_INTEL,
+    ZCSR_GPU_VENDOR_AMD,
+    ZCSR_GPU_VENDOR_NVIDIA,
+    ZCSR_GPU_VENDOR_APPLE,
+    ZCSR_GPU_VENDOR_SOFTWARE
+} zcsr_gpu_vendor_class;
+
+typedef enum {
+    ZCSR_GPU_DRIVER_GENERIC = 0,
+    ZCSR_GPU_DRIVER_IRIS,
+    ZCSR_GPU_DRIVER_I965,
+    ZCSR_GPU_DRIVER_RADEONSI,
+    ZCSR_GPU_DRIVER_ZINK,
+    ZCSR_GPU_DRIVER_LLVMPIPE,
+    ZCSR_GPU_DRIVER_NOUVEAU,
+    ZCSR_GPU_DRIVER_NVIDIA,
+    ZCSR_GPU_DRIVER_APPLE,
+    ZCSR_GPU_DRIVER_MESA
+} zcsr_gpu_driver_class;
+
+typedef struct {
+    zcsr_gpu_vendor_class vendor;
+    zcsr_gpu_driver_class driver;
+    bool     integrated;       /* true only when classified as an iGPU */
+    bool     integrated_known; /* false when the renderer string cannot be classified */
+    bool     software;         /* llvmpipe/softpipe/swrast */
+    char     vendor_string[64];   /* GL_VENDOR */
+    char     renderer_string[64]; /* GL_RENDERER */
+    char     version_string[64];  /* GL_VERSION */
+    char     backend[16];         /* glx / egl-wayland / wgl / cgl / egl-android */
+} zcsr_gl_gpu_info;
+
+/* Fills *out from the context that already exists. Returns false for a NULL
+ * renderer/out or before context creation; never triggers detection itself. */
+bool zcsr_gl_query_gpu_info(const zcsr_gl_renderer* r, zcsr_gl_gpu_info* out);
+/* Replace the display-transfer algorithm used by the final composite. NULL
+ * restores zcsr_color_pipeline_default(). The renderer regenerates its encode
+ * LUT; no shader source changes and no engine rebuild of the shader is needed.
+ * The descriptor must outlive the renderer (use static storage or the default). */
+bool              zcsr_gl_set_color_pipeline(zcsr_gl_renderer*,
+                                              const zcsr_color_pipeline_desc* pipeline);
+const zcsr_color_pipeline_desc* zcsr_gl_get_color_pipeline(const zcsr_gl_renderer*);
 void              zcsr_gl_set_vsync(zcsr_gl_renderer*, bool on);
 /* Swap front/back buffers (present). Call after draw_instances when targeting the window. */
 void              zcsr_gl_present(zcsr_gl_renderer*);
@@ -104,6 +155,12 @@ size_t zcsr_gl_font_buffer_bytes_required(size_t ttf_len);
 bool zcsr_gl_font_from_file(zcsr_gl_renderer*, const char* path, int pixel_height,
                             void* buffer, size_t bytes);
 
+/* Same binding, but from bytes the caller already owns (APK asset, embedded
+ * font). buffer must hold the TTF copy plus the font/atlas arenas; size it with
+ * zcsr_gl_font_buffer_bytes_required(ttf_len). */
+bool zcsr_gl_font_from_bytes(zcsr_gl_renderer*, const void* ttf, size_t ttf_len,
+                             int pixel_height, void* buffer, size_t bytes);
+
 /* Bind the default UI font with zero configuration: ZCSR_FONT_TTF if set, else the
  * first existing system UI font (Win: segoeui/arial, Linux: DejaVuSans/Liberation).
  * Returns false when nothing is found — callers keep the built-in 8x8 bitmap, which
@@ -167,6 +224,12 @@ typedef struct {
  * zcsr_gl_submit_sorted_runs. */
 size_t zcsr_gl_draw_instances(zcsr_gl_renderer*, zcsr_gl_texture texture,
                               const zcsr_gl_instance* instances, size_t count);
+
+/* Diagnostic switch: when disabled, draw_instances skips the per-frame
+ * glBufferSubData and reuses the VBO contents already uploaded. Used to
+ * separate upload/synchronization cost from rasterization cost. */
+void zcsr_gl_set_instance_upload(zcsr_gl_renderer*, bool enabled);
+void zcsr_gl_set_instance_orphan(zcsr_gl_renderer*, bool enabled);
 
 /* One caller-ordered texture run for zcsr_gl_submit_sorted_runs. `instances` must
  * remain valid for the duration of the call; runs are not copied or reordered. */

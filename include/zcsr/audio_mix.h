@@ -1,9 +1,13 @@
 #ifndef ZCSR_AUDIO_MIX_H
 #define ZCSR_AUDIO_MIX_H
-/*  — multi-channel WAV mixer. NEW module; COEXISTS with the single-stream
+/* multi-channel WAV mixer. NEW module; COEXISTS with the single-stream
  * zcsr/audio.h (does not change/break it). 16 software channels, one dedicated audio thread,
- * lock-free command/PCM rings. Backend: Win WASAPI / Linux ALSA / Android AAudio (API 26+
- * dynamically loaded at runtime). Other unsupported platforms use the stub backend.
+ * lock-free command/PCM rings. Backend: Win WASAPI / Linux PipeWire or ALSA (whichever
+ * CMake found at build time) / Android AAudio (API 26+, dynamically loaded). On Linux
+ * without either, or on any other unsupported platform, the mixer keeps its contract
+ * but opens no output device: start() succeeds and playback is consumed by the silent
+ * fallback, so callers must treat the absence of audio as a known backend capability,
+ * not as a mixer failure.
  * Implementer: modules/audiomix. Signals-friendly: audio_play / audio_finished.
  * Fixed pools; no runtime heap for mixer/sample/PCM storage. */
 #include <stdbool.h>
@@ -13,6 +17,16 @@
 enum { ZCSR_MIX_CHANNELS = 16 };
 
 typedef struct zcsr_mixer zcsr_mixer; /* opaque; owns the audio thread + device */
+
+/* Name of the compiled output backend: "wasapi", "waveout", "pipewire",
+ * "alsa", "aaudio", "audiounit", or "silent". Diagnostic only. */
+const char* zcsr_audiomix_backend_name(void);
+
+/* True when this build has a real output backend compiled in: Win WASAPI/waveOut,
+ * macOS AudioUnit, Android AAudio, Linux PipeWire, or Linux ALSA. False means
+ * zcsr_mix_start still runs the mixer/thread contract but consumes periods
+ * silently. Query only; never required to enable audio. */
+bool        zcsr_mix_output_supported(void);
 
 zcsr_mixer* zcsr_mix_start(void);       /* spawn audio thread + open output device. NULL on fail. */
 void        zcsr_mix_stop(zcsr_mixer*); /* stop playback + join thread + close device. */

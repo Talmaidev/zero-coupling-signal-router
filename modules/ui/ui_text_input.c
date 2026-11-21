@@ -5,7 +5,6 @@
 ZCSR_Result zcsr_text_input_set_text(ZCSR_UI* ui, ZCSR_NodeId id, const char* t, uint32_t n)
 {
     ZCSR_UI_Node* nd = ui_find_node(ui, id);
-    char* new_buf;
     if (!nd) {
         ZCSR_LOG_ERROR("ui_text_input", "set_text: node not found: %u", id);
         return ZCSR_ERR_NOT_FOUND;
@@ -14,24 +13,14 @@ ZCSR_Result zcsr_text_input_set_text(ZCSR_UI* ui, ZCSR_NodeId id, const char* t,
         ZCSR_LOG_ERROR("ui_text_input", "set_text: NULL text with non-zero length");
         return ZCSR_ERR_INVALID_ARGUMENT;
     }
-
-    /* Allocate new buffer first, then free old one (fail-safe) */
-    new_buf = (char*)malloc(n + 1);
-    if (!new_buf) {
-        ZCSR_LOG_ERROR("ui_text_input", "set_text: malloc failed for %u bytes", n + 1);
-        return ZCSR_ERR_OUT_OF_MEMORY;
+    if (n >= nd->text_cap) {
+        ZCSR_LOG_ERROR("ui_text_input", "set_text: text too long: %u >= %u", n, nd->text_cap);
+        return ZCSR_ERR_BUFFER_TOO_SMALL;
     }
 
-    /* Copy data */
-    if (n > 0 && t) memcpy(new_buf, t, n);
-    new_buf[n] = '\0';
-
-    /* Free old buffer and swap */
-    if (nd->text_buf) free(nd->text_buf);
-    nd->text_buf = new_buf;
-    nd->text_cap = n + 1;
+    if (n > 0 && t) memcpy(nd->text_buf, t, n);
+    nd->text_buf[n] = '\0';
     nd->caret_byte = n;
-
     return ZCSR_OK;
 }
 
@@ -40,7 +29,11 @@ ZCSR_Result zcsr_text_input_get_text(const ZCSR_UI* ui, ZCSR_NodeId id,
 {
     const ZCSR_UI_Node* nd = ui_find_node_c(ui, id);
     if (!nd) return ZCSR_ERR_NOT_FOUND;
-    if (!nd->text_buf) { if (req) *req = 0; if (buf && cap > 0) buf[0] = '\0'; return ZCSR_OK; }
+    if (nd->text_cap == 0 || nd->text_buf[0] == '\0') {
+        if (req) *req = 0;
+        if (buf && cap > 0) buf[0] = '\0';
+        return ZCSR_OK;
+    }
     uint32_t len = (uint32_t)strlen(nd->text_buf);
     if (req) *req = len;
     if (buf && cap > 0) {

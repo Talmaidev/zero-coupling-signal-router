@@ -25,14 +25,14 @@ to make `input` select events additively and drain only key/close events.
 
 ## Modules & contracts (Phase 0 = contracts + stubs in this PR; backends follow)
 
-|  | Module | Contract | Scope |
-|-------|--------|----------|-------|
-| 1 | `modules/glrender` | `zcsr/gl_render.h` | GL 3.3 context on the surface; batch sprites (200–10000) w/ pos/rot/scale/tint/alpha; RGBA32 textures; nearest/linear filter; vsync; single FBO render-to-texture; built-in texture + solid shaders; minimal bitmap text. Vendors glad. |
-| 2 | `modules/audiomix` | `zcsr/audio_mix.h` | 16-channel mixer; dedicated audio thread + lock-free ring buffer; Win WASAPI / Linux ALSA / macOS AudioUnit; WAV 16-bit 44100 mono/stereo; linear resample only. Coexists with single-stream `audio.h`. |
-| 3 | `modules/inputext` | `zcsr/input_ext.h` | Mouse (move/3-button/wheel) + gamepad (≤2, Xbox layout); Win RawInput+XInput / Linux X11+evdev / macOS IOKit HID + GameController. Additive to keyboard `input.h`. |
-| 6 | `modules/image` | `zcsr/image.h` (+ `zcsr/color.h`) | Decode PNG/JPEG/BMP/TGA/GIF/PSD/PIC → RGBA32 + offline CPU processing (chroma-key transparency, RGBA variant recolor, 256-entry palette remap). SEPARATED from rendering: produces pixel buffers only; glrender/render consume the RGBA32. Vendors stb_image (used only here). No-heap: decodes/processes into a caller buffer. |
-| 4 | (discipline) | — | No-heap: each module sizes fixed pools to the 200–10000 ceiling (GL CPU staging, audio buffers, input queues); GPU memory left to driver. Threading per-subsystem (NO general pool): audio = 1 dedicated thread; GL = render thread (context is thread-affine); input = main-loop poll. Optional small worker pool only if async asset loading is later needed. |
-| 5 | tests/ + integration/ | — | ctest per module (logic) + benches (200–10000 sprite frame time; audio latency ≤25ms; input ≤1 frame). |
+| Module | Contract | Scope |
+|--------|----------|-------|
+| `modules/glrender` | `zcsr/gl_render.h` | GL 3.3 context on the surface; batch sprites (200–10000) w/ pos/rot/scale/tint/alpha; RGBA32 textures; nearest/linear filter; vsync; single FBO render-to-texture; built-in texture + solid shaders; minimal bitmap text. Vendors glad. |
+| `modules/audiomix` | `zcsr/audio_mix.h` | 16-channel mixer; dedicated audio thread + lock-free ring buffer; Win WASAPI / Linux ALSA / macOS AudioUnit; WAV 16-bit 44100 mono/stereo; linear resample only. Coexists with single-stream `audio.h`. |
+| `modules/inputext` | `zcsr/input_ext.h` | Mouse (move/3-button/wheel) + gamepad (≤2, Xbox layout); Win RawInput+XInput / Linux X11+evdev / macOS IOKit HID + GameController. Additive to keyboard `input.h`. |
+| `modules/image` | `zcsr/image.h` (+ `zcsr/color.h`) | Decode PNG/JPEG/BMP/TGA/GIF/PSD/PIC → RGBA32 + offline CPU processing (chroma-key transparency, RGBA variant recolor, 256-entry palette remap). SEPARATED from rendering: produces pixel buffers only; glrender/render consume the RGBA32. Vendors stb_image (used only here). No-heap: decodes/processes into a caller buffer. |
+| (discipline) | — | No-heap: each module sizes fixed pools to the 200–10000 ceiling (GL CPU staging, audio buffers, input queues); GPU memory left to driver. Threading per-subsystem (NO general pool): audio = 1 dedicated thread; GL = render thread (context is thread-affine); input = main-loop poll. Optional small worker pool only if async asset loading is later needed. |
+| tests/ + integration/ | — | ctest per module (logic) + benches (200–10000 sprite frame time; audio latency ≤25ms; input ≤1 frame). |
 
 ## Rendering/resource capability requirements
 

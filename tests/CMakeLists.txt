@@ -13,6 +13,32 @@ add_executable(core_test test_core.c)
 target_link_libraries(core_test PRIVATE zcsr_core)
 add_test(NAME core COMMAND core_test)
 
+add_executable(color_pipeline_test test_color_pipeline.c)
+target_link_libraries(color_pipeline_test PRIVATE zcsr_color_pipeline zcsr_core)
+target_include_directories(color_pipeline_test PRIVATE "${PROJECT_SOURCE_DIR}/include")
+add_test(NAME color_pipeline COMMAND color_pipeline_test)
+
+add_executable(ui_runtime_test test_ui_runtime.c)
+target_link_libraries(ui_runtime_test PRIVATE zcsr_ui zcsr_core)
+target_include_directories(ui_runtime_test PRIVATE "${PROJECT_SOURCE_DIR}/include")
+add_test(NAME ui_runtime COMMAND ui_runtime_test)
+
+if(MSVC)
+    get_filename_component(ZCSR_MSVC_BIN "${CMAKE_AR}" DIRECTORY)
+    find_program(ZCSR_DUMPBIN_EXECUTABLE dumpbin HINTS "${ZCSR_MSVC_BIN}" NO_DEFAULT_PATH)
+    if(ZCSR_DUMPBIN_EXECUTABLE)
+        add_test(NAME log_no_malloc
+            COMMAND ${CMAKE_COMMAND}
+                "-DLIB=$<TARGET_FILE:zcsr_core>"
+                "-DTOOL=${ZCSR_DUMPBIN_EXECUTABLE}"
+                "-DFLAVOR=windows"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/check_log_no_malloc.cmake")
+        set_tests_properties(log_no_malloc PROPERTIES TIMEOUT 30)
+    else()
+        message(WARNING "log_no_malloc test not registered: dumpbin not found")
+    endif()
+endif()
+
 add_executable(input_keymap_test test_input_keymap.c)
 target_link_libraries(input_keymap_test PRIVATE zcsr_input zcsr_platform zcsr_core)
 if(WIN32)

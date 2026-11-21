@@ -1,4 +1,4 @@
-/*  self-test: hierarchical transitions + persistence into the state buffer. */
+/* Self-test: hierarchical transitions + persistence into the state buffer. */
 #include "zcsr/hsm.h"
 #include <stdio.h>
 #include <string.h>

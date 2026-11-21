@@ -1,6 +1,6 @@
 #ifndef ZCSR_STATE_BUFFER_H
 #define ZCSR_STATE_BUFFER_H
-/*  — read-only game state buffer (string/int/bool). Implementer: modules/core.
+/* read-only game state buffer (string/int/bool). Implementer: modules/core.
  * Reads take `const zcsr_state*`; only the privileged writer mutates. No heap growth. */
 #include "value.h"
 #include <stddef.h>

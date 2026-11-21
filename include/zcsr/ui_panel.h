@@ -21,21 +21,9 @@ typedef enum {
     ZCSR_UI_ERR_CONFLICT
 } zcsr_ui_status;
 
-/* Normalized key codes. Printable/OS keys occupy the low range; special keys
- * start at 256. The platform adapter maps its keycodes onto these. */
+/* Normalized key codes live in zcsr/ui_input.h (ZCSR_UI_KEY_*). The old
+ * duplicate enum here was a second public definition and collided with it. */
 #define ZCSR_UI_KEY_CAPACITY 320
-enum {
-    ZCSR_UI_KEY_TAB = 256,
-    ZCSR_UI_KEY_ENTER,
-    ZCSR_UI_KEY_ESCAPE,
-    ZCSR_UI_KEY_SPACE,
-    ZCSR_UI_KEY_LEFT,
-    ZCSR_UI_KEY_RIGHT,
-    ZCSR_UI_KEY_UP,
-    ZCSR_UI_KEY_DOWN,
-    ZCSR_UI_KEY_HOME,
-    ZCSR_UI_KEY_END
-};
 
 /* Per-frame input, filled by the host adapter from platform mouse/keyboard. */
 typedef struct {

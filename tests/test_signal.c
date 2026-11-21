@@ -1,4 +1,4 @@
-/*  self-test: compile-time X-macro router dispatches correctly, no heap. */
+/* Self-test: compile-time X-macro router dispatches correctly, no heap. */
 #include "zcsr/signal.h"
 #include <stdio.h>
 #include <string.h>

@@ -1,6 +1,6 @@
 #ifndef ZCSR_CLOCK_H
 #define ZCSR_CLOCK_H
-/*  — high-precision clock + fixed-step frame pacing (~60 FPS).
+/* high-precision clock + fixed-step frame pacing (~60 FPS).
  * Implementer: modules/input. No heap (timer placed in caller buffer). */
 #include <stddef.h>
 #include <stdint.h>

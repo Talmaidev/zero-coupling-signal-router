@@ -1,4 +1,4 @@
-/*  — audio tests: fixed WAV registration, signal-only PLAY/STOP slots, and
+/* audio tests: fixed WAV registration, signal-only PLAY/STOP slots, and
  * dedicated thread lifecycle. This stays device-neutral so it is stable on headless CI. */
 #include "zcsr/audio.h"
 #include "zcsr/signal.h"
@@ -56,6 +56,7 @@ int main(void) {
     a = zcsr_audio_start();
     CK("start -> non-NULL", a != NULL);
     if (a) {
+        bool playback = zcsr_audio_playback_available();
         CK("register null audio -> false", !zcsr_audio_register_wav(NULL, "tick", good));
         CK("register null id -> false", !zcsr_audio_register_wav(a, NULL, good));
         CK("register null path -> false", !zcsr_audio_register_wav(a, "tick", NULL));
@@ -65,8 +66,8 @@ int main(void) {
 
         CK("play unknown -> false", !zcsr_audio_slot_play("missing"));
         CK("stop unknown -> false", !zcsr_audio_slot_stop("missing"));
-        CK("play registered -> true", zcsr_audio_slot_play("tick"));
-        CK("stop registered -> true", zcsr_audio_slot_stop("tick"));
+        CK("play registered follows capability", zcsr_audio_slot_play("tick") == playback);
+        CK("stop registered follows capability", zcsr_audio_slot_stop("tick") == playback);
 
         audio_test_emit(ZCSR_SIG_PLAY_SOUND, "tick");
         audio_test_emit(ZCSR_SIG_STOP_SOUND, "tick");
@@ -83,7 +84,8 @@ int main(void) {
         CK("restart after stop -> non-NULL", a2 != NULL);
         if (a2) {
             CK("re-register after restart -> true", zcsr_audio_register_wav(a2, "tick", good));
-            CK("play after restart -> true", zcsr_audio_slot_play("tick"));
+            CK("play after restart follows capability",
+               zcsr_audio_slot_play("tick") == zcsr_audio_playback_available());
             zcsr_audio_stop(a2);
         }
     }

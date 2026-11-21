@@ -1,5 +1,5 @@
 /* platform_common.c — shared pool, DPI, focus, display helpers, unknown-platform stubs. */
-/*  — Platform abstraction. Win32 / X11 / Cocoa, gated on ZCSR_PLATFORM (zcsr/platform.h).
+/* Platform abstraction. Win32 / X11 / Cocoa, gated on ZCSR_PLATFORM (zcsr/platform.h).
  * No OpenGL/DirectX/Vulkan. */
 #include "zcsr/platform.h"
 #include "platform_internal.h"
@@ -120,14 +120,29 @@ void zcsr_surface_set_focus_callback(
     s->focus_user = callback ? user : NULL;
 }
 
-#if !defined(_WIN32) && !defined(__APPLE__) && !defined(__ANDROID__) && !defined(__linux__)
+void zcsr_surface_notify_focus(zcsr_surface* s, bool focused) {
+    zcsr_surface_dispatch_focus(s, focused ? ZCSR_FOCUS_GAINED : ZCSR_FOCUS_LOST);
+}
+
+/* Window-less platforms, plus Linux built with ZCSR_LINUX_WINDOW_BACKEND=none:
+ * there is no native surface to create, so the API stays linkable and callers
+ * (glrender smoke, platform tests) skip gracefully. */
+#if defined(__linux__) && !defined(ZCSR_LINUX_BACKEND_X11) && !defined(ZCSR_LINUX_BACKEND_WAYLAND)
+#  define ZCSR_PLATFORM_HEADLESS 1
+#endif
+#if !defined(_WIN32) && !defined(__APPLE__) && !defined(__ANDROID__) && \
+    (!defined(__linux__) || defined(ZCSR_PLATFORM_HEADLESS))
 zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) { (void)title; (void)bounds; return 0; }
+zcsr_surface* zcsr_surface_create_opaque(const char* title, zcsr_rect bounds) { (void)title; (void)bounds; return 0; }
 void          zcsr_surface_destroy(zcsr_surface* s)                    { zcsr_surface_release(s); }
 void*         zcsr_surface_native_handle(const zcsr_surface* s)        { (void)s; return 0; }
 void*         zcsr_surface_native_display(const zcsr_surface* s)       { (void)s; return 0; }
 void          zcsr_surface_pump_events(zcsr_surface* s)                { (void)s; }
 bool          zcsr_surface_attach_native(zcsr_surface* s, void* nw)   { (void)s; (void)nw; return false; }
 void          zcsr_surface_detach_native(zcsr_surface* s)              { (void)s; }
+/* Normally implemented by the window backend (win32/x11/wayland); in a
+ * window-less build the helper that calls it still needs a definition. */
+void          zcsr_surface_apply_size_limits(zcsr_surface* s)          { (void)s; }
 #endif
 
 /* ===================================================================== */
@@ -164,7 +179,8 @@ zcsr_display_info zcsr_unknown_display(int id) {
     return info;
 }
 
-#if !defined(_WIN32) && !defined(__APPLE__) && !defined(__ANDROID__) && !defined(__linux__)
+#if !defined(_WIN32) && !defined(__APPLE__) && !defined(__ANDROID__) && \
+    (!defined(__linux__) || defined(ZCSR_PLATFORM_HEADLESS))
 /* ====================== Unknown platform stubs ===================== */
 int zcsr_display_count(void) { return 1; }
 bool zcsr_display_get(int index, zcsr_display_info* out) {
@@ -196,9 +212,11 @@ float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
  * Cursor control API (additive)
  * =========================================================================================== */
 
-#if !defined(_WIN32) && !defined(__APPLE__) && !defined(__ANDROID__) && !defined(__linux__)
+#if !defined(_WIN32) && !defined(__APPLE__) && !defined(__ANDROID__) && \
+    (!defined(__linux__) || defined(ZCSR_PLATFORM_HEADLESS))
 
 /* Unknown stub — return false (no cursor support). */
+bool zcsr_surface_set_cursor_shape(zcsr_surface* s, zcsr_cursor_shape shape) { (void)s; (void)shape; return false; }
 bool zcsr_surface_set_cursor_visible(zcsr_surface* s, bool visible) { (void)s; (void)visible; return false; }
 bool zcsr_surface_set_cursor_bitmap(zcsr_surface* s, const unsigned char* rgba, int w, int h,
                                     int hot_x, int hot_y) { (void)s; (void)rgba; (void)w; (void)h; (void)hot_x; (void)hot_y; return false; }
@@ -206,8 +224,10 @@ bool zcsr_surface_reset_cursor(zcsr_surface* s) { (void)s; return false; }
 
 #endif
 
-#ifndef _WIN32
-/* 非 Windows 后端的刷新率切换占位：接口统一，能力如实返回 false。 */
+#if !defined(_WIN32) && !defined(__ANDROID__) && !defined(ZCSR_LINUX_BACKEND_X11)
+/* Wayland/headless fallback: no protocol to request an output mode, so the
+ * capability is reported as false instead of pretending the compositor
+ * changed refresh. X11 has a real XRandR implementation in platform_x11.c. */
 bool zcsr_surface_set_refresh_hz(zcsr_surface* s, int hz) {
     (void)s; (void)hz;
     return false;

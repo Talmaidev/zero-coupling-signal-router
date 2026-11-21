@@ -1,6 +1,6 @@
 #ifndef ZCSR_SIGNAL_H
 #define ZCSR_SIGNAL_H
-/*  — compile-time signal/slot. No heap, no dynamic registry. Implementer: modules/signal.
+/* compile-time signal/slot. No heap, no dynamic registry. Implementer: modules/signal.
  *
  * Spec signatures:   void signal(string)   /   bool slot(string)
  *

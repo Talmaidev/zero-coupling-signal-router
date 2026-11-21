@@ -1,6 +1,6 @@
 #ifndef ZCSR_ARENA_H
 #define ZCSR_ARENA_H
-/*  — stack-only memory manager (no runtime/heap allocation). Implementer: modules/core.
+/* stack-only memory manager (no runtime/heap allocation). Implementer: modules/core.
  * CONTRACT ONLY (opaque handle). Modules include this header, never another module's source. */
 #include <stddef.h>
 

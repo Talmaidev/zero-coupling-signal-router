@@ -1,4 +1,4 @@
-/*  — Cocoa (macOS) audio backend via NSSound. Objective-C, compiled only on Apple.
+/* Cocoa (macOS) audio backend via NSSound. Objective-C, compiled only on Apple.
  * Implements the C-ABI shim in audio_cocoa.h. Includes only the same-module shim header and the
  * system Cocoa framework — no cross-module includes (zero-coupling preserved).
  *

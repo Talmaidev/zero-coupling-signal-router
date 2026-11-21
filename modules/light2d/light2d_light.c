@@ -9,7 +9,7 @@
 #include "zcsr/gl_render.h"
 #include "zcsr/light2d.h"
 
-#include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 
 struct zcsr_light2d_light {
@@ -19,10 +19,35 @@ struct zcsr_light2d_light {
     float intensity;
 };
 
+#define ZCSR_LIGHT2D_LIGHT_POOL_CAPACITY 256
+static zcsr_light2d_light g_light_pool[ZCSR_LIGHT2D_LIGHT_POOL_CAPACITY];
+static bool g_light_pool_used[ZCSR_LIGHT2D_LIGHT_POOL_CAPACITY];
+
+static zcsr_light2d_light* light_pool_acquire(void) {
+    size_t i;
+    for (i = 0; i < ZCSR_LIGHT2D_LIGHT_POOL_CAPACITY; ++i) {
+        if (!g_light_pool_used[i]) {
+            g_light_pool_used[i] = true;
+            return &g_light_pool[i];
+        }
+    }
+    return NULL;
+}
+
+static bool light_pool_contains(const zcsr_light2d_light* light) {
+    size_t i;
+    for (i = 0; i < ZCSR_LIGHT2D_LIGHT_POOL_CAPACITY; ++i) {
+        if (light == &g_light_pool[i]) return true;
+    }
+    return false;
+}
+
 int zcsr_light2d_light_create(zcsr_light2d_light** out_light) {
+    zcsr_light2d_light* light;
     if (!out_light) return -1;
-    zcsr_light2d_light* light = (zcsr_light2d_light*)calloc(1, sizeof(zcsr_light2d_light));
+    light = light_pool_acquire();
     if (!light) return -2;
+    memset(light, 0, sizeof(*light));
     light->x = 0.0f; light->y = 0.0f; light->z = 3.0f;
     light->radius = 14.0f;
     light->color[0] = 1.0f; light->color[1] = 0.9f; light->color[2] = 0.7f;
@@ -32,7 +57,15 @@ int zcsr_light2d_light_create(zcsr_light2d_light** out_light) {
 }
 
 void zcsr_light2d_light_destroy(zcsr_light2d_light* light) {
-    free(light);
+    size_t i;
+    if (!light || !light_pool_contains(light)) return;
+    for (i = 0; i < ZCSR_LIGHT2D_LIGHT_POOL_CAPACITY; ++i) {
+        if (light == &g_light_pool[i]) {
+            g_light_pool_used[i] = false;
+            memset(light, 0, sizeof(*light));
+            return;
+        }
+    }
 }
 
 int zcsr_light2d_light_set_position(zcsr_light2d_light* light, float x, float y, float z) {

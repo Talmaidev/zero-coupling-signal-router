@@ -89,10 +89,7 @@ void zcsr_resource_shutdown(void) {
     /* 卸载所有资源 */
     for (int i = 0; i < ZCSR_MAX_RESOURCES; i++) {
         if (g_resources[i].in_use) {
-            if (g_resources[i].data) {
-                free(g_resources[i].data);
-                g_resources[i].data = NULL;
-            }
+            g_resources[i].data = NULL;
             g_resources[i].in_use = 0;
             g_resources[i].ref_count = 0;
             g_slot_generation[i]++;  /* 递增 generation，让所有旧 handle 失效 */
@@ -185,7 +182,6 @@ zcsr_resource_handle_t zcsr_resource_load(
     /* 检查 data_size 是否适合存入 metadata.size (uint32_t) */
     if (data_size > UINT32_MAX) {
         ZCSR_LOG_ERROR("resource", "Load failed: data too large (%zu bytes)", data_size);
-        free(data);
         g_stats.load_failures++;
         return null_handle;
     }
@@ -247,14 +243,11 @@ void zcsr_resource_unload(zcsr_resource_handle_t handle) {
     entry->ref_count--;
 
     if (entry->ref_count <= 0) {
-        /* 真正释放资源 */
-        if (entry->data) {
-            free(entry->data);
-            if (g_stats.total_bytes >= (uint32_t)entry->data_size) {
-                g_stats.total_bytes -= (uint32_t)entry->data_size;
-            } else {
-                g_stats.total_bytes = 0;
-            }
+        /* 只归还槽位；data 的所有权不在资源管理器。 */
+        if (g_stats.total_bytes >= (uint32_t)entry->data_size) {
+            g_stats.total_bytes -= (uint32_t)entry->data_size;
+        } else {
+            g_stats.total_bytes = 0;
         }
         entry->data = NULL;
         entry->data_size = 0;
@@ -313,20 +306,15 @@ zcsr_resource_result_t zcsr_resource_reload(zcsr_resource_handle_t handle) {
     /* 检查新数据大小 */
     if (new_data_size > UINT32_MAX) {
         ZCSR_LOG_ERROR("resource", "Reload failed: new data too large");
-        free(new_data);
         return ZCSR_RESOURCE_ERROR_OUT_OF_MEMORY;
     }
 
-    /* 全部成功，交换新旧数据 */
-    if (entry->data) {
-        free(entry->data);
-        if (g_stats.total_bytes >= (uint32_t)entry->data_size) {
-            g_stats.total_bytes -= (uint32_t)entry->data_size;
-        } else {
-            g_stats.total_bytes = 0;
-        }
+    /* 全部成功，交换指针；旧数据所有权仍归处理器，不由本模块释放。 */
+    if (g_stats.total_bytes >= (uint32_t)entry->data_size) {
+        g_stats.total_bytes -= (uint32_t)entry->data_size;
+    } else {
+        g_stats.total_bytes = 0;
     }
-
     entry->data = new_data;
     entry->data_size = new_data_size;
     entry->metadata.size = (uint32_t)new_data_size;

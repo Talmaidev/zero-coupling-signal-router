@@ -1,6 +1,6 @@
 #ifndef ZCSR_SPRITE_H
 #define ZCSR_SPRITE_H
-/*  — sprite 绘制契约。
+/* sprite 绘制契约。
  *
  * 本文件只剩 GL 路径（zcsr_sprite_asset / zcsr_sprite_instance / zcsr_sprite_draw*）。
  * 软件渲染的 zcsr_sprite_batch_init/begin/submit/flush 已随 modules/render 一并移除：

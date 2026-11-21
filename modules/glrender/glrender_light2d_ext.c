@@ -14,6 +14,8 @@
 #include "zcsr/gl_render_light2d_ext.h"
 #include "zcsr/diagnostics.h"
 
+#include <stdio.h>
+
 /* Glad headers for this project don't expose these 3.3+ enums; define locally. */
 #ifndef GL_SRGB8_ALPHA8
 #define GL_SRGB8_ALPHA8 0x8C43
@@ -134,13 +136,15 @@ static unsigned int zcsr_l2d_make_deferred_program(void) {
         "uniform sampler2D u_Albedo;   /* unit 4 */\n"
         "uniform sampler2D u_Emissive; /* unit 7, HDR RGBA16F */\n"
         "uniform sampler2D u_Light;    /* unit 8, accumulated light buffer */\n"
+        "uniform sampler2D u_ColorLut; /* unit 9, replaceable display-transfer LUT */\n"
         "uniform vec3 u_Ambient;\n"
         "out vec4 o_color;\n"
-        "vec3 linear_to_srgb(vec3 x){\n"
+        "vec3 display_encode(vec3 x){\n"
         "  x = clamp(x, vec3(0.0), vec3(1.0));\n"
-        "  vec3 low = 12.92 * x;\n"
-        "  vec3 high = 1.055 * pow(x, vec3(1.0/2.4)) - 0.055;\n"
-        "  return mix(high, low, lessThanEqual(x, vec3(0.0031308)));\n"
+        "  /* No transfer formula here: sample the algorithm-owned LUT. */\n"
+        "  return vec3(texture(u_ColorLut, vec2(x.r, 0.5)).r,\n"
+        "              texture(u_ColorLut, vec2(x.g, 0.5)).r,\n"
+        "              texture(u_ColorLut, vec2(x.b, 0.5)).r);\n"
         "}\n"
         "void main(){\n"
         "  vec3 albedo = texture(u_Albedo, v_uv).rgb;\n"
@@ -149,7 +153,7 @@ static unsigned int zcsr_l2d_make_deferred_program(void) {
         "  /* G0 is GL_SRGB8_ALPHA8: hardware already decodes albedo to linear RGB. */\n"
         "  vec3 lit = albedo * (emissive + light + u_Ambient);\n"
         "  vec3 mapped = lit / (lit + vec3(1.0));\n"
-        "  o_color = vec4(linear_to_srgb(mapped), 1.0);\n"
+        "  o_color = vec4(display_encode(mapped), 1.0);\n"
         "}\n";
     return zcsr_l2d_link_program("light2d deferred program link failed", vs, fs);
 }
@@ -174,6 +178,7 @@ static unsigned int zcsr_l2d_make_bloom_program(void) {
         "uniform sampler2D u_Albedo;   /* unit 4 */\n"
         "uniform sampler2D u_Emissive; /* unit 7, HDR RGBA16F */\n"
         "uniform sampler2D u_Light;    /* unit 8, accumulated light buffer */\n"
+        "uniform sampler2D u_ColorLut; /* unit 9, replaceable display-transfer LUT */\n"
         "uniform vec2 u_LightRes;      /* light buffer size for the tap step */\n"
         "uniform vec3 u_Ambient;\n"
         "out vec4 o_color;\n"
@@ -194,11 +199,12 @@ static unsigned int zcsr_l2d_make_bloom_program(void) {
         "  vec3 rgb = texture(t, uv).rgb;\n"
         "  return lum * blur + (1.0 - lum) * rgb;\n"
         "}\n"
-        "vec3 linear_to_srgb(vec3 x){\n"
+        "vec3 display_encode(vec3 x){\n"
         "  x = clamp(x, vec3(0.0), vec3(1.0));\n"
-        "  vec3 low = 12.92 * x;\n"
-        "  vec3 high = 1.055 * pow(x, vec3(1.0/2.4)) - 0.055;\n"
-        "  return mix(high, low, lessThanEqual(x, vec3(0.0031308)));\n"
+        "  /* No transfer formula here: sample the algorithm-owned LUT. */\n"
+        "  return vec3(texture(u_ColorLut, vec2(x.r, 0.5)).r,\n"
+        "              texture(u_ColorLut, vec2(x.g, 0.5)).r,\n"
+        "              texture(u_ColorLut, vec2(x.b, 0.5)).r);\n"
         "}\n"
         "void main(){\n"
         "  vec3 albedo = texture(u_Albedo, v_uv).rgb;\n"
@@ -206,7 +212,7 @@ static unsigned int zcsr_l2d_make_bloom_program(void) {
         "  vec3 lit = albedo * (bloom9(u_Emissive, v_uv)\n"
         "                       + bloom9(u_Light, v_uv) + u_Ambient);\n"
         "  vec3 mapped = lit / (lit + vec3(1.0));\n"
-        "  o_color = vec4(linear_to_srgb(mapped), 1.0);\n"
+        "  o_color = vec4(display_encode(mapped), 1.0);\n"
         "}\n";
     return zcsr_l2d_link_program("light2d bloom program link failed", vs, fs);
 }
@@ -290,7 +296,7 @@ static unsigned int zcsr_l2d_make_light_program(void) {
         "  v_uv = a_uv;\n"
         "  v_pos = a_pos;\n"
         "}\n";
-    static const char* fs =
+    static const char* fs_head =
         ZCSR_GL_GLSL_VERSION
         ZCSR_GL_GLSL_FRAGMENT_PRECISION
         "in vec2 v_uv;\n"
@@ -357,7 +363,8 @@ static unsigned int zcsr_l2d_make_light_program(void) {
         "    if (t0 < t1) return true;\n"
         "  }\n"
         "  return false;\n"
-        "}\n"
+        "}\n";
+    static const char* fs_main =
         "void main(){\n"
         "  /* scene y-down -> G-buffer v (top row at v=1): flip y when sampling */\n"
         "  vec2 gb_uv = vec2(v_pos.x / u_viewpos.x, 1.0 - v_pos.y / u_viewpos.y);\n"
@@ -423,7 +430,15 @@ static unsigned int zcsr_l2d_make_light_program(void) {
         "  }\n"
         "  o_light = vec4(u_color * (u_gain * atten * nl * (1.0 - shadow)), 0.0);\n"
         "}\n";
-    return zcsr_l2d_link_program("light2d light program link failed", vs, fs);
+    {
+        /* ISO C only requires compilers to support 4095-byte literals. Keep each
+         * source chunk under that bound and concatenate at runtime; this avoids
+         * -Woverlength-strings without changing the shader text. */
+        char fs_src[8192];
+        if (snprintf(fs_src, sizeof fs_src, "%s%s", fs_head, fs_main) >= (int)sizeof fs_src)
+            return 0;
+        return zcsr_l2d_link_program("light2d light program link failed", vs, fs_src);
+    }
 }
 
 /* ===========================================================================================
@@ -566,6 +581,46 @@ static bool zcsr_l2d_uniform_location(zcsr_gl_renderer* r, const char* name, int
  * Init / destroy (called from zcsr_gl_create/destroy, context already current)
  * =========================================================================================== */
 
+/* Rebuild the algorithm-owned display-transfer LUT. Called with the GL context
+ * current; the shader only samples this texture, it never contains the curve. */
+static bool zcsr_l2d_color_lut_rebuild(zcsr_gl_renderer* r,
+                                       const zcsr_color_pipeline_desc* pipeline) {
+    uint8_t lut[ZCSR_COLOR_LUT_ENTRIES * 4];
+    if (r == NULL) return false;
+    if (pipeline == NULL) pipeline = zcsr_color_pipeline_default();
+    if (!zcsr_color_pipeline_build_encode_lut(pipeline, lut, ZCSR_COLOR_LUT_ENTRIES)) {
+        return false;
+    }
+    if (r->l2d_color_lut_tex == 0u) {
+        glGenTextures(1, &r->l2d_color_lut_tex);
+        if (r->l2d_color_lut_tex == 0u) return false;
+    }
+    glBindTexture(GL_TEXTURE_2D, r->l2d_color_lut_tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
+                 ZCSR_COLOR_LUT_ENTRIES, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, lut);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    r->color_pipeline = pipeline;
+    return true;
+}
+
+bool zcsr_gl_set_color_pipeline(zcsr_gl_renderer* renderer,
+                                const zcsr_color_pipeline_desc* pipeline) {
+    if (renderer == NULL || !zcsr_gl_make_current(renderer)) return false;
+    if (pipeline == NULL) pipeline = zcsr_color_pipeline_default();
+    return zcsr_l2d_color_lut_rebuild(renderer, pipeline);
+}
+
+const zcsr_color_pipeline_desc* zcsr_gl_get_color_pipeline(const zcsr_gl_renderer* renderer) {
+    if (renderer == NULL || renderer->color_pipeline == NULL) {
+        return zcsr_color_pipeline_default();
+    }
+    return renderer->color_pipeline;
+}
+
 bool zcsr_gl_l2d_init(zcsr_gl_renderer* r) {
     r->l2d_prog_radial = zcsr_l2d_make_radial_program();
     if (!r->l2d_prog_radial) return false;
@@ -587,6 +642,7 @@ bool zcsr_gl_l2d_init(zcsr_gl_renderer* r) {
     r->l2d_deferred_loc_lightdata = glGetUniformLocation(r->l2d_prog_deferred, "u_LightData");
     r->l2d_deferred_loc_lightcolor = glGetUniformLocation(r->l2d_prog_deferred, "u_LightColor");
     r->l2d_deferred_loc_light = glGetUniformLocation(r->l2d_prog_deferred, "u_Light");
+    r->l2d_deferred_loc_color_lut = glGetUniformLocation(r->l2d_prog_deferred, "u_ColorLut");
 
     r->l2d_prog_bloom = zcsr_l2d_make_bloom_program();
     if (!r->l2d_prog_bloom) return false;
@@ -595,6 +651,9 @@ bool zcsr_gl_l2d_init(zcsr_gl_renderer* r) {
     r->l2d_bloom_loc_emissive = glGetUniformLocation(r->l2d_prog_bloom, "u_Emissive");
     r->l2d_bloom_loc_light = glGetUniformLocation(r->l2d_prog_bloom, "u_Light");
     r->l2d_bloom_loc_lightres = glGetUniformLocation(r->l2d_prog_bloom, "u_LightRes");
+    r->l2d_bloom_loc_color_lut = glGetUniformLocation(r->l2d_prog_bloom, "u_ColorLut");
+
+    if (!zcsr_l2d_color_lut_rebuild(r, zcsr_color_pipeline_default())) return false;
 
     r->l2d_prog_shadow = zcsr_l2d_make_shadow_program();
     if (!r->l2d_prog_shadow) return false;
@@ -655,11 +714,13 @@ bool zcsr_gl_l2d_init(zcsr_gl_renderer* r) {
     if (r->l2d_deferred_loc_albedo >= 0) glUniform1i(r->l2d_deferred_loc_albedo, 4);
     if (r->l2d_deferred_loc_emissive >= 0) glUniform1i(r->l2d_deferred_loc_emissive, 7);
     if (r->l2d_deferred_loc_light >= 0) glUniform1i(r->l2d_deferred_loc_light, 8);
+    if (r->l2d_deferred_loc_color_lut >= 0) glUniform1i(r->l2d_deferred_loc_color_lut, 9);
     glUseProgram(0);
     glUseProgram(r->l2d_prog_bloom);
     if (r->l2d_bloom_loc_albedo >= 0) glUniform1i(r->l2d_bloom_loc_albedo, 4);
     if (r->l2d_bloom_loc_emissive >= 0) glUniform1i(r->l2d_bloom_loc_emissive, 7);
     if (r->l2d_bloom_loc_light >= 0) glUniform1i(r->l2d_bloom_loc_light, 8);
+    if (r->l2d_bloom_loc_color_lut >= 0) glUniform1i(r->l2d_bloom_loc_color_lut, 9);
     glUseProgram(0);
     glUseProgram(r->l2d_prog_light);
     if (r->l2d_light_loc_normal >= 0) glUniform1i(r->l2d_light_loc_normal, 6);
@@ -699,6 +760,7 @@ void zcsr_gl_l2d_destroy(zcsr_gl_renderer* r) {
     if (r->l2d_light_tex) glDeleteTextures(1, &r->l2d_light_tex);
     if (r->l2d_shadow_fbo) glDeleteFramebuffers(1, &r->l2d_shadow_fbo);
     if (r->l2d_shadow_tex) glDeleteTextures(1, &r->l2d_shadow_tex);
+    if (r->l2d_color_lut_tex) glDeleteTextures(1, &r->l2d_color_lut_tex);
 }
 
 /* ===========================================================================================
@@ -981,7 +1043,8 @@ bool zcsr_gl_l2d_bind_default_target(zcsr_gl_renderer* renderer,
     /* Public contract: the HIGH composite goes to the default window target only. */
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     /* Default framebuffer is not sRGB-capable (no WGL_ARB_framebuffer_sRGB
-     * pixel format requested). Shader-side linear_to_srgb() handles encoding. */
+     * pixel format requested). The composite samples the color-pipeline LUT
+     * for display encoding. */
     glDisable(GL_FRAMEBUFFER_SRGB);
     glViewport(0, 0, width, height);
     return true;
@@ -1028,6 +1091,11 @@ bool zcsr_gl_l2d_set_program(zcsr_gl_renderer* renderer,
     }
     if (prog == 0u) return false; /* zcsr_gl_l2d_init failed at renderer create */
     glUseProgram(prog);
+    if (program == ZCSR_GL_L2D_PROGRAM_DEFERRED ||
+        program == ZCSR_GL_L2D_PROGRAM_DEFERRED_BLOOM) {
+        glActiveTexture(GL_TEXTURE0 + 9);
+        glBindTexture(GL_TEXTURE_2D, renderer->l2d_color_lut_tex);
+    }
     return true;
 }
 
@@ -1345,8 +1413,8 @@ bool zcsr_gl_l2d_bind_composite_target(zcsr_gl_renderer* renderer,
     static const GLenum comp_draw = GL_COLOR_ATTACHMENT0;
     glDrawBuffers(1, &comp_draw);
     glViewport(0, 0, width, height);
-    /* Composite shader outputs sRGB-encoded values; do not let the FBO
-     * re-encode (the shader already ran linear_to_srgb). */
+    /* Composite shader outputs display-encoded values from the color LUT;
+     * do not let the FBO re-encode. */
     glDisable(GL_FRAMEBUFFER_SRGB);
     GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (st != GL_FRAMEBUFFER_COMPLETE) return false;

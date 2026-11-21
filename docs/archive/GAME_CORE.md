@@ -1,17 +1,17 @@
-# Task #7 — Classic 2D Game Core (Phase 0: contracts)
+# Classic 2D Game Core (Phase 0: contracts)
 
 Extends the zero-coupling `zcsr` foundation into a minimal 2D game core. Same rules: modules
 include **only** `include/zcsr/*` contracts (never each other); no heap (fixed/caller buffers);
 `tools/check_no_cross_includes.sh` enforces it. C11.
 
-## Modules ↔ 
-|  | Module             | Contracts | Owns |
-|-------|--------------------|-----------|------|
-| 1 | `modules/input`     | `clock.h`, `input.h`, `window_event.h` | keyboard down/up, window close + cleanup, 60FPS frame timer |
-| 2 | `modules/audio`     | `audio.h` | WAV player in ONE dedicated thread; **signals only** (`PLAY_SOUND`/`STOP_SOUND`) |
-| 3 | `modules/render`    | `texture.h`, `sprite.h` | PNG via stb_image (single-header) + resource cache; batch sprite renderer |
-| 4 | `modules/gamelogic` | `collision.h`, `save.h` | AABB collision; binary save/load (header + checksum) |
-| 5 | integration/tests   | — | update ctests; bench (200 sprites <1ms/frame); zero-coupling guard |
+## Modules
+| Module             | Contracts | Owns |
+|--------------------|-----------|------|
+| `modules/input`     | `clock.h`, `input.h`, `window_event.h` | keyboard down/up, window close + cleanup, 60FPS frame timer |
+| `modules/audio`     | `audio.h` | WAV player in ONE dedicated thread; **signals only** (`PLAY_SOUND`/`STOP_SOUND`) |
+| `modules/render`    | `texture.h`, `sprite.h` | PNG via stb_image (single-header) + resource cache; batch sprite renderer |
+| `modules/gamelogic` | `collision.h`, `save.h` | AABB collision; binary save/load (header + checksum) |
+| integration/tests   | — | update ctests; bench (200 sprites <1ms/frame); zero-coupling guard |
 
 分工：Phase-0 契约、Validation 和评审单独执行；后端 1–4 分别实现。
 
@@ -27,7 +27,7 @@ include **only** `include/zcsr/*` contracts (never each other); no heap (fixed/c
   coexistence with a new module. Such fixes must preserve the public contract, remain no-heap and
   zero-coupled, and be reviewed explicitly.
 
-## Bench / acceptance ()
+## Bench / acceptance
 - `200 sprites render < 1ms/frame` (gate); renderer should scale toward n*10000 sprites.
 - All ctests pass; `check_coupling` green; existing task #6 modules unaffected.
 

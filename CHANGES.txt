@@ -1,0 +1,25 @@
+ZCSR change notes
+2026-11-21
+
+history
+- keep one author line
+- remove temporary notes and review dumps
+- keep source, build files and technical docs
+- keep the full engine history on main
+- keep perf and docs work as change tags
+- no release tag for now
+
+scope
+- core
+- render
+- input
+- audio
+- tools
+- docs
+- build
+- tests
+
+refs
+- change/perf-fastpath
+- change/docs-alignment
+- archive/wip-engine-20261121

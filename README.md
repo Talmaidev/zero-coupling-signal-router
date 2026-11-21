@@ -25,7 +25,7 @@ zcsr_editor                        开发者入口，编辑页面/布局/资产
 ## 这个仓库包含什么
 
 - `include/zcsr/`：模块唯一允许包含的契约头。
-- `modules/`：25 个模块，每个模块独立编译，不 include 另一个模块的源码。
+- `modules/`：26 个模块，每个模块独立编译，不 include 另一个模块的源码。
 - `tests/`：无窗口、可重复的 CTest 用例。
 - `integration/`：需要真实窗口、GPU 或音频设备的示例和手工验证，不作为自动测试。
 - `third_party/`：单文件第三方依赖，只在对应模块内部使用。
@@ -42,7 +42,7 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-当前基线是 25 个模块库、23 个 CTest。测试覆盖 core、signal、hsm、platform、glrender、light2d、audio、music、input、collision、save、ui、viewport 等模块。
+当前基线是 26 个模块库、31 个 CTest。测试覆盖 core、signal、hsm、platform、glrender、light2d、audio、music、input、collision、save、ui、viewport、color_pipeline 等模块。
 
 ## Release 1.0 口径
 

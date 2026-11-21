@@ -1,6 +1,6 @@
 #ifndef ZCSR_HSM_H
 #define ZCSR_HSM_H
-/*  — Hierarchical State Machine. No global state, no heap. Transitions via signals only.
+/* Hierarchical State Machine. No global state, no heap. Transitions via signals only.
  * Persists current state to the Core state buffer (key "hsm.state"). Implementer: modules/hsm.
  *
  * Config is caller-owned const tables (compile-time, zero-coupling): states form a tree via

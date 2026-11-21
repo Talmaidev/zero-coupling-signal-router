@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 
 /* 8x8 bitmap font, ASCII 32-126 (95 glyphs). Each glyph = 8 bytes, 1 bit per pixel.
@@ -213,10 +214,8 @@ size_t zcsr_gl_font_buffer_bytes_required(size_t ttf_len) {
          + zcsr_font_atlas_buffer_bytes_required() + 64u;
 }
 
-bool zcsr_gl_font_from_file(zcsr_gl_renderer* r, const char* path, int pixel_height,
-                            void* buffer, size_t bytes) {
-    FILE* fp;
-    long size;
+bool zcsr_gl_font_from_bytes(zcsr_gl_renderer* r, const void* ttf_in, size_t ttf_len,
+                             int pixel_height, void* buffer, size_t bytes) {
     unsigned char* base = (unsigned char*)buffer;
     unsigned char* ttf;
     unsigned char* font_arena;
@@ -225,25 +224,21 @@ bool zcsr_gl_font_from_file(zcsr_gl_renderer* r, const char* path, int pixel_hei
     zcsr_font* font;
     zcsr_font_atlas* atlas;
 
-    if (!r || !path || !buffer || bytes == 0u || pixel_height <= 0) return false;
+    if (!r || !ttf_in || ttf_len == 0u || !buffer || bytes == 0u || pixel_height <= 0)
+        return false;
+    if (ttf_len + 64u > bytes) return false;
 
-    fp = fopen(path, "rb");
-    if (!fp) return false;
-    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return false; }
-    size = ftell(fp);
-    if (size <= 0) { fclose(fp); return false; }
-    if ((size_t)size + 64u > bytes) { fclose(fp); return false; }
-    rewind(fp);
-
+    /* The caller buffer owns the TTF copy plus both arenas. If ttf_in already
+     * points at the front of that buffer (assets_font reads there), this is a
+     * no-op copy; otherwise a single bounded memcpy. */
     ttf = base;
-    if (fread(ttf, 1u, (size_t)size, fp) != (size_t)size) { fclose(fp); return false; }
-    fclose(fp);
+    if (ttf_in != (const void*)base) memcpy(base, ttf_in, ttf_len);
 
-    font_arena = gt_align(ttf + (size_t)size, 16u);
-    font_arena_bytes = zcsr_font_buffer_bytes_required((size_t)size);
+    font_arena = gt_align(ttf + ttf_len, 16u);
+    font_arena_bytes = zcsr_font_buffer_bytes_required(ttf_len);
     if ((unsigned char*)font_arena + font_arena_bytes > base + bytes) return false;
 
-    font = zcsr_font_load(ttf, (size_t)size, pixel_height, font_arena, font_arena_bytes);
+    font = zcsr_font_load(ttf, ttf_len, pixel_height, font_arena, font_arena_bytes);
     if (!font) return false;
 
     atlas_arena = gt_align(font_arena + font_arena_bytes, 16u);
@@ -256,6 +251,29 @@ bool zcsr_gl_font_from_file(zcsr_gl_renderer* r, const char* path, int pixel_hei
 
     r->font_atlas = atlas;
     return true;
+}
+
+bool zcsr_gl_font_from_file(zcsr_gl_renderer* r, const char* path, int pixel_height,
+                            void* buffer, size_t bytes) {
+    FILE* fp;
+    long size;
+    unsigned char* base = (unsigned char*)buffer;
+
+    if (!r || !path || !buffer || bytes == 0u || pixel_height <= 0) return false;
+
+    fp = fopen(path, "rb");
+    if (!fp) return false;
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return false; }
+    size = ftell(fp);
+    if (size <= 0) { fclose(fp); return false; }
+    if ((size_t)size + 64u > bytes) { fclose(fp); return false; }
+    rewind(fp);
+
+    if (fread(base, 1u, (size_t)size, fp) != (size_t)size) { fclose(fp); return false; }
+    fclose(fp);
+
+    /* Reuse the byte path: TTF already lives at the front of the caller buffer. */
+    return zcsr_gl_font_from_bytes(r, base, (size_t)size, pixel_height, buffer, bytes);
 }/* 追加到 glrender_text.c 末尾：默认字体解析 + 纹理过滤默认值 */
 
 bool zcsr_gl_font_default(zcsr_gl_renderer* r, int pixel_height, void* buffer, size_t bytes) {

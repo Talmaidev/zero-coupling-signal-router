@@ -1,4 +1,4 @@
-/*  — Core Foundation (stack-only memory manager + read-only state buffer).
+/* Core Foundation (stack-only memory manager + read-only state buffer).
  * Constraints: no runtime allocation, string/int/bool only, zero deps, footprint < 256KB.
  * Includes ONLY shared contracts — never another module's source. */
 #include "zcsr/arena.h"

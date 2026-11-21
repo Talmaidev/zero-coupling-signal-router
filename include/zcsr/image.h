@@ -1,6 +1,6 @@
 #ifndef ZCSR_IMAGE_H
 #define ZCSR_IMAGE_H
-/*  — image loading, decoding, and offline CPU processing to 8-bit RGBA (RGBA32).
+/* image loading, decoding, and offline CPU processing to 8-bit RGBA (RGBA32).
  *
  * SEPARATED from rendering (per project decision): this module ONLY produces pixel buffers.
  * The GPU path (glrender) and the software path (render) CONSUME the RGBA32 it produces through

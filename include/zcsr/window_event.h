@@ -1,6 +1,6 @@
 #ifndef ZCSR_WINDOW_EVENT_H
 #define ZCSR_WINDOW_EVENT_H
-/*  — window-level events (close request) + clean shutdown.
+/* window-level events (close request) + clean shutdown.
  * Ties to the platform surface. Implementer: modules/input (or platform). */
 #include "platform.h"
 #include <stdbool.h>

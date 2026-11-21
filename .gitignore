@@ -16,7 +16,10 @@ zcsr_audiomix_test.wav
 
 /android/keystore/
 
-#   working dir
+# AI agent working dir
 .zcode/
 build_merge/
 build_main/
+
+# runtime UI layout state
+settings_layout.txt

@@ -1,4 +1,4 @@
-/*  — gamelogic tests: AABB collision + binary save/load (round-trip + reject paths). */
+/* gamelogic tests: AABB collision + binary save/load (round-trip + reject paths). */
 #include "zcsr/collision.h"
 #include "zcsr/save.h"
 #include <stdio.h>
@@ -21,6 +21,55 @@ static void test_collision(void) {
     CK("point outside",            zcsr_aabb_contains_point(a, 11, 5) == false);
     CK("point top-left inclusive", zcsr_aabb_contains_point(a, 0, 0) == true);
     CK("point bottom-right exclusive", zcsr_aabb_contains_point(a, 10, 10) == false);
+
+    {
+        zcsr_ray ray = { -5, 5, 1, 0, 20 };
+        float distance = -1.0f;
+        CK("ray hits box", zcsr_aabb_ray_intersect(a, ray, &distance) == true);
+        CK("ray distance", distance == 5.0f);
+        ray.origin_x = 20;
+        CK("ray behind box", zcsr_aabb_ray_intersect(a, ray, &distance) == false);
+        ray.origin_x = -5;
+        ray.maximum_distance = 3;
+        CK("ray too short", zcsr_aabb_ray_intersect(a, ray, &distance) == false);
+        ray.origin_x = 5;
+        ray.origin_y = 5;
+        ray.maximum_distance = 20;
+        CK("ray starts inside", zcsr_aabb_ray_intersect(a, ray, &distance) == true);
+        CK("ray starts inside distance", distance == 0.0f);
+        ray.origin_x = -5;
+        ray.origin_y = 20;
+        CK("ray misses box", zcsr_aabb_ray_intersect(a, ray, &distance) == false);
+        ray.origin_y = 5;
+        ray.direction_x = 0;
+        CK("zero direction rejected", zcsr_aabb_ray_intersect(a, ray, &distance) == false);
+    }
+
+    {
+        zcsr_circle circle = { 5, 5, 1 };
+        CK("circle inside box", zcsr_circle_aabb_intersect(circle, a) == true);
+        circle.center_x = 12;
+        CK("circle outside box", zcsr_circle_aabb_intersect(circle, a) == false);
+        circle.center_x = 10.5f;
+        circle.radius = 0.5f;
+        CK("circle touches edge", zcsr_circle_aabb_intersect(circle, a) == true);
+        circle.radius = 0;
+        CK("zero radius rejected", zcsr_circle_aabb_intersect(circle, a) == false);
+    }
+
+    {
+        zcsr_aabb moving = { 0, 0, 2, 2 };
+        zcsr_aabb fixed = { 5, 0, 2, 2 };
+        float time = -1.0f;
+        CK("sweep hits", zcsr_aabb_sweep(moving, 10, 0, fixed, &time) == true);
+        CK("sweep time", time == 0.3f);
+        moving.x = 4;
+        CK("sweep starts overlapping", zcsr_aabb_sweep(moving, 10, 0, fixed, &time) == true);
+        CK("sweep start time", time == 0.0f);
+        moving.x = 0;
+        CK("sweep zero velocity", zcsr_aabb_sweep(moving, 0, 0, fixed, &time) == false);
+        CK("sweep misses", zcsr_aabb_sweep(moving, 0, 10, fixed, &time) == false);
+    }
 }
 
 static void test_save(void) {

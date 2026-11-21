@@ -1,6 +1,6 @@
 #ifndef ZCSR_INPUT_H
 #define ZCSR_INPUT_H
-/*  — keyboard input (key down / key up). Implementer: modules/input.
+/* keyboard input (key down / key up). Implementer: modules/input.
  * Events are buffered in a fixed ring (no heap). Pumped from the platform window. */
 #include "platform.h"
 #include <stddef.h>

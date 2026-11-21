@@ -1,4 +1,4 @@
-/*  — Hierarchical State Machine. No global state, no heap (fixed instance pool).
+/* Hierarchical State Machine. No global state, no heap (fixed instance pool).
  * Transitions via signals only; persists current state into the Core state buffer. */
 #include "zcsr/hsm.h"
 

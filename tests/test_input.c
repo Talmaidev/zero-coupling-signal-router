@@ -1,4 +1,4 @@
-/*  — input/clock tests: monotonic clock, fixed-step frame timer, input init/queue guards,
+/* input/clock tests: monotonic clock, fixed-step frame timer, input init/queue guards,
  * window-close flag. The OS-event-driven paths (real key events, real window close) require a
  * windowed host; this covers the deterministic, platform-independent surface that runs headless. */
 #include "zcsr/clock.h"

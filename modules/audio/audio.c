@@ -1,4 +1,4 @@
-/*  — Audio: WAV command thread; signals-only (PLAY/STOP).
+/* Audio: WAV command thread; signals-only (PLAY/STOP).
  * Includes ONLY shared contracts from the project. Platform/thread headers are local backend
  * details, and no cross-module includes are used. */
 #include "zcsr/audio.h"
@@ -271,6 +271,26 @@ static void zcsr_audio_backend_play(const char* path) {
 #endif
 }
 
+static void zcsr_audio_report_unsupported(void) {
+#if !defined(_WIN32) && !defined(__APPLE__)
+    static bool reported;
+    if (!reported) {
+        reported = true;
+        fprintf(stderr,
+                "[audio] legacy zcsr_audio has no playback backend on this platform; "
+                "use zcsr/audio_mix.h (PipeWire/AAudio). Registration/thread state remain available.\n");
+    }
+#endif
+}
+
+bool zcsr_audio_playback_available(void) {
+#if defined(_WIN32) || defined(__APPLE__)
+    return true;
+#else
+    return false;
+#endif
+}
+
 static void zcsr_audio_backend_stop(void) {
 #if defined(_WIN32)
     PlaySoundA(NULL, NULL, 0);
@@ -334,6 +354,7 @@ zcsr_audio* zcsr_audio_start(void) {
         zcsr_audio_clear(a);
         a->in_use = true;
         a->running = true;
+        zcsr_audio_report_unsupported();
 #if defined(_WIN32)
         InitializeCriticalSection(&a->mutex);
         InitializeConditionVariable(&a->cond);
@@ -396,7 +417,11 @@ bool zcsr_audio_register_wav(zcsr_audio* a, const char* id, const char* path) {
     int free_slot = -1;
     if (!a || !a->in_use || !id || !path) return false;
     memset(&parsed, 0, sizeof parsed);
-    if (!zcsr_parse_wav(path, &parsed)) return false;
+    if (!zcsr_parse_wav(path, &parsed)) {
+        fprintf(stderr, "[audio] cannot register \"%s\": not a readable PCM WAV at \"%s\"\n",
+                id, path);
+        return false;
+    }
 
     zcsr_audio_lock(a);
     i = zcsr_audio_find_sound_locked(a, id);
@@ -425,6 +450,10 @@ bool zcsr_audio_slot_play(const char* payload) {
     zcsr_audio* a = g_active_audio;
     bool ok = false;
     if (!a || !payload) return false;
+    if (!zcsr_audio_playback_available()) {
+        zcsr_audio_report_unsupported();
+        return false;
+    }
     zcsr_audio_lock(a);
     if (zcsr_audio_find_sound_locked(a, payload) >= 0) {
         ok = zcsr_audio_queue_push_locked(a, ZCSR_AUDIO_CMD_PLAY, payload);
@@ -437,6 +466,10 @@ bool zcsr_audio_slot_stop(const char* payload) {
     zcsr_audio* a = g_active_audio;
     bool ok = false;
     if (!a || !payload) return false;
+    if (!zcsr_audio_playback_available()) {
+        zcsr_audio_report_unsupported();
+        return false;
+    }
     zcsr_audio_lock(a);
     if (zcsr_audio_find_sound_locked(a, payload) >= 0) {
         ok = zcsr_audio_queue_push_locked(a, ZCSR_AUDIO_CMD_STOP, payload);

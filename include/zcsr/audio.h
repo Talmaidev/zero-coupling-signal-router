@@ -1,6 +1,6 @@
 #ifndef ZCSR_AUDIO_H
 #define ZCSR_AUDIO_H
-/*  — WAV audio player. Runs in ONE dedicated background thread.
+/* WAV audio player. Runs in ONE dedicated background thread.
  * Communicates ONLY via signals: "PLAY_SOUND" / "STOP_SOUND" (payload = registered sound id).
  * Implementer: modules/audio. Wires into the zcsr/signal.h router. */
 #include "signal.h"
@@ -11,6 +11,12 @@
 #define ZCSR_SIG_STOP_SOUND "STOP_SOUND"
 
 typedef struct zcsr_audio zcsr_audio; /* opaque; owns the background thread */
+
+/* Capability probe: true only where this legacy single-stream API has a real
+ * OS playback backend (Win32 PlaySound / macOS NSSound). Linux and Android
+ * return false because the engine provides output through zcsr/audio_mix.h
+ * (PipeWire / AAudio) instead. This is a query, not a required setup call. */
+bool        zcsr_audio_playback_available(void);
 
 zcsr_audio* zcsr_audio_start(void);          /* spawns the dedicated audio thread */
 void        zcsr_audio_stop(zcsr_audio*);    /* stops playback + joins the thread */
