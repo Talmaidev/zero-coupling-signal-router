@@ -13,6 +13,13 @@ add_executable(core_test test_core.c)
 target_link_libraries(core_test PRIVATE zcsr_core)
 add_test(NAME core COMMAND core_test)
 
+add_executable(input_keymap_test test_input_keymap.c)
+target_link_libraries(input_keymap_test PRIVATE zcsr_input zcsr_platform zcsr_core)
+if(WIN32)
+    target_link_libraries(input_keymap_test PRIVATE user32 gdi32)
+endif()
+add_test(NAME input_keymap COMMAND input_keymap_test)
+
 if(WIN32)
     # Real OS message path: PostMessage WM_KEYDOWN/WM_KEYUP into a Win32
     # surface and drain via zcsr_input_pump(); not a synthetic queue injection.
@@ -41,6 +48,9 @@ if(WIN32)
     target_link_libraries(music_api_test PRIVATE ole32)
 endif()
 add_test(NAME music_api COMMAND music_api_test "${CMAKE_CURRENT_SOURCE_DIR}/data")
+# Same rationale as the audiomix test: libpipewire's global allocations outlive
+# pw_deinit() and are reported as <unknown module> leaks. ASan/UBSan stay on.
+set_tests_properties(music_api PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
 
 # Engine module tests (real module/platform dependencies, not pure-CPU fakes).
 add_subdirectory(engine)
