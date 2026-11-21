@@ -1,6 +1,7 @@
 /* zcsr Android Phase 1B — EGL/GLES lifecycle + clear-frame proof. */
 #include <android_native_app_glue.h>
 #include <android/log.h>
+#include <jni.h>
 #include <GLES3/gl3.h>
 #include <EGL/egl.h>
 
@@ -11,10 +12,13 @@
 
 #include "zcsr/platform.h"
 #include "zcsr/clock.h"
+#include "zcsr/assets.h"
 #include "zcsr/gl_render.h"
 #include "zcsr/audio_mix.h"
 #include "zcsr/input_ext.h"
 #include "zcsr/input_ext_android.h"
+#include "zcsr/input_android.h"
+#include "zcsr/input.h"
 
 #include <math.h>
 
@@ -52,8 +56,13 @@ typedef struct {
     zcsr_input_ext* input_ext;
     union {
         max_align_t alignment;
-        unsigned char bytes[256];
+        unsigned char bytes[4096];
     } input_storage;
+    zcsr_input* keyboard;
+    union {
+        max_align_t alignment;
+        unsigned char bytes[2048];
+    } keyboard_storage;
     zcsr_pad_state last_logged_pads[ZCSR_PAD_MAX];
     bool pad_log_initialized;
 } zcsr_android_runtime;
@@ -210,12 +219,17 @@ static bool zcsr_android_draw_batch_scene(
     if (!runtime || !runtime->renderer || !runtime->test_texture) return false;
     zcsr_android_fill_batch(runtime, width, height);
     zcsr_android_drain_gl_errors();
-    zcsr_gl_clear(runtime->renderer, 0.03f, 0.03f, 0.06f, 1.0f);
-    zcsr_gl_submit_batch(
-        runtime->renderer, zcsr_test_sprites, ZCSR_TEST_SPRITE_COUNT);
-    if (!zcsr_android_check_gl("sprite batch draw")) {
-        LOGE("sprite batch generated GL error"); return false;
+    {
+        bool timed = zcsr_gl_gpu_timer_begin(runtime->renderer);
+        zcsr_gl_clear(runtime->renderer, 0.03f, 0.03f, 0.06f, 1.0f);
+        zcsr_gl_submit_batch(
+            runtime->renderer, zcsr_test_sprites, ZCSR_TEST_SPRITE_COUNT);
+        if (!zcsr_android_check_gl("sprite batch draw")) {
+            LOGE("sprite batch generated GL error"); return false;
+        }
+        if (timed) (void)zcsr_gl_gpu_timer_end(runtime->renderer);
     }
+    zcsr_gl_present(runtime->renderer);
     LOGI("1C.0 sprite batch PASS: 200 grid + 2 center sprites");
     return true;
 }
@@ -251,12 +265,17 @@ static bool zcsr_android_draw_atlas_scene(
     if (!runtime || !runtime->renderer || !runtime->test_texture) return false;
     zcsr_android_fill_atlas(runtime, width, height);
     zcsr_android_drain_gl_errors();
-    zcsr_gl_clear(runtime->renderer, 0.03f, 0.03f, 0.06f, 1.0f);
-    zcsr_gl_submit_atlas_batch(
-        runtime->renderer, zcsr_test_atlas_sprites, ZCSR_TEST_SPRITE_COUNT);
-    if (!zcsr_android_check_gl("atlas batch draw")) {
-        LOGE("atlas draw generated GL error"); return false;
+    {
+        bool timed = zcsr_gl_gpu_timer_begin(runtime->renderer);
+        zcsr_gl_clear(runtime->renderer, 0.03f, 0.03f, 0.06f, 1.0f);
+        zcsr_gl_submit_atlas_batch(
+            runtime->renderer, zcsr_test_atlas_sprites, ZCSR_TEST_SPRITE_COUNT);
+        if (!zcsr_android_check_gl("atlas batch draw")) {
+            LOGE("atlas draw generated GL error"); return false;
+        }
+        if (timed) (void)zcsr_gl_gpu_timer_end(runtime->renderer);
     }
+    zcsr_gl_present(runtime->renderer);
     LOGI("1C.1 atlas PASS: four UV regions sampled");
     return true;
 }
@@ -289,13 +308,26 @@ static bool zcsr_android_draw_instanced_scene(
     if (!runtime || !runtime->renderer || !runtime->test_texture) return false;
     zcsr_android_fill_instances(runtime, width, height);
     zcsr_android_drain_gl_errors();
-    zcsr_gl_clear(runtime->renderer, 0.03f, 0.03f, 0.06f, 1.0f);
-    zcsr_gl_submit_instance_batch(
-        runtime->renderer, zcsr_test_instances, ZCSR_TEST_SPRITE_COUNT,
-        zcsr_test_instance_scratch, sizeof(zcsr_test_instance_scratch));
-    if (!zcsr_android_check_gl("instanced sprite draw")) {
-        LOGE("instanced draw generated GL error"); return false;
+    {
+        bool timed = zcsr_gl_gpu_timer_begin(runtime->renderer);
+        size_t submitted;
+        uint64_t cpu_start;
+        zcsr_gl_clear(runtime->renderer, 0.03f, 0.03f, 0.06f, 1.0f);
+        cpu_start = zcsr_clock_now_ns();
+        submitted = zcsr_gl_submit_instance_batch(
+            runtime->renderer, zcsr_test_instances, ZCSR_TEST_SPRITE_COUNT,
+            zcsr_test_instance_scratch, sizeof(zcsr_test_instance_scratch));
+        {
+            uint64_t cpu_end = zcsr_clock_now_ns();
+            LOGI("1C.2 CPU submit: %.1f us for %zu instances",
+                 (double)(cpu_end - cpu_start) / 1000.0, submitted);
+        }
+        if (!zcsr_android_check_gl("instanced sprite draw")) {
+            LOGE("instanced draw generated GL error"); return false;
+        }
+        if (timed) (void)zcsr_gl_gpu_timer_end(runtime->renderer);
     }
+    zcsr_gl_present(runtime->renderer);
     LOGI("1C.2 instanced PASS: 202 instances submitted");
     return true;
 }
@@ -305,23 +337,28 @@ static bool zcsr_android_draw_text_scene(
     if (!runtime || !runtime->renderer) return false;
     (void)width; (void)height;
     zcsr_android_drain_gl_errors();
-    zcsr_gl_clear(runtime->renderer, 0.03f, 0.03f, 0.06f, 1.0f);
-    zcsr_gl_draw_text(runtime->renderer, "Hello zcsr! 123",
-                      40.0f, 60.0f, 5.0f, 1.0f, 1.0f, 1.0f, 1.0f);
-    zcsr_gl_draw_text(runtime->renderer, "The quick brown fox",
-                      40.0f, 140.0f, 4.0f, 0.5f, 0.9f, 1.0f, 1.0f);
-    zcsr_gl_draw_text(runtime->renderer, "jumps over 456 lazy dogs!",
-                      40.0f, 200.0f, 4.0f, 1.0f, 0.8f, 0.3f, 1.0f);
-    zcsr_gl_draw_text(runtime->renderer, "ABCDEFGHIJKLMNOP",
-                      40.0f, 280.0f, 4.0f, 0.9f, 0.5f, 0.9f, 1.0f);
-    zcsr_gl_draw_text(runtime->renderer, "QRSTUVWXYZ 0123456789",
-                      40.0f, 340.0f, 4.0f, 0.9f, 0.5f, 0.9f, 1.0f);
-    zcsr_gl_draw_text(runtime->renderer, "!@#$%^&*()_+-=[]{}|;:',.<>/?",
-                      40.0f, 400.0f, 3.0f, 0.6f, 0.8f, 0.6f, 1.0f);
-    zcsr_gl_flush(runtime->renderer);
+    {
+        bool timed = zcsr_gl_gpu_timer_begin(runtime->renderer);
+        zcsr_gl_clear(runtime->renderer, 0.03f, 0.03f, 0.06f, 1.0f);
+        zcsr_gl_draw_text(runtime->renderer, "Hello zcsr! 123",
+                          40.0f, 60.0f, 5.0f, 1.0f, 1.0f, 1.0f, 1.0f);
+        zcsr_gl_draw_text(runtime->renderer, "The quick brown fox",
+                          40.0f, 140.0f, 4.0f, 0.5f, 0.9f, 1.0f, 1.0f);
+        zcsr_gl_draw_text(runtime->renderer, "jumps over 456 lazy dogs!",
+                          40.0f, 200.0f, 4.0f, 1.0f, 0.8f, 0.3f, 1.0f);
+        zcsr_gl_draw_text(runtime->renderer, "ABCDEFGHIJKLMNOP",
+                          40.0f, 280.0f, 4.0f, 0.9f, 0.5f, 0.9f, 1.0f);
+        zcsr_gl_draw_text(runtime->renderer, "QRSTUVWXYZ 0123456789",
+                          40.0f, 340.0f, 4.0f, 0.9f, 0.5f, 0.9f, 1.0f);
+        zcsr_gl_draw_text(runtime->renderer, "!@#$%^&*()_+-=[]{}|;:',.<>/?",
+                          40.0f, 400.0f, 3.0f, 0.6f, 0.8f, 0.6f, 1.0f);
+        zcsr_gl_flush(runtime->renderer);
+        if (timed) (void)zcsr_gl_gpu_timer_end(runtime->renderer);
+    }
     if (!zcsr_android_check_gl("text draw")) {
         LOGE("text draw generated GL error"); return false;
     }
+    zcsr_gl_present(runtime->renderer);
     LOGI("1C.3 text PASS: 8x8 bitmap font rendered (6 lines)");
     return true;
 }
@@ -361,6 +398,20 @@ static void zcsr_android_start_gl(
     version = glGetString(GL_VERSION);
     LOGI("GLES version: %s",
          version ? (const char*)version : "(null)");
+
+    {
+        bool refresh_ok = zcsr_surface_set_refresh_hz(runtime->surface, 120);
+        zcsr_display_info display = {0};
+        LOGI("1C refresh 120Hz request: %s",
+             refresh_ok ? "accepted by ANativeWindow" : "not available");
+        if (zcsr_display_get(0, &display)) {
+            LOGI("1C display reports: %dx%d, refresh=%dHz, dpi_scale=%.2f",
+                 display.width, display.height, display.refresh_hz,
+                 (double)display.dpi_scale);
+        } else {
+            LOGI("1C display reports: unavailable");
+        }
+    }
 
     if (!glIsEnabled(GL_BLEND)) {
         LOGE("GL_BLEND not enabled after context creation");
@@ -509,8 +560,13 @@ static int32_t zcsr_android_handle_input(
     zcsr_android_runtime* runtime;
     if (!state || !event) return 0;
     runtime = (zcsr_android_runtime*)state->userData;
-    if (!runtime || !runtime->input_ext) return 0;
-    return zcsr_input_ext_android_event(runtime->input_ext, event);
+    if (!runtime) return 0;
+    {
+        int ext_handled = runtime->input_ext
+            ? zcsr_input_ext_android_event(runtime->input_ext, event) : 0;
+        int key_handled = zcsr_input_android_event(runtime->keyboard, event);
+        return ext_handled || key_handled;
+    }
 }
 
 static void zcsr_android_focus_callback(
@@ -518,11 +574,150 @@ static void zcsr_android_focus_callback(
     zcsr_focus_event event,
     void* user
 ) {
-    zcsr_input_ext* input_ext = (zcsr_input_ext*)user;
+    zcsr_android_runtime* runtime = (zcsr_android_runtime*)user;
     (void)surface;
-    if (event == ZCSR_FOCUS_LOST && input_ext) {
-        zcsr_input_ext_android_reset(input_ext);
+    if (event == ZCSR_FOCUS_LOST && runtime) {
+        if (runtime->input_ext) zcsr_input_ext_android_reset(runtime->input_ext);
+        zcsr_input_android_reset(runtime->keyboard);
     }
+}
+
+/* NativeActivity's fullscreen theme hides the status bar, but not the gestural
+ * navigation bar. Apply the real immersive-sticky flags through the Activity's
+ * decor view; re-apply on focus so a transient swipe does not leave the bar
+ * permanently visible. */
+static void zcsr_android_apply_immersive(struct android_app* state) {
+    JNIEnv* env = NULL;
+    bool attached = false;
+    jobject activity;
+    jclass activity_class = NULL;
+    jmethodID get_window = NULL;
+    jobject window = NULL;
+    jclass window_class = NULL;
+    jmethodID get_decor = NULL;
+    jobject decor = NULL;
+    jclass view_class = NULL;
+    jmethodID set_visibility = NULL;
+    jmethodID get_visibility = NULL;
+    /* FULLSCREEN | HIDE_NAVIGATION | LAYOUT_STABLE |
+     * LAYOUT_HIDE_NAVIGATION | LAYOUT_FULLSCREEN | IMMERSIVE_STICKY */
+    const jint immersive_flags = 4 | 2 | 256 | 512 | 1024 | 4096;
+
+    if (!state || !state->activity || !state->activity->vm) return;
+    if ((*state->activity->vm)->GetEnv(state->activity->vm, (void**)&env,
+                                       JNI_VERSION_1_6) != JNI_OK) {
+        if ((*state->activity->vm)->AttachCurrentThread(
+                state->activity->vm, &env, NULL) != JNI_OK) {
+            LOGE("1A immersive: AttachCurrentThread failed");
+            return;
+        }
+        attached = true;
+    }
+    activity = state->activity->clazz;
+    activity_class = (*env)->GetObjectClass(env, activity);
+    if (activity_class) {
+        get_window = (*env)->GetMethodID(env, activity_class, "getWindow",
+                                         "()Landroid/view/Window;");
+        window = get_window
+            ? (*env)->CallObjectMethod(env, activity, get_window) : NULL;
+    }
+    if (window) {
+        window_class = (*env)->GetObjectClass(env, window);
+        get_decor = (*env)->GetMethodID(env, window_class, "getDecorView",
+                                        "()Landroid/view/View;");
+        decor = get_decor
+            ? (*env)->CallObjectMethod(env, window, get_decor) : NULL;
+    }
+    if (decor) {
+        view_class = (*env)->GetObjectClass(env, decor);
+        set_visibility = (*env)->GetMethodID(env, view_class,
+                                             "setSystemUiVisibility", "(I)V");
+        if (set_visibility) {
+            jint actual = 0;
+            bool call_failed;
+            (*env)->CallVoidMethod(env, decor, set_visibility, immersive_flags);
+            call_failed = (*env)->ExceptionCheck(env) != 0;
+            if (call_failed) (*env)->ExceptionClear(env);
+            get_visibility = (*env)->GetMethodID(env, view_class,
+                                                 "getSystemUiVisibility", "()I");
+            if (get_visibility) {
+                actual = (*env)->CallIntMethod(env, decor, get_visibility);
+            }
+            if ((actual & immersive_flags) == immersive_flags) {
+                LOGI("1A immersive: flags readback=0x%x (request=0x%x, "
+                     "set call exception=%d)", (unsigned)actual,
+                     (unsigned)immersive_flags, (int)call_failed);
+            } else {
+                LOGE("1A immersive: flags not applied (readback=0x%x, "
+                     "request=0x%x, set call exception=%d)", (unsigned)actual,
+                     (unsigned)immersive_flags, (int)call_failed);
+            }
+        }
+    }
+    if (decor) (*env)->DeleteLocalRef(env, decor);
+    if (window) (*env)->DeleteLocalRef(env, window);
+    if (view_class) (*env)->DeleteLocalRef(env, view_class);
+    if (activity_class) (*env)->DeleteLocalRef(env, activity_class);
+    if (window_class) (*env)->DeleteLocalRef(env, window_class);
+    if (attached) (*state->activity->vm)->DetachCurrentThread(state->activity->vm);
+}
+
+static int zcsr_android_query_refresh_hz(struct android_app* state) {
+    JNIEnv* env = NULL;
+    bool attached = false;
+    jobject activity;
+    jclass activity_class = NULL;
+    jmethodID get_wm = NULL;
+    jobject wm = NULL;
+    jclass wm_class = NULL;
+    jmethodID get_display = NULL;
+    jobject display = NULL;
+    jclass display_class = NULL;
+    jmethodID get_refresh = NULL;
+    jfloat hz = 0.0f;
+
+    if (!state || !state->activity || !state->activity->vm) return 0;
+    if ((*state->activity->vm)->GetEnv(state->activity->vm, (void**)&env,
+                                       JNI_VERSION_1_6) != JNI_OK) {
+        if ((*state->activity->vm)->AttachCurrentThread(
+                state->activity->vm, &env, NULL) != JNI_OK) {
+            return 0;
+        }
+        attached = true;
+    }
+    activity = state->activity->clazz;
+    activity_class = (*env)->GetObjectClass(env, activity);
+    if (activity_class) {
+        get_wm = (*env)->GetMethodID(env, activity_class, "getWindowManager",
+                                     "()Landroid/view/WindowManager;");
+        wm = get_wm ? (*env)->CallObjectMethod(env, activity, get_wm) : NULL;
+    }
+    if (wm) {
+        wm_class = (*env)->GetObjectClass(env, wm);
+        get_display = (*env)->GetMethodID(env, wm_class, "getDefaultDisplay",
+                                          "()Landroid/view/Display;");
+        display = get_display
+            ? (*env)->CallObjectMethod(env, wm, get_display) : NULL;
+    }
+    if (display) {
+        display_class = (*env)->GetObjectClass(env, display);
+        get_refresh = (*env)->GetMethodID(env, display_class, "getRefreshRate",
+                                          "()F");
+        if (get_refresh) {
+            hz = (*env)->CallFloatMethod(env, display, get_refresh);
+        }
+    }
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+        hz = 0.0f;
+    }
+    if (display_class) (*env)->DeleteLocalRef(env, display_class);
+    if (display) (*env)->DeleteLocalRef(env, display);
+    if (wm_class) (*env)->DeleteLocalRef(env, wm_class);
+    if (wm) (*env)->DeleteLocalRef(env, wm);
+    if (activity_class) (*env)->DeleteLocalRef(env, activity_class);
+    if (attached) (*state->activity->vm)->DetachCurrentThread(state->activity->vm);
+    return (hz > 1.0f && hz < 1000.0f) ? (int)(hz + 0.5f) : 0;
 }
 
 static void zcsr_android_handle_cmd(struct android_app* state, int32_t cmd) {
@@ -535,6 +730,13 @@ static void zcsr_android_handle_cmd(struct android_app* state, int32_t cmd) {
     switch (cmd) {
     case APP_CMD_INIT_WINDOW:
         if (state->window) {
+            int mode_hz = zcsr_android_query_refresh_hz(state);
+            if (mode_hz > 0) {
+                zcsr_platform_android_set_display_refresh_hz(mode_hz);
+                LOGI("1A display mode refresh from Java: %dHz", mode_hz);
+            } else {
+                LOGE("1A display mode refresh unavailable from Java Display");
+            }
             zcsr_android_start_gl(runtime, state->window);
         }
         break;
@@ -543,6 +745,7 @@ static void zcsr_android_handle_cmd(struct android_app* state, int32_t cmd) {
         if (runtime->input_ext) {
             zcsr_input_ext_android_reset(runtime->input_ext);
         }
+        zcsr_input_android_reset(runtime->keyboard);
         /* EGL surface/context must go away before ANativeWindow is detached. */
         zcsr_android_stop_gl(runtime);
         zcsr_surface_detach_native(runtime->surface);
@@ -551,6 +754,11 @@ static void zcsr_android_handle_cmd(struct android_app* state, int32_t cmd) {
 
     case APP_CMD_GAINED_FOCUS:
         zcsr_platform_android_dispatch_focus(ZCSR_FOCUS_GAINED);
+        zcsr_android_apply_immersive(state);
+        break;
+
+    case APP_CMD_CONFIG_CHANGED:
+        zcsr_platform_android_set_config(state->config);
         break;
 
     case APP_CMD_LOST_FOCUS:
@@ -578,6 +786,10 @@ void android_main(struct android_app* state) {
     runtime.surface = surface;
     runtime.audio_channel = -1;
     runtime.scene_tick = zcsr_clock_now_ns();
+    zcsr_platform_android_set_config(state->config);
+    /* Bind APK assets once; every later zcsr_assets_read/texture/font call
+     * then resolves inside assets/ without an app-side per-file path. */
+    zcsr_assets_set_android_asset_manager(state->activity->assetManager);
 
     state->userData = &runtime;
     state->onAppCmd = zcsr_android_handle_cmd;
@@ -587,13 +799,23 @@ void android_main(struct android_app* state) {
         sizeof(runtime.input_storage.bytes));
     if (runtime.input_ext) {
         state->onInputEvent = zcsr_android_handle_input;
+        zcsr_input_ext_android_bind_activity(runtime.input_ext, state->activity);
         zcsr_surface_set_focus_callback(
             runtime.surface,
             zcsr_android_focus_callback,
-            runtime.input_ext
+            &runtime
         );
         LOGI("1E input extension initialized (sizeof storage=%zu)",
              sizeof(runtime.input_storage.bytes));
+        runtime.keyboard = zcsr_input_init(
+            runtime.keyboard_storage.bytes,
+            sizeof(runtime.keyboard_storage.bytes));
+        if (runtime.keyboard) {
+            LOGI("1E keyboard state initialized (sizeof storage=%zu)",
+                 sizeof(runtime.keyboard_storage.bytes));
+        } else {
+            LOGE("1E keyboard state init failed; key state disabled");
+        }
     } else {
         LOGE("1E input extension init failed; input disabled");
     }
@@ -627,7 +849,22 @@ void android_main(struct android_app* state) {
 
         if (runtime.input_ext) {
             int i;
+            char text[128];
+            size_t text_n;
             zcsr_input_ext_pump(runtime.input_ext, runtime.surface);
+            text_n = zcsr_input_ext_take_text(runtime.input_ext, text, sizeof text);
+            if (text_n > 0u) {
+                LOGI("1E text: %s", text);
+            }
+            {
+                zcsr_key_event ke;
+                if (zcsr_input_poll(runtime.keyboard, &ke)) {
+                    LOGI("1E key: code=%u action=%s text=%d",
+                         (unsigned)ke.key,
+                         ke.action == ZCSR_KEY_DOWN ? "down" : "up",
+                         (int)ke.text);
+                }
+            }
             {
                 zcsr_touch_state t = zcsr_input_ext_touch(runtime.input_ext);
                 if (t.pressed || t.released || t.dx != 0.0f || t.dy != 0.0f) {
@@ -659,6 +896,13 @@ void android_main(struct android_app* state) {
             }
         }
 
+        if (runtime.renderer) {
+            float gpu_ms = 0.0f;
+            if (zcsr_gl_gpu_timer_last_ms(runtime.renderer, &gpu_ms)) {
+                LOGI("1C GPU timer: %.3f ms (GL_EXT_disjoint_timer_query)", gpu_ms);
+            }
+        }
+
         /* Scene rotation: every 2 s, re-query size and redraw the next scene. */
         if (runtime.renderer && runtime.test_texture) {
             uint64_t now = zcsr_clock_now_ns();
@@ -687,6 +931,7 @@ void android_main(struct android_app* state) {
         runtime.input_ext = 0;
     }
     state->onInputEvent = 0;
+    runtime.keyboard = 0;
     zcsr_android_stop_gl(&runtime);
 
     if (runtime.mixer) {

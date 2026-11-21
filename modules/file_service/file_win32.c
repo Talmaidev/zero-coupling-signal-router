@@ -11,7 +11,6 @@
 #include "file_service_internal.h"
 #include <windows.h>
 #include <string.h>
-#include <stdlib.h>
 
 /* MSVC 没有 swprintf，用 _snwprintf 代替 */
 #define swprintf _snwprintf
@@ -59,6 +58,31 @@ typedef struct {
     bool first;
 } win32_dir_t;
 
+#define WIN32_DIR_POOL_CAPACITY 16
+static win32_dir_t g_win32_dirs[WIN32_DIR_POOL_CAPACITY];
+static bool g_win32_dir_used[WIN32_DIR_POOL_CAPACITY];
+
+static win32_dir_t* win32_dir_alloc(void) {
+    for (size_t i = 0u; i < WIN32_DIR_POOL_CAPACITY; ++i) {
+        if (!g_win32_dir_used[i]) {
+            g_win32_dir_used[i] = true;
+            memset(&g_win32_dirs[i], 0, sizeof(g_win32_dirs[i]));
+            return &g_win32_dirs[i];
+        }
+    }
+    return NULL;
+}
+
+static void win32_dir_free(win32_dir_t* dir) {
+    for (size_t i = 0u; i < WIN32_DIR_POOL_CAPACITY; ++i) {
+        if (dir == &g_win32_dirs[i]) {
+            g_win32_dir_used[i] = false;
+            memset(&g_win32_dirs[i], 0, sizeof(g_win32_dirs[i]));
+            return;
+        }
+    }
+}
+
 static zcsr_file_result_t win32_dir_open(const char* native_path, void** out_dir) {
     wchar_t wpath[1024];
     if (utf8_to_wide(native_path, wpath, 1024) == 0) return ZCSR_FILE_ERR_ARGUMENT;
@@ -68,10 +92,11 @@ static zcsr_file_result_t win32_dir_open(const char* native_path, void** out_dir
     wcscpy(pattern, wpath);
     wcscat(pattern, L"\\*");
 
-    win32_dir_t* dir = (win32_dir_t*)calloc(1, sizeof(win32_dir_t));
+    win32_dir_t* dir = win32_dir_alloc();
+    if (!dir) return ZCSR_FILE_ERR_INTERNAL;
     dir->hFind = FindFirstFileW(pattern, &dir->find_data);
     if (dir->hFind == INVALID_HANDLE_VALUE) {
-        free(dir);
+        win32_dir_free(dir);
         return ZCSR_FILE_ERR_NOT_FOUND;
     }
     dir->first = true;
@@ -109,8 +134,9 @@ static zcsr_file_result_t win32_dir_next(void* dir_ptr, zcsr_dir_entry_t* out_en
 
 static zcsr_file_result_t win32_dir_close(void* dir_ptr) {
     win32_dir_t* dir = (win32_dir_t*)dir_ptr;
+    if (!dir) return ZCSR_FILE_ERR_ARGUMENT;
     FindClose(dir->hFind);
-    free(dir);
+    win32_dir_free(dir);
     return ZCSR_FILE_OK;
 }
 
@@ -132,6 +158,31 @@ typedef struct {
     HANDLE hFile;
 } win32_file_t;
 
+#define WIN32_FILE_POOL_CAPACITY 64
+static win32_file_t g_win32_files[WIN32_FILE_POOL_CAPACITY];
+static bool g_win32_file_used[WIN32_FILE_POOL_CAPACITY];
+
+static win32_file_t* win32_file_alloc(void) {
+    for (size_t i = 0u; i < WIN32_FILE_POOL_CAPACITY; ++i) {
+        if (!g_win32_file_used[i]) {
+            g_win32_file_used[i] = true;
+            memset(&g_win32_files[i], 0, sizeof(g_win32_files[i]));
+            return &g_win32_files[i];
+        }
+    }
+    return NULL;
+}
+
+static void win32_file_free(win32_file_t* file) {
+    for (size_t i = 0u; i < WIN32_FILE_POOL_CAPACITY; ++i) {
+        if (file == &g_win32_files[i]) {
+            g_win32_file_used[i] = false;
+            memset(&g_win32_files[i], 0, sizeof(g_win32_files[i]));
+            return;
+        }
+    }
+}
+
 static zcsr_file_result_t win32_open_read(const char* native_path, void** out_file) {
     wchar_t wpath[1024];
     if (utf8_to_wide(native_path, wpath, 1024) == 0) return ZCSR_FILE_ERR_ARGUMENT;
@@ -142,7 +193,11 @@ static zcsr_file_result_t win32_open_read(const char* native_path, void** out_fi
         return ZCSR_FILE_ERR_NOT_FOUND;
     }
 
-    win32_file_t* file = (win32_file_t*)calloc(1, sizeof(win32_file_t));
+    win32_file_t* file = win32_file_alloc();
+    if (!file) {
+        CloseHandle(h);
+        return ZCSR_FILE_ERR_INTERNAL;
+    }
     file->hFile = h;
     *out_file = file;
     return ZCSR_FILE_OK;
@@ -158,7 +213,11 @@ static zcsr_file_result_t win32_open_write(const char* native_path, void** out_f
         return ZCSR_FILE_ERR_IO;
     }
 
-    win32_file_t* file = (win32_file_t*)calloc(1, sizeof(win32_file_t));
+    win32_file_t* file = win32_file_alloc();
+    if (!file) {
+        CloseHandle(h);
+        return ZCSR_FILE_ERR_INTERNAL;
+    }
     file->hFile = h;
     *out_file = file;
     return ZCSR_FILE_OK;
@@ -212,8 +271,9 @@ static zcsr_file_result_t win32_seek(void* file_ptr, int64_t offset, int origin,
 
 static zcsr_file_result_t win32_close(void* file_ptr) {
     win32_file_t* file = (win32_file_t*)file_ptr;
+    if (!file) return ZCSR_FILE_ERR_ARGUMENT;
     CloseHandle(file->hFile);
-    free(file);
+    win32_file_free(file);
     return ZCSR_FILE_OK;
 }
 

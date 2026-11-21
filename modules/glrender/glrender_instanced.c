@@ -78,13 +78,72 @@ static unsigned int zcsr_gl_make_inst_program(void) {
     return p;
 }
 
+/* MULTIPLY-only variant: the batch has one blend mode, so the fragment stage needs no
+ * mode branch and the vertex stage carries no mode/amount varyings. Same visible result
+ * as the general program's `if (mode < 0.5) texel * color` path. */
+static unsigned int zcsr_gl_make_inst_program_mul(void) {
+    static const char* vs =
+        ZCSR_GL_GLSL_VERSION
+        "layout(location=0) in vec2 a_corner;\n"
+        "layout(location=1) in vec2 i_center;\n"
+        "layout(location=2) in vec2 i_size;\n"
+        "layout(location=3) in vec4 i_uv;\n"
+        "layout(location=4) in vec4 i_color;\n"
+        "layout(location=5) in float i_rotation;\n"
+        "uniform vec2 u_view;\n"
+        "out vec2 v_uv;\n"
+        "out vec4 v_color;\n"
+        "void main(){\n"
+        "  vec2 halfsize = i_size * 0.5;\n"
+        "  float c = cos(i_rotation);\n"
+        "  float s = sin(i_rotation);\n"
+        "  vec2 local = a_corner * halfsize;\n"
+        "  vec2 pos = i_center + vec2(local.x*c - local.y*s, local.x*s + local.y*c);\n"
+        "  gl_Position = vec4((pos.x / u_view.x) * 2.0 - 1.0, 1.0 - (pos.y / u_view.y) * 2.0, 0.0, 1.0);\n"
+        "  vec2 t = a_corner * 0.5 + 0.5;\n"
+        "  v_uv = mix(i_uv.xy, i_uv.zw, t);\n"
+        "  v_color = i_color;\n"
+        "}\n";
+    static const char* fs =
+        ZCSR_GL_GLSL_VERSION
+        ZCSR_GL_GLSL_FRAGMENT_PRECISION
+        "in vec2 v_uv;\n"
+        "in vec4 v_color;\n"
+        "uniform sampler2D u_tex;\n"
+        "out vec4 o_color;\n"
+        "void main(){\n"
+        "  vec4 texel = texture(u_tex, v_uv);\n"
+        "  o_color = texel * v_color;\n"
+        "}\n";
+    unsigned int v = zcsr_gl_compile(GL_VERTEX_SHADER, vs);
+    unsigned int f = zcsr_gl_compile(GL_FRAGMENT_SHADER, fs);
+    unsigned int p;
+    int ok = 0;
+    if (!v || !f) {
+        if (v) glDeleteShader(v);
+        if (f) glDeleteShader(f);
+        return 0;
+    }
+    p = glCreateProgram();
+    if (!p) { glDeleteShader(v); glDeleteShader(f); return 0; }
+    glAttachShader(p, v);
+    glAttachShader(p, f);
+    glLinkProgram(p);
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    glDeleteShader(v);
+    glDeleteShader(f);
+    if (!ok) { glDeleteProgram(p); return 0; }
+    return p;
+}
+
 /* ===========================================================================================
  * Instanced init / destroy
  * =========================================================================================== */
 
 bool zcsr_gl_instanced_init(zcsr_gl_renderer* r) {
-    static const float corners[8] = {
-        -1.f, -1.f,   1.f, -1.f,   1.f, 1.f,   -1.f, 1.f
+    static const float corners[12] = {
+        -1.f, -1.f,   1.f, -1.f,   1.f, 1.f,
+        -1.f, -1.f,   1.f, 1.f,   -1.f, 1.f
     };
     static const unsigned short indices[6] = { 0, 1, 2, 0, 2, 3 };
     const size_t stride = sizeof(zcsr_gl_instance);
@@ -93,6 +152,11 @@ bool zcsr_gl_instanced_init(zcsr_gl_renderer* r) {
     if (!r->inst_program) return false;
     r->inst_uniform_view = glGetUniformLocation(r->inst_program, "u_view");
     r->inst_uniform_tex  = glGetUniformLocation(r->inst_program, "u_tex");
+    r->inst_program_mul = zcsr_gl_make_inst_program_mul();
+    if (r->inst_program_mul) {
+        r->inst_uniform_view_mul = glGetUniformLocation(r->inst_program_mul, "u_view");
+        r->inst_uniform_tex_mul  = glGetUniformLocation(r->inst_program_mul, "u_tex");
+    }
 
     glGenVertexArrays(1, &r->inst_vao);
     glBindVertexArray(r->inst_vao);
@@ -109,7 +173,10 @@ bool zcsr_gl_instanced_init(zcsr_gl_renderer* r) {
 
     glGenBuffers(1, &r->inst_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, r->inst_vbo);
-    glBufferData(GL_ARRAY_BUFFER, ZCSR_GL_MAX_INSTANCES * stride, NULL, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER,
+                 (size_t)ZCSR_GL_INSTANCE_SLOTS * ZCSR_GL_MAX_INSTANCES * stride,
+                 NULL, GL_DYNAMIC_DRAW);
+    r->inst_slot = ZCSR_GL_INSTANCE_SLOTS - 1;
 
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, (GLsizei)stride, (void*)offsetof(zcsr_gl_instance, cx));
@@ -133,6 +200,34 @@ bool zcsr_gl_instanced_init(zcsr_gl_renderer* r) {
     glVertexAttribPointer(7, 1, GL_FLOAT, GL_FALSE, (GLsizei)stride, (void*)offsetof(zcsr_gl_instance, mode));
     glVertexAttribDivisor(7, 1);
 
+    /* Separate VAO for the multiply-only program: it never reads amount/mode,
+     * and keeping those arrays enabled makes some drivers fetch per-instance
+     * data the shader cannot use. Same VBOs, no duplicate storage. */
+    if (r->inst_program_mul) {
+        glGenVertexArrays(1, &r->inst_vao_mul);
+        glBindVertexArray(r->inst_vao_mul);
+        glBindBuffer(GL_ARRAY_BUFFER, r->inst_corner_vbo);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, r->inst_ebo);
+        glBindBuffer(GL_ARRAY_BUFFER, r->inst_vbo);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, (GLsizei)stride, (void*)offsetof(zcsr_gl_instance, cx));
+        glVertexAttribDivisor(1, 1);
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, (GLsizei)stride, (void*)offsetof(zcsr_gl_instance, w));
+        glVertexAttribDivisor(2, 1);
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride, (void*)offsetof(zcsr_gl_instance, u0));
+        glVertexAttribDivisor(3, 1);
+        glEnableVertexAttribArray(4);
+        glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride, (void*)offsetof(zcsr_gl_instance, r));
+        glVertexAttribDivisor(4, 1);
+        glEnableVertexAttribArray(5);
+        glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, (GLsizei)stride, (void*)offsetof(zcsr_gl_instance, rotation));
+        glVertexAttribDivisor(5, 1);
+    }
+
     glBindVertexArray(0);
     return r->inst_vao != 0 && r->inst_vbo != 0;
 }
@@ -142,7 +237,9 @@ void zcsr_gl_instanced_destroy(zcsr_gl_renderer* r) {
     if (r->inst_ebo) glDeleteBuffers(1, &r->inst_ebo);
     if (r->inst_corner_vbo) glDeleteBuffers(1, &r->inst_corner_vbo);
     if (r->inst_vao) glDeleteVertexArrays(1, &r->inst_vao);
+    if (r->inst_vao_mul) glDeleteVertexArrays(1, &r->inst_vao_mul);
     if (r->inst_program) glDeleteProgram(r->inst_program);
+    if (r->inst_program_mul) glDeleteProgram(r->inst_program_mul);
 }
 
 /* ===========================================================================================
@@ -151,22 +248,80 @@ void zcsr_gl_instanced_destroy(zcsr_gl_renderer* r) {
 
 /* Internal: per-run draw with GL state already set up (context current, framebuffer/viewport/
  * program/uniforms/VAO bound). Only uploads VBO, binds texture, issues draw. No find_tex. */
+/* Point the current slot's VAO at its slice of the ring buffer. Called once per
+ * uploaded batch; the slot advances so an in-flight draw is never overwritten. */
+static void zcsr_gl_inst_bind_slot_attribs(zcsr_gl_renderer* r) {
+    const size_t stride = sizeof(zcsr_gl_instance);
+    const size_t base = (size_t)r->inst_slot * ZCSR_GL_MAX_INSTANCES * stride;
+    glBindVertexArray(r->inst_current_mul && r->inst_vao_mul ? r->inst_vao_mul : r->inst_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, r->inst_vbo);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                          (void*)(base + offsetof(zcsr_gl_instance, cx)));
+    glVertexAttribDivisor(1, 1);
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                          (void*)(base + offsetof(zcsr_gl_instance, w)));
+    glVertexAttribDivisor(2, 1);
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                          (void*)(base + offsetof(zcsr_gl_instance, u0)));
+    glVertexAttribDivisor(3, 1);
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                          (void*)(base + offsetof(zcsr_gl_instance, r)));
+    glVertexAttribDivisor(4, 1);
+    glEnableVertexAttribArray(5);
+    glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                          (void*)(base + offsetof(zcsr_gl_instance, rotation)));
+    glVertexAttribDivisor(5, 1);
+    if (!r->inst_current_mul) {
+        glEnableVertexAttribArray(6);
+        glVertexAttribPointer(6, 1, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                              (void*)(base + offsetof(zcsr_gl_instance, amount)));
+        glVertexAttribDivisor(6, 1);
+        glEnableVertexAttribArray(7);
+        glVertexAttribPointer(7, 1, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                              (void*)(base + offsetof(zcsr_gl_instance, mode)));
+        glVertexAttribDivisor(7, 1);
+    }
+}
+
 static void zcsr_gl_draw_instances_prepared(zcsr_gl_renderer* r, zcsr_gl_texture texture,
                                              const zcsr_gl_instance* instances, size_t count) {
+    const size_t stride = sizeof(zcsr_gl_instance);
+    size_t offset;
+    if (r->inst_skip_upload) {
+        r->inst_slot = 0;           /* reuse the slot filled before uploads were disabled */
+    } else {
+        r->inst_slot = (r->inst_slot + 1u) % ZCSR_GL_INSTANCE_SLOTS;
+    }
+    offset = (size_t)r->inst_slot * ZCSR_GL_MAX_INSTANCES * stride;
     glBindBuffer(GL_ARRAY_BUFFER, r->inst_vbo);
 #ifdef ZCSR_GL_VBO_ORPHAN
     /* Orphaning: discard old storage before partial upload to avoid GPU sync stall. */
-    glBufferData(GL_ARRAY_BUFFER, ZCSR_GL_MAX_INSTANCES * sizeof(zcsr_gl_instance), NULL,
+    glBufferData(GL_ARRAY_BUFFER,
+                 (size_t)ZCSR_GL_INSTANCE_SLOTS * ZCSR_GL_MAX_INSTANCES * stride, NULL,
                  GL_DYNAMIC_DRAW);
 #endif
-    glBufferSubData(GL_ARRAY_BUFFER, 0, count * sizeof(zcsr_gl_instance), instances);
+    if (r->inst_orphan) {
+        glBufferData(GL_ARRAY_BUFFER,
+                     (size_t)ZCSR_GL_INSTANCE_SLOTS * ZCSR_GL_MAX_INSTANCES * stride, NULL,
+                     GL_STREAM_DRAW);
+    }
+    if (!r->inst_skip_upload) {
+        glBufferSubData(GL_ARRAY_BUFFER, offset, count * stride, instances);
+    }
+    zcsr_gl_inst_bind_slot_attribs(r);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texture);
-    glDrawElementsInstanced(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0, (GLsizei)count);
+    glDrawArraysInstanced(GL_TRIANGLES, 0, 6, (GLsizei)count);
 }
 
 /* Set up the shared instanced GL state once for a sequence of texture runs. */
-static bool zcsr_gl_instanced_begin_state(zcsr_gl_renderer* r) {
+static bool zcsr_gl_instanced_begin_state(zcsr_gl_renderer* r, bool multiply_only) {
+    unsigned int program;
+    int uniform_view, uniform_tex;
     if (!r) return false;
     if (!zcsr_gl_make_current(r)) return false;
     if (r->target == 0) {
@@ -178,10 +333,19 @@ static bool zcsr_gl_instanced_begin_state(zcsr_gl_renderer* r) {
                                r->target, 0);
     }
     glViewport(0, 0, r->width, r->height);
-    glUseProgram(r->inst_program);
-    glUniform2f(r->inst_uniform_view, (float)r->width, (float)r->height);
-    glUniform1i(r->inst_uniform_tex, 0);
-    glBindVertexArray(r->inst_vao);
+    if (multiply_only && r->inst_program_mul) {
+        program = r->inst_program_mul;
+        uniform_view = r->inst_uniform_view_mul;
+        uniform_tex = r->inst_uniform_tex_mul;
+    } else {
+        program = r->inst_program;
+        uniform_view = r->inst_uniform_view;
+        uniform_tex = r->inst_uniform_tex;
+    }
+    glUseProgram(program);
+    glUniform2f(uniform_view, (float)r->width, (float)r->height);
+    glUniform1i(uniform_tex, 0);
+    r->inst_current_mul = (program == r->inst_program_mul);
     return true;
 }
 
@@ -212,11 +376,24 @@ static size_t zcsr_gl_draw_run_batched(zcsr_gl_renderer* r, zcsr_gl_texture text
 size_t zcsr_gl_draw_instances(zcsr_gl_renderer* r, zcsr_gl_texture texture,
                               const zcsr_gl_instance* instances, size_t count) {
     size_t submitted;
+    size_t i;
+    bool multiply_only = true;
     if (!r || !instances || count == 0 || texture == 0) return 0;
-    if (!zcsr_gl_instanced_begin_state(r)) return 0;
+    for (i = 0; i < count; ++i) {
+        if (instances[i].mode != (float)ZCSR_MOD_MULTIPLY) { multiply_only = false; break; }
+    }
+    if (!zcsr_gl_instanced_begin_state(r, multiply_only)) return 0;
     submitted = zcsr_gl_draw_run_batched(r, texture, instances, count);
     zcsr_gl_instanced_end_state();
     return submitted;
+}
+
+void zcsr_gl_set_instance_upload(zcsr_gl_renderer* r, bool enabled) {
+    if (r) r->inst_skip_upload = !enabled;
+}
+
+void zcsr_gl_set_instance_orphan(zcsr_gl_renderer* r, bool enabled) {
+    if (r) r->inst_orphan = enabled;
 }
 
 /* ===========================================================================================
@@ -307,7 +484,7 @@ size_t zcsr_gl_submit_instance_batch(zcsr_gl_renderer* r, zcsr_gl_instance* inst
     runs = zcsr_sort_instances(instances, count, temp, temp_bytes);
 
     /* Shared GL state once for all texture runs (O2: state hoisting). */
-    if (!zcsr_gl_instanced_begin_state(r)) return 0;
+    if (!zcsr_gl_instanced_begin_state(r, false)) return 0;
     for (i = 0; i < runs; ++i) {
         zcsr_gl_texture tex;
         size_t start, len;
@@ -322,7 +499,7 @@ size_t zcsr_gl_submit_sorted_runs(zcsr_gl_renderer* r, const zcsr_gl_sorted_run*
                                   size_t run_count) {
     size_t i, submitted = 0;
     if (!r || !runs || run_count == 0) return 0;
-    if (!zcsr_gl_instanced_begin_state(r)) return 0;
+    if (!zcsr_gl_instanced_begin_state(r, false)) return 0;
     for (i = 0; i < run_count; ++i) {
         submitted += zcsr_gl_draw_run_batched(r, runs[i].texture,
                                               runs[i].instances, runs[i].count);
@@ -387,7 +564,7 @@ size_t zcsr_gl_submit_state(zcsr_gl_renderer* r, zcsr_gl_instance* instances, si
     zcsr_sort_state(instances, count, temp, temp_bytes, &opaque);
 
     /* One shared state setup for both opaque and translucent runs. */
-    if (!zcsr_gl_instanced_begin_state(r)) return 0;
+    if (!zcsr_gl_instanced_begin_state(r, false)) return 0;
 
     /* opaque: draw in texture runs (order irrelevant) */
     i = 0;

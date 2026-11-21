@@ -435,13 +435,15 @@ UNKNOWN 两项（负 scale 镜像、像素对齐）源码无证据，未猜。
 
 1. 世界系 + 唯一投影公式：X 东/Y 南/Z 上、`zcsr_camera` 活指针、PPU、height_shear、
    viewport 取 GL viewport。证据：§2。
-2. G-buffer 四附件布局：G0 RGBA8 显示域 / G1 RGBA16F 世界XYZ / G2 RGBA8 编码法线 /
-   G3 RGBA16F emissive + 清屏值。证据：§7。
+2. G-buffer 四附件布局：G0 GL_SRGB8_ALPHA8 显示域（采样时硬件解码为线性） /
+   G1 RGBA16F 世界XYZ / G2 RGBA8 编码法线 / G3 RGBA16F emissive + 清屏值。证据：§7。
 3. 帧序与 GL 状态配对：begin_geometry→geo→begin_lighting→add_light→end_lighting→HUD；
    geo begin/end 精确保存恢复。证据：§9。
 4. 路径 A/B 边界：路径 A 屏幕像素 straight-alpha 不受光；路径 B 世界几何进 G-buffer 受光；
    不自动互通。证据：§0、§8。
-5. 路径 B 颜色语义：Albedo 唯一线性化点在合成 FS pow(2.2)；Emissive 当前被 albedo 调制。
+5. 路径 B 颜色语义：Albedo 在 G0 的 SRGB8 采样时由硬件唯一解码为线性；
+   合成 FS 通过 `zcsr_color_pipeline` 生成的 LUT 编码回显示域，shader 内不再写
+   pow/linear_to_srgb 公式。Emissive 当前被 albedo 调制。
    **本条只约束路径 B，不推广到路径 A**。证据：§1。
 
 ### 14.3 MODULE-CFG 现有旋钮（游戏可调，值来自现有 API）

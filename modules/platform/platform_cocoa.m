@@ -14,9 +14,60 @@
 #if defined(__APPLE__)
 #import <Cocoa/Cocoa.h>
 #include "platform_cocoa.h"
+#include "platform_internal.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+
+/* One focus-tracked window per process is enough for this surface contract.
+ * The observer is installed at create and removed at destroy; no polling and
+ * no per-frame AppKit calls. */
+static id g_cocoa_focus_observer_key;
+static id g_cocoa_focus_observer_resign;
+static void* g_cocoa_focus_window;
+static zcsr_surface* g_cocoa_focus_surface;
+
+static void zcsr_cocoa_remove_focus_observer(void);
+
+static void zcsr_cocoa_install_focus_observer(void* ns_window, zcsr_surface* surface) {
+    NSWindow* window;
+    if (!ns_window || !surface) return;
+    zcsr_cocoa_remove_focus_observer();
+    window = (__bridge NSWindow*)ns_window;
+    g_cocoa_focus_window = ns_window;
+    g_cocoa_focus_surface = surface;
+    g_cocoa_focus_observer_key = [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSWindowDidBecomeKeyNotification
+                    object:window
+                     queue:nil
+                usingBlock:^(NSNotification* note) {
+                    (void)note;
+                    if (g_cocoa_focus_surface)
+                        zcsr_surface_dispatch_focus(g_cocoa_focus_surface, ZCSR_FOCUS_GAINED);
+                }];
+    g_cocoa_focus_observer_resign = [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSWindowDidResignKeyNotification
+                    object:window
+                     queue:nil
+                usingBlock:^(NSNotification* note) {
+                    (void)note;
+                    if (g_cocoa_focus_surface)
+                        zcsr_surface_dispatch_focus(g_cocoa_focus_surface, ZCSR_FOCUS_LOST);
+                }];
+}
+
+static void zcsr_cocoa_remove_focus_observer(void) {
+    if (g_cocoa_focus_observer_key) {
+        [[NSNotificationCenter defaultCenter] removeObserver:g_cocoa_focus_observer_key];
+        g_cocoa_focus_observer_key = nil;
+    }
+    if (g_cocoa_focus_observer_resign) {
+        [[NSNotificationCenter defaultCenter] removeObserver:g_cocoa_focus_observer_resign];
+        g_cocoa_focus_observer_resign = nil;
+    }
+    g_cocoa_focus_window = NULL;
+    g_cocoa_focus_surface = NULL;
+}
 
 /* Ensure the process has an NSApplication so a window can appear from a plain C entry point. */
 static void zcsr_cocoa_ensure_app(void) {
@@ -254,11 +305,22 @@ zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
     if (!isfinite(surface->dpi_scale) || surface->dpi_scale <= 0.0f) {
         surface->dpi_scale = 1.0f;
     }
+    zcsr_cocoa_install_focus_observer(window, surface);
+    return surface;
+}
+
+zcsr_surface* zcsr_surface_create_opaque(const char* title, zcsr_rect bounds) {
+    /* Cocoa has no layered-surface split in this backend. The overlay variant
+     * is borderless/transparent; the presentation path must be a normal opaque
+     * window, so create it first and switch it to WINDOWED. */
+    zcsr_surface* surface = zcsr_surface_create(title, bounds);
+    if (surface) (void)zcsr_surface_set_mode(surface, ZCSR_WINDOW_WINDOWED);
     return surface;
 }
 
 void zcsr_surface_destroy(zcsr_surface* s) {
     if (!s || !s->in_use) return;
+    zcsr_cocoa_remove_focus_observer();
     if (s->ns_window) zcsr_cocoa_window_destroy(s->ns_window);
     zcsr_surface_release(s);
 }
@@ -269,6 +331,16 @@ void* zcsr_surface_native_handle(const zcsr_surface* s) {
 
 void* zcsr_surface_native_display(const zcsr_surface* s) {
     (void)s; return 0; /* Cocoa has no separate display connection; the NSWindow* suffices */
+}
+
+/* Android lifecycle binding is not supported on Cocoa. */
+bool zcsr_surface_attach_native(zcsr_surface* s, void* native_window) {
+    (void)s; (void)native_window;
+    return false;
+}
+
+void zcsr_surface_detach_native(zcsr_surface* s) {
+    (void)s;
 }
 
 void zcsr_surface_pump_events(zcsr_surface* s) {
@@ -329,11 +401,12 @@ bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
 }
 
 bool zcsr_surface_set_drag_region(zcsr_surface* s, int x, int y, int w, int h) {
-    (void)x; (void)y; (void)w; (void)h;
-    if (!s || !s->in_use) return false;
-    /* macOS 没有 Win32 的 HTCAPTION 区域：overlay 窗口在 create 时已设
-     * movableByWindowBackground=YES，整窗可拖；这里如实返回成功。 */
-    return true;
+    (void)s; (void)x; (void)y; (void)w; (void)h;
+    /* The platform contract reserves this for Win32 borderless windows and
+     * requires other platforms to return false. Cocoa makes the whole window
+     * movable via movableByWindowBackground, but that is not the requested
+     * region semantics; reporting success here would be a false capability. */
+    return false;
 }
 
 bool zcsr_surface_move_to_display(zcsr_surface* s, int display_id) {
@@ -357,6 +430,67 @@ float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
     if (!s || !s->in_use || !s->ns_window) return 1.0f;
     scale = zcsr_cocoa_window_backing_scale(s->ns_window);
     return (scale > 0.0f) ? scale : 1.0f;
+}
+
+/* AppKit enforces content min/max on user resize; 0 means "no limit" on that
+ * axis, matching the platform contract. This is a real implementation, not a
+ * false capability: macOS previously had no symbol here at all. */
+void zcsr_surface_apply_size_limits(zcsr_surface* s) {
+    NSWindow* window;
+    NSSize min_size;
+    NSSize max_size;
+    if (!s || !s->in_use || !s->ns_window) return;
+    window = (__bridge NSWindow*)s->ns_window;
+    min_size = NSMakeSize(s->min_w > 0 ? (CGFloat)s->min_w : 0.0,
+                          s->min_h > 0 ? (CGFloat)s->min_h : 0.0);
+    max_size = NSMakeSize(s->max_w > 0 ? (CGFloat)s->max_w : CGFLOAT_MAX,
+                          s->max_h > 0 ? (CGFloat)s->max_h : CGFLOAT_MAX);
+    [window setContentMinSize:min_size];
+    [window setContentMaxSize:max_size];
+}
+
+/* NSCursor supports arrow/I-beam/crosshair/hand/hidden without a custom bitmap.
+ * The custom RGBA bitmap path stays false. */
+bool zcsr_surface_set_cursor_shape(zcsr_surface* s, zcsr_cursor_shape shape) {
+    (void)s;
+    switch (shape) {
+    case ZCSR_CURSOR_HIDDEN:
+        [NSCursor hide];
+        return true;
+    case ZCSR_CURSOR_IBEAM:
+        [[NSCursor IBeamCursor] set];
+        return true;
+    case ZCSR_CURSOR_CROSSHAIR:
+        [[NSCursor crosshairCursor] set];
+        return true;
+    case ZCSR_CURSOR_HAND:
+        [[NSCursor pointingHandCursor] set];
+        return true;
+    case ZCSR_CURSOR_ARROW:
+    default:
+        [NSCursor unhide];
+        [[NSCursor arrowCursor] set];
+        return true;
+    }
+}
+
+bool zcsr_surface_set_cursor_visible(zcsr_surface* s, bool visible) {
+    (void)s;
+    if (visible) [NSCursor unhide];
+    else [NSCursor hide];
+    return true;
+}
+
+bool zcsr_surface_set_cursor_bitmap(zcsr_surface* s,
+                                    const unsigned char* rgba, int w, int h,
+                                    int hot_x, int hot_y) {
+    (void)s; (void)rgba; (void)w; (void)h; (void)hot_x; (void)hot_y;
+    return false;
+}
+
+bool zcsr_surface_reset_cursor(zcsr_surface* s) {
+    (void)s;
+    return false;
 }
 
 #endif /* __APPLE__ */

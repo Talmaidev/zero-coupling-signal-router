@@ -17,6 +17,11 @@
 #  ifndef GLAPIENTRY
 #    define GLAPIENTRY
 #  endif
+#elif defined(__ANDROID__)
+#  include <GLES3/gl3.h>
+#  ifndef GLAPIENTRY
+#    define GLAPIENTRY
+#  endif
 #elif defined(_WIN32)
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
@@ -60,6 +65,9 @@ typedef ptrdiff_t GLintptr;
 #endif
 #ifndef GL_DYNAMIC_DRAW
 #define GL_DYNAMIC_DRAW 0x88E8
+#endif
+#ifndef GL_STREAM_DRAW
+#define GL_STREAM_DRAW 0x88E0
 #endif
 #ifndef GL_ELEMENT_ARRAY_BUFFER
 #define GL_ELEMENT_ARRAY_BUFFER 0x8893
@@ -225,6 +233,8 @@ typedef void (GLAPIENTRY *PFNGLDELETEFRAMEBUFFERSPROC)(GLsizei n, const GLuint* 
 typedef void (GLAPIENTRY *PFNGLVERTEXATTRIBDIVISORPROC)(GLuint index, GLuint divisor);
 typedef void (GLAPIENTRY *PFNGLDRAWELEMENTSINSTANCEDPROC)(GLenum mode, GLsizei count, GLenum type,
                                                           const void* indices, GLsizei instancecount);
+typedef void (GLAPIENTRY *PFNGLDRAWARRAYSINSTANCEDPROC)(GLenum mode, GLint first, GLsizei count,
+                                                        GLsizei instancecount);
 /* Light2D extension: uniform scalar/vector uploads, separate/equation blend control, MRT draw
  * buffers and per-attachment clears (Khronos signatures). */
 typedef void (GLAPIENTRY *PFNGLUNIFORM1FPROC)(GLint location, GLfloat v0);
@@ -310,6 +320,7 @@ extern PFNGLCHECKFRAMEBUFFERSTATUSPROC glad_glCheckFramebufferStatus;
 extern PFNGLDELETEFRAMEBUFFERSPROC glad_glDeleteFramebuffers;
 extern PFNGLVERTEXATTRIBDIVISORPROC glad_glVertexAttribDivisor;
 extern PFNGLDRAWELEMENTSINSTANCEDPROC glad_glDrawElementsInstanced;
+extern PFNGLDRAWARRAYSINSTANCEDPROC glad_glDrawArraysInstanced;
 extern PFNGLUNIFORM1FPROC glad_glUniform1f;
 extern PFNGLUNIFORM3FPROC glad_glUniform3f;
 extern PFNGLUNIFORM4FPROC glad_glUniform4f;
@@ -373,6 +384,7 @@ extern PFNGLGETQUERYOBJECTUI64VPROC glad_glGetQueryObjectui64v;
 #define glDeleteFramebuffers glad_glDeleteFramebuffers
 #define glVertexAttribDivisor glad_glVertexAttribDivisor
 #define glDrawElementsInstanced glad_glDrawElementsInstanced
+#define glDrawArraysInstanced glad_glDrawArraysInstanced
 #define glUniform1f glad_glUniform1f
 #define glUniform3f glad_glUniform3f
 #define glUniform4f glad_glUniform4f

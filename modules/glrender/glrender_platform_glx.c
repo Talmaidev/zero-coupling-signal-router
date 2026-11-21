@@ -38,7 +38,11 @@ bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface) {
     Display* dpy;
     Window win;
     GLXFBConfig* configs = NULL;
+    GLXFBConfig chosen = NULL;
     int n_configs = 0;
+    int i;
+    VisualID window_visual = 0;
+    XWindowAttributes window_attrs;
     int major = 0, minor = 0;
     PFN_glXCreateContextAttribsARB create_attribs;
     int ctx_attrs[] = {
@@ -73,14 +77,53 @@ bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface) {
         return false;
     }
 
+    /* The X11 window was created with CopyFromParent visual. On hybrid laptops
+     * the first FBConfig returned by glXChooseFBConfig is not necessarily the
+     * one matching that visual; using it can make glXMakeCurrent fail or draw
+     * to a different visual. Select the config whose GLX_VISUAL_ID matches the
+     * actual window, which is the same path for Intel iris and AMD radeonsi. */
+    if (XGetWindowAttributes(dpy, win, &window_attrs) && window_attrs.visual)
+        window_visual = window_attrs.visual->visualid;
+
     configs = glXChooseFBConfig(dpy, DefaultScreen(dpy), fb_attrs, &n_configs);
     if (!configs || n_configs < 1) {
         fprintf(stderr, "[glx] glXChooseFBConfig found no RGBA/double-buffered config\n");
         if (configs) XFree(configs);
         return false;
     }
-    r->glx_fbconfig = configs[0];
+    for (i = 0; i < n_configs; ++i) {
+        XVisualInfo* vi;
+        int double_buffer = 0;
+        int caveat = 0;
+        glXGetFBConfigAttrib(dpy, configs[i], GLX_DOUBLEBUFFER, &double_buffer);
+        glXGetFBConfigAttrib(dpy, configs[i], GLX_CONFIG_CAVEAT, &caveat);
+        if (!double_buffer || caveat == GLX_SLOW_CONFIG) continue;
+        vi = glXGetVisualFromFBConfig(dpy, configs[i]);
+        if (vi) {
+            bool match = (window_visual == 0 || vi->visualid == window_visual);
+            XFree(vi);
+            if (match) { chosen = configs[i]; break; }
+        }
+    }
+    if (!chosen) {
+        /* Fall back to any non-slow double-buffered config only when the window
+         * visual could not be queried; a known visual mismatch is fatal. */
+        if (window_visual == 0) {
+            for (i = 0; i < n_configs; ++i) {
+                int double_buffer = 0, caveat = 0;
+                glXGetFBConfigAttrib(dpy, configs[i], GLX_DOUBLEBUFFER, &double_buffer);
+                glXGetFBConfigAttrib(dpy, configs[i], GLX_CONFIG_CAVEAT, &caveat);
+                if (double_buffer && caveat != GLX_SLOW_CONFIG) { chosen = configs[i]; break; }
+            }
+        }
+    }
     XFree(configs);
+    if (!chosen) {
+        fprintf(stderr, "[glx] no FBConfig matches window visual 0x%lx (Intel/AMD Mesa visual mismatch)\n",
+                (unsigned long)window_visual);
+        return false;
+    }
+    r->glx_fbconfig = chosen;
 
     create_attribs = (PFN_glXCreateContextAttribsARB)glx_proc("glXCreateContextAttribsARB");
     if (create_attribs) {

@@ -1,28 +1,46 @@
 #include "ui_internal.h"
 #include "zcsr/diagnostics.h"
 
+static ZCSR_UI g_ui_pool[ZCSR_UI_MAX_INSTANCE_COUNT];
+
+static ZCSR_UI* ui_pool_acquire(void)
+{
+    uint32_t i;
+    for (i = 0; i < ZCSR_UI_MAX_INSTANCE_COUNT; ++i) {
+        if (!g_ui_pool[i].in_use) return &g_ui_pool[i];
+    }
+    return NULL;
+}
+
+static bool ui_pool_contains(const ZCSR_UI* ui)
+{
+    uint32_t i;
+    for (i = 0; i < ZCSR_UI_MAX_INSTANCE_COUNT; ++i) {
+        if (ui == &g_ui_pool[i]) return true;
+    }
+    return false;
+}
+
 ZCSR_Result zcsr_ui_create(const ZCSR_UIConfig* config, ZCSR_UI** out_ui)
 {
     ZCSR_UI* ui;
     if (!config || !out_ui) return ZCSR_ERR_NULL_POINTER;
     if (config->max_nodes == 0) return ZCSR_ERR_INVALID_ARGUMENT;
+    if (config->max_nodes > ZCSR_UI_MAX_NODE_COUNT ||
+        config->event_queue_capacity > ZCSR_UI_MAX_EVENT_COUNT ||
+        config->draw_command_capacity > ZCSR_UI_MAX_DRAW_COMMAND_COUNT) {
+        ZCSR_LOG_ERROR("ui", "UI capacity exceeds fixed pool");
+        return ZCSR_ERR_BUFFER_TOO_SMALL;
+    }
 
-    ui = (ZCSR_UI*)calloc(1, sizeof(ZCSR_UI));
+    ui = ui_pool_acquire();
     if (!ui) {
-        ZCSR_LOG_ERROR("ui", "Failed to allocate ZCSR_UI");
+        ZCSR_LOG_ERROR("ui", "UI fixed pool exhausted");
         return ZCSR_ERR_OUT_OF_MEMORY;
     }
 
-    ui->nodes = (ZCSR_UI_Node*)calloc(config->max_nodes, sizeof(ZCSR_UI_Node));
-    ui->events = (ZCSR_UIEvent*)calloc(config->event_queue_capacity > 0 ? config->event_queue_capacity : 1, sizeof(ZCSR_UIEvent));
-    ui->draw_cmds = (ZCSR_DrawCommand*)calloc(config->draw_command_capacity > 0 ? config->draw_command_capacity : 1, sizeof(ZCSR_DrawCommand));
-
-    if (!ui->nodes || !ui->events || !ui->draw_cmds) {
-        ZCSR_LOG_ERROR("ui", "Failed to allocate nodes/events/draw_cmds");
-        zcsr_ui_destroy(ui);
-        return ZCSR_ERR_OUT_OF_MEMORY;
-    }
-
+    memset(ui, 0, sizeof(*ui));
+    ui->in_use = true;
     ui->node_capacity = config->max_nodes;
     ui->event_cap = config->event_queue_capacity > 0 ? config->event_queue_capacity : 1;
     ui->draw_cap = config->draw_command_capacity > 0 ? config->draw_command_capacity : 1;
@@ -37,21 +55,9 @@ ZCSR_Result zcsr_ui_create(const ZCSR_UIConfig* config, ZCSR_UI** out_ui)
 
 void zcsr_ui_destroy(ZCSR_UI* ui)
 {
-    uint32_t i;
     if (!ui) return;
-
-    /* Free all node text buffers */
-    for (i = 0; i < ui->node_count; i++) {
-        if (ui->nodes[i].text_buf) {
-            free(ui->nodes[i].text_buf);
-            ui->nodes[i].text_buf = NULL;
-        }
-    }
-
-    free(ui->nodes);
-    free(ui->events);
-    free(ui->draw_cmds);
-    free(ui);
+    if (!ui_pool_contains(ui) || !ui->in_use) return;
+    memset(ui, 0, sizeof(*ui));
     ZCSR_LOG_INFO("ui", "UI destroyed");
 }
 
@@ -118,7 +124,7 @@ ZCSR_Result zcsr_node_create(ZCSR_UI* ui, ZCSR_ComponentId comp,
     }
     if (ui->node_count >= ui->node_capacity) {
         ZCSR_LOG_ERROR("ui", "Node capacity exhausted (%u)", ui->node_capacity);
-        return ZCSR_ERR_OUT_OF_MEMORY;
+        return ZCSR_ERR_BUFFER_TOO_SMALL;
     }
     if (parent_id != ZCSR_NODE_INVALID && !ui_find_node(ui, parent_id)) {
         ZCSR_LOG_ERROR("ui", "Parent node not found: %u", parent_id);
@@ -133,6 +139,7 @@ ZCSR_Result zcsr_node_create(ZCSR_UI* ui, ZCSR_ComponentId comp,
     n->visible = true;
     n->enabled = true;
     n->parent = parent_id;
+    n->text_cap = ZCSR_UI_TEXT_CAPACITY;
     if (comp == ZCSR_COMPONENT_DROPDOWN) n->int_val = -1;
 
     /* Default style colors. */
@@ -201,12 +208,9 @@ ZCSR_Result zcsr_node_destroy(ZCSR_UI* ui, ZCSR_NodeId id)
             }
         }
 
-        /* Free text buffer */
-        if (n->text_buf) {
-            free(n->text_buf);
-            n->text_buf = NULL;
-            n->text_cap = 0;
-        }
+        /* 文本为节点内嵌固定缓冲，随节点压缩一起移动，不需要释放。 */
+        n->text_buf[0] = '\0';
+        n->text_cap = 0;
     }
 
     /* Compact array - find index by id */
@@ -244,24 +248,24 @@ ZCSR_Result zcsr_node_get_rect(const ZCSR_UI* ui, ZCSR_NodeId id, ZCSR_Rect* out
 ZCSR_Result zcsr_node_get_world_rect(const ZCSR_UI* ui, ZCSR_NodeId id, ZCSR_Rect* out)
 {
     const ZCSR_UI_Node* n = ui_find_node_c(ui, id);
+    const ZCSR_UI_Node* self = n;
     float ox = 0, oy = 0;
-    const ZCSR_UI_Node* root = NULL;
 
     if (!n || !out) return ZCSR_ERR_NOT_FOUND;
 
-    /* Walk up parent chain accumulating offset */
-    while (n) {
+    /* Walk up parent chain accumulating parent offsets. Width/height belong
+     * to the node itself, not to the topmost ancestor. */
+    while (n != NULL) {
         ox += n->local_rect.x;
         oy += n->local_rect.y;
-        root = n;
         if (n->parent == ZCSR_NODE_INVALID) break;
         n = ui_find_node_c(ui, n->parent);
     }
 
     out->x = ox;
     out->y = oy;
-    out->width = root ? root->local_rect.width : 0;
-    out->height = root ? root->local_rect.height : 0;
+    out->width = self->local_rect.width;
+    out->height = self->local_rect.height;
     return ZCSR_OK;
 }
 
@@ -511,7 +515,7 @@ static ZCSR_NodeId hit_test(ZCSR_UI* ui, float x, float y)
     int i;
     ZCSR_NodeId best = ZCSR_NODE_INVALID;
     int best_z = -1000000;
-    /* Iterate in reverse so later nodes (higher z) win. */
+    /* Reverse iteration makes later nodes win z ties; otherwise higher z wins. */
     for (i = (int)ui->node_count - 1; i >= 0; i--) {
         ZCSR_UI_Node* n = &ui->nodes[i];
         ZCSR_Rect r;
@@ -522,8 +526,8 @@ static ZCSR_NodeId hit_test(ZCSR_UI* ui, float x, float y)
             n->component == ZCSR_COMPONENT_PANEL ||
             n->component == ZCSR_COMPONENT_IMAGE)
             continue;
-        r = n->local_rect;
-        /* Simple: use local rect as world rect for now (no parent transform yet). */
+        /* Hit test in world space so nested nodes honor parent offsets. */
+        if (zcsr_node_get_world_rect(ui, n->id, &r) != ZCSR_OK) continue;
         if (x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height) {
             if (n->z_order > best_z) {
                 best_z = n->z_order;
@@ -689,30 +693,30 @@ ZCSR_Result zcsr_ui_process_input(ZCSR_UI* ui, const ZCSR_Input* in)
         n = ui_find_node(ui, ui->focus_id);
         if (!n || !n->enabled) break;
         if (n->component == ZCSR_COMPONENT_BUTTON) {
-            if (in->key == ZCSR_KEY_ENTER || in->key == ZCSR_KEY_SPACE)
+            if (in->key == ZCSR_UI_KEY_ENTER || in->key == ZCSR_UI_KEY_SPACE)
                 ui_emit_event(ui, ZCSR_EVENT_BUTTON_CLICKED, n->id, n->component);
         } else if (n->component == ZCSR_COMPONENT_TOGGLE) {
-            if (in->key == ZCSR_KEY_ENTER || in->key == ZCSR_KEY_SPACE) {
+            if (in->key == ZCSR_UI_KEY_ENTER || in->key == ZCSR_UI_KEY_SPACE) {
                 n->bool_val = !n->bool_val;
                 ui_emit_event(ui, ZCSR_EVENT_TOGGLE_CHANGED, n->id, n->component);
             }
         } else if (n->component == ZCSR_COMPONENT_SLIDER) {
             float step = n->float_step > 0 ? n->float_step : (n->float_max - n->float_min) * 0.1f;
-            if (in->key == ZCSR_KEY_LEFT || in->key == ZCSR_KEY_DOWN)
+            if (in->key == ZCSR_UI_KEY_LEFT || in->key == ZCSR_UI_KEY_DOWN)
                 n->float_val -= step;
-            if (in->key == ZCSR_KEY_RIGHT || in->key == ZCSR_KEY_UP)
+            if (in->key == ZCSR_UI_KEY_RIGHT || in->key == ZCSR_UI_KEY_UP)
                 n->float_val += step;
-            if (in->key == ZCSR_KEY_HOME) n->float_val = n->float_min;
-            if (in->key == ZCSR_KEY_END) n->float_val = n->float_max;
+            if (in->key == ZCSR_UI_KEY_HOME) n->float_val = n->float_min;
+            if (in->key == ZCSR_UI_KEY_END) n->float_val = n->float_max;
             if (n->float_val < n->float_min) n->float_val = n->float_min;
             if (n->float_val > n->float_max) n->float_val = n->float_max;
             ui_emit_event(ui, ZCSR_EVENT_SLIDER_CHANGED, n->id, n->component);
         } else if (n->component == ZCSR_COMPONENT_TEXT_INPUT) {
-            if (in->key == ZCSR_KEY_ENTER)
+            if (in->key == ZCSR_UI_KEY_ENTER)
                 ui_emit_event(ui, ZCSR_EVENT_TEXT_SUBMITTED, n->id, n->component);
-            else if (in->key == ZCSR_KEY_ESCAPE)
+            else if (in->key == ZCSR_UI_KEY_ESCAPE)
                 ui_emit_event(ui, ZCSR_EVENT_TEXT_CANCELLED, n->id, n->component);
-            else if (in->key == ZCSR_KEY_BACKSPACE && n->caret_byte > 0 && n->text_buf) {
+            else if (in->key == ZCSR_UI_KEY_BACKSPACE && n->caret_byte > 0 && n->text_cap > 0) {
                 uint32_t len = (uint32_t)strlen(n->text_buf);
                 uint32_t prev = utf8_prev(n->text_buf, n->caret_byte);
                 uint32_t sl = n->caret_byte - prev; /* bytes to delete */
@@ -722,15 +726,15 @@ ZCSR_Result zcsr_ui_process_input(ZCSR_UI* ui, const ZCSR_Input* in)
                 n->caret_byte = prev;
                 n->text_buf[len - sl] = '\0';
                 ui_emit_event(ui, ZCSR_EVENT_TEXT_CHANGED, n->id, n->component);
-            } else if (in->key == ZCSR_KEY_LEFT && n->caret_byte > 0) {
+            } else if (in->key == ZCSR_UI_KEY_LEFT && n->caret_byte > 0) {
                 n->caret_byte = utf8_prev(n->text_buf, n->caret_byte);
-            } else if (in->key == ZCSR_KEY_RIGHT && n->text_buf) {
+            } else if (in->key == ZCSR_UI_KEY_RIGHT && n->text_cap > 0) {
                 uint32_t len = (uint32_t)strlen(n->text_buf);
                 uint32_t nx = utf8_next(n->text_buf, len, n->caret_byte);
                 if (nx > n->caret_byte) n->caret_byte = nx;
-            } else if (in->key == ZCSR_KEY_HOME)
+            } else if (in->key == ZCSR_UI_KEY_HOME)
                 n->caret_byte = 0;
-            else if (in->key == ZCSR_KEY_END && n->text_buf)
+            else if (in->key == ZCSR_UI_KEY_END && n->text_cap > 0)
                 n->caret_byte = (uint32_t)strlen(n->text_buf);
         }
         break;
@@ -738,7 +742,7 @@ ZCSR_Result zcsr_ui_process_input(ZCSR_UI* ui, const ZCSR_Input* in)
 
     case ZCSR_INPUT_TEXT: {
         n = ui_find_node(ui, ui->focus_id);
-        if (n && n->component == ZCSR_COMPONENT_TEXT_INPUT && n->enabled && n->text_buf) {
+        if (n && n->component == ZCSR_COMPONENT_TEXT_INPUT && n->enabled && n->text_cap > 0) {
             size_t len = strlen(n->text_buf);
             size_t cap = n->text_cap;
             uint32_t j;
@@ -848,11 +852,47 @@ static void push_clip_pop(ZCSR_UI* ui, ZCSR_NodeId id, int32_t layer)
     cmd->layer = layer;
 }
 
+/* ---- Style helpers: caller overrides must survive hover/pressed states. ---- */
+static ZCSR_Color ui_bg_color(const ZCSR_UI_Node* n, ZCSR_Color fallback)
+{
+    return n->bg_override ? n->bg_color : fallback;
+}
+
+static ZCSR_Color ui_border_color(const ZCSR_UI_Node* n)
+{
+    static const ZCSR_Color border_default = {0.25f, 0.28f, 0.33f, 1.0f};
+    return n->border_override ? n->border_color : border_default;
+}
+
+static ZCSR_Color ui_text_color(const ZCSR_UI_Node* n)
+{
+    static const ZCSR_Color text_default = {0.85f, 0.87f, 0.90f, 1.0f};
+    return n->text_override ? n->text_color : text_default;
+}
+
 ZCSR_Result zcsr_ui_build_draw_list(ZCSR_UI* ui)
 {
-    uint32_t i;
+    uint32_t i, j, k, node_count;
+    uint16_t draw_order[ZCSR_UI_MAX_NODE_COUNT];
     if (!ui) return ZCSR_ERR_NULL_POINTER;
     ui->draw_count = 0;
+
+    /* Stable order by layer: lower layers draw first, higher layers on top.
+     * Equal layers keep node creation order. The GL backend consumes commands
+     * in array order, so this is the single place that defines visual z-order. */
+    node_count = ui->node_count;
+    if (node_count > ZCSR_UI_MAX_NODE_COUNT) node_count = ZCSR_UI_MAX_NODE_COUNT;
+    for (i = 0; i < node_count; i++) draw_order[i] = (uint16_t)i;
+    for (i = 1; i < node_count; i++) {
+        uint16_t key = draw_order[i];
+        int32_t key_layer = ui->nodes[key].z_order;
+        j = i;
+        while (j > 0 && ui->nodes[draw_order[j - 1]].z_order > key_layer) {
+            draw_order[j] = draw_order[j - 1];
+            j--;
+        }
+        draw_order[j] = key;
+    }
 
     static const ZCSR_Color bg_color    = {0.12f, 0.14f, 0.17f, 1.0f};
     static const ZCSR_Color bg_hover    = {0.17f, 0.19f, 0.22f, 1.0f};
@@ -865,29 +905,30 @@ ZCSR_Result zcsr_ui_build_draw_list(ZCSR_UI* ui)
     static const ZCSR_Color knob_off    = {0.30f, 0.30f, 0.35f, 1.0f};
     static const ZCSR_Color caret_col   = {0.85f, 0.87f, 0.90f, 1.0f};
 
-    for (i = 0; i < ui->node_count && ui->draw_count < ui->draw_cap; i++) {
-        ZCSR_UI_Node* n = &ui->nodes[i];
+    for (k = 0; k < node_count && ui->draw_count < ui->draw_cap; k++) {
+        ZCSR_UI_Node* n = &ui->nodes[draw_order[k]];
         if (!n->visible) continue;
-        ZCSR_Rect r = n->local_rect;
+        ZCSR_Rect r;
         int32_t layer = n->z_order;
+        if (zcsr_node_get_world_rect(ui, n->id, &r) != ZCSR_OK) continue;
 
         switch (n->component) {
         /* ---- Panel: solid background + border ---- */
         case ZCSR_COMPONENT_PANEL: {
-            ZCSR_Color c = n->bg_override ? n->bg_color : bg_color;
-            if (n->hovered) c = bg_hover;
+            ZCSR_Color c = ui_bg_color(n, bg_color);
+            if (!n->bg_override && n->hovered) c = bg_hover;
             push_rect(ui, n->id, &r, c, layer);
-            push_border(ui, n->id, &r, 1.0f, border_col, layer);
+            push_border(ui, n->id, &r, 1.0f, ui_border_color(n), layer);
             break;
         }
 
         /* ---- Button: bg + text + border, hover/pressed tint ---- */
         case ZCSR_COMPONENT_BUTTON: {
-            ZCSR_Color c = n->pressed ? bg_pressed : (n->hovered ? bg_hover : bg_color);
+            ZCSR_Color c = ui_bg_color(n, n->pressed ? bg_pressed : (n->hovered ? bg_hover : bg_color));
             push_rect(ui, n->id, &r, c, layer);
-            if (n->text_buf)
-                push_text(ui, n->id, &r, n->text_buf, (uint32_t)strlen(n->text_buf), text_col, layer);
-            push_border(ui, n->id, &r, 1.0f, border_col, layer);
+            if (n->text_buf[0] != '\0')
+                push_text(ui, n->id, &r, n->text_buf, (uint32_t)strlen(n->text_buf), ui_text_color(n), layer);
+            push_border(ui, n->id, &r, 1.0f, ui_border_color(n), layer);
             break;
         }
 
@@ -895,7 +936,7 @@ ZCSR_Result zcsr_ui_build_draw_list(ZCSR_UI* ui)
         case ZCSR_COMPONENT_TOGGLE: {
             /* Label text on left */
             ZCSR_Rect label_rect = { r.x, r.y, r.width - 70.0f, r.height };
-            if (n->text_buf)
+            if (n->text_buf[0] != '\0')
                 push_text(ui, n->id, &label_rect, n->text_buf, (uint32_t)strlen(n->text_buf), text_col, layer);
             /* Track on right */
             ZCSR_Rect track = { r.x + r.width - 60.0f, r.y + (r.height - 20.0f) * 0.5f, 50.0f, 20.0f };
@@ -958,8 +999,8 @@ ZCSR_Result zcsr_ui_build_draw_list(ZCSR_UI* ui)
 
         /* ---- Label: text only, no bg/border ---- */
         case ZCSR_COMPONENT_LABEL: {
-            if (n->text_buf)
-                push_text(ui, n->id, &r, n->text_buf, (uint32_t)strlen(n->text_buf), text_col, layer);
+            if (n->text_buf[0] != '\0')
+                push_text(ui, n->id, &r, n->text_buf, (uint32_t)strlen(n->text_buf), ui_text_color(n), layer);
             break;
         }
 
@@ -986,7 +1027,7 @@ ZCSR_Result zcsr_ui_build_draw_list(ZCSR_UI* ui)
                 uv.y = n->uv_y;
                 uv.width  = (n->uv_w > 0.0f) ? n->uv_w : 1.0f;
                 uv.height = (n->uv_h > 0.0f) ? n->uv_h : 1.0f;
-                push_image(ui, n->id, &r, n->resource_key, &uv, bg_color, layer);
+                push_image(ui, n->id, &r, n->resource_key, &uv, ui_bg_color(n, bg_color), layer);
             } else {
                 push_rect(ui, n->id, &r, (ZCSR_Color){0.08f,0.09f,0.11f,1.0f}, layer);
                 push_border(ui, n->id, &r, 1.0f, border_col, layer);
@@ -997,7 +1038,7 @@ ZCSR_Result zcsr_ui_build_draw_list(ZCSR_UI* ui)
         /* ---- TextInput: bg + text + caret ---- */
         case ZCSR_COMPONENT_TEXT_INPUT: {
             push_rect(ui, n->id, &r, n->focused ? (ZCSR_Color){0.10f,0.13f,0.18f,1.0f} : bg_color, layer);
-            if (n->text_buf)
+            if (n->text_buf[0] != '\0')
                 push_text(ui, n->id, &r, n->text_buf, (uint32_t)strlen(n->text_buf), text_col, layer);
             push_border(ui, n->id, &r, 1.0f, n->focused ? (ZCSR_Color){0.30f,0.60f,0.90f,1.0f} : border_col, layer);
             /* Caret: thin vertical line */

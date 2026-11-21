@@ -41,7 +41,8 @@ struct zcsr_surface {
     int   win_x, win_y, win_w, win_h;
     bool  drag_region_enabled;
     int   drag_x, drag_y, drag_w, drag_h;
-    /* WM_CLOSE records a request; the app decides whether to exit. */
+    /* WM_CLOSE 只置位，由应用决定是否真退出（与 X11/Wayland 的 close_requested 对齐）。
+     * 以前这里直接 ShowWindow(SW_HIDE)，应用永远看不到关闭请求，未保存确认被绕过。 */
     bool  close_requested;
 #elif defined(__linux__) && !defined(__ANDROID__)
     /* Wayland objects — stored as void* to keep this header free of
@@ -51,12 +52,15 @@ struct zcsr_surface {
     void* wl_compositor;  /* struct wl_compositor* */
     void* xdg_wm_base;    /* struct xdg_wm_base*   */
     void* wl_seat;        /* struct wl_seat*       */
+    void* wl_output;      /* struct wl_output*     */
     void* wl_surface;     /* struct wl_surface*    */
     void* xdg_surface;    /* struct xdg_surface*   */
     void* xdg_toplevel;   /* struct xdg_toplevel*  */
-    void* wl_keyboard;    /* struct wl_keyboard*   */
-    void* wl_pointer;     /* struct wl_pointer*    */
     int   width, height;
+    int   output_width, output_height;
+    int   output_refresh;
+    int   output_scale;
+    char  output_name[64];
     zcsr_window_mode mode;
     bool  configured;
     bool  close_requested;
@@ -69,10 +73,21 @@ struct zcsr_surface {
     bool          x_mapped;
     bool          x_focused;
     unsigned long x_cursor_blank;         /* 隐藏指针用的 1×1 光标 */
+    unsigned long x_cursor_shape;         /* 当前标准形状光标，切换时释放 */
     int           x_mouse_x, x_mouse_y;   /* 客户区坐标 */
     unsigned int  x_mouse_buttons;        /* 按键掩码   */
     unsigned int  x_buttons_latch;        /* 两次 pump 之间按下的边沿（读一次后清） */
+    unsigned int  x_mouse_mods;           /* 最近一次按键/移动事件的 X modifier mask */
+    int           x_down_x, x_down_y;     /* 左键按下时的 client 坐标 */
+    unsigned int  x_down_mods;            /* 左键按下时的 X modifier mask */
+    bool          x_have_down;            /* 左键当前按住；抬起或失焦时清 */
     int           x_wheel;                /* 累计滚轮刻度 */
+    /* XIM/XIC：X11 的 UTF-8 文本生产者。平台泵负责事件过滤和查找，
+     * inputext 通过 zcsr_platform_x11_take_text 取走字节。 */
+    void*         x_im;                  /* XIM */
+    void*         x_ic;                  /* XIC */
+    char          x_text_buf[256];
+    size_t        x_text_head, x_text_tail;
     /* 按键事件环：平台泵入，input 模块泵出。 */
     struct { unsigned int keycode; int down; } x_keys[64];
     int x_key_head, x_key_tail;
@@ -99,6 +114,7 @@ void           zcsr_surface_update_dpi_scale(zcsr_surface* s, float new_scale);
 void           zcsr_surface_dispatch_focus(zcsr_surface* s, zcsr_focus_event event);
 
 /* Display helpers shared by backends. */
+void                 zcsr_copy_name(char* dst, size_t cap, const char* src);
 void                 zcsr_display_set_name(zcsr_display_info* out, const char* name);
 zcsr_display_info    zcsr_unknown_display(int id);
 

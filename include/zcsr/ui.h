@@ -1,8 +1,9 @@
 #ifndef ZCSR_UI_H
 #define ZCSR_UI_H
 /* ZCSR UI Runtime — top-level instance and node-tree API.
- * Single event queue, single draw list per instance. No heap in public ABI
- * beyond what zcsr_ui_create allocates internally. */
+ * Single event queue, single draw list per instance. Zero-heap: instances come
+ * from a fixed module pool, and node/event/draw storage is fixed inside each
+ * instance. Capacity above the fixed limits is rejected at create time. */
 #include "zcsr/ui_types.h"
 
 #ifdef __cplusplus

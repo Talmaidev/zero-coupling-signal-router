@@ -8,7 +8,8 @@
 #include "zcsr/gl_render.h"
 #include "zcsr/gl_render_l2d_geo.h"
 
-#include <stdlib.h>
+#include <stdbool.h>
+#include <string.h>
 
 struct zcsr_light2d_floor {
     float min_x, max_x;
@@ -16,10 +17,35 @@ struct zcsr_light2d_floor {
     float tint[4];
 };
 
+#define ZCSR_LIGHT2D_FLOOR_POOL_CAPACITY 256
+static zcsr_light2d_floor g_floor_pool[ZCSR_LIGHT2D_FLOOR_POOL_CAPACITY];
+static bool g_floor_pool_used[ZCSR_LIGHT2D_FLOOR_POOL_CAPACITY];
+
+static zcsr_light2d_floor* floor_pool_acquire(void) {
+    size_t i;
+    for (i = 0; i < ZCSR_LIGHT2D_FLOOR_POOL_CAPACITY; ++i) {
+        if (!g_floor_pool_used[i]) {
+            g_floor_pool_used[i] = true;
+            return &g_floor_pool[i];
+        }
+    }
+    return NULL;
+}
+
+static bool floor_pool_contains(const zcsr_light2d_floor* floor) {
+    size_t i;
+    for (i = 0; i < ZCSR_LIGHT2D_FLOOR_POOL_CAPACITY; ++i) {
+        if (floor == &g_floor_pool[i]) return true;
+    }
+    return false;
+}
+
 int zcsr_light2d_floor_create(zcsr_light2d_floor** out_floor) {
+    zcsr_light2d_floor* floor;
     if (!out_floor) return -1;
-    zcsr_light2d_floor* floor = (zcsr_light2d_floor*)calloc(1, sizeof(zcsr_light2d_floor));
+    floor = floor_pool_acquire();
     if (!floor) return -2;
+    memset(floor, 0, sizeof(*floor));
     floor->min_x = -2.0f; floor->max_x = 10.0f;
     floor->min_y = -2.0f; floor->max_y = 2.0f;
     floor->tint[0] = floor->tint[1] = floor->tint[2] = floor->tint[3] = 1.0f;
@@ -28,7 +54,15 @@ int zcsr_light2d_floor_create(zcsr_light2d_floor** out_floor) {
 }
 
 void zcsr_light2d_floor_destroy(zcsr_light2d_floor* floor) {
-    free(floor);
+    size_t i;
+    if (!floor || !floor_pool_contains(floor)) return;
+    for (i = 0; i < ZCSR_LIGHT2D_FLOOR_POOL_CAPACITY; ++i) {
+        if (floor == &g_floor_pool[i]) {
+            g_floor_pool_used[i] = false;
+            memset(floor, 0, sizeof(*floor));
+            return;
+        }
+    }
 }
 
 int zcsr_light2d_floor_set_size(zcsr_light2d_floor* floor,

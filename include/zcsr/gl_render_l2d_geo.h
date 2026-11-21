@@ -21,9 +21,10 @@
  *                planar. Each is a real (x,y,z); vertical faces keep their
  *                per-pixel world z via interpolation.
  *   albedo_rgba  surface color in the SAME display (gamma) encoding as the
- *                texels: written straight to attachment 0 (RGBA8) and
- *                linearized once by the deferred composite's pow(2.2).
- *                NOT a linear-space value; >1 is clamped by RGBA8.
+ *                texels: written straight to attachment 0 (G0), which is
+ *                GL_SRGB8_ALPHA8; the hardware decode happens once when the
+ *                deferred composite samples G0. NOT a linear-space value;
+ *                >1 is clamped by RGBA8.
  *   normal_xyz   unit world normal of the whole face. v1 supports the
  *                axis-aligned classes the light shader decodes: up faces
  *                (0,0,1) and in-plane wall normals; other directions lose
@@ -72,17 +73,19 @@ bool zcsr_gl_l2d_geo_face(zcsr_gl_renderer* renderer,
  *                  matches the sprite pipeline: (u0,v0) = image TOP-LEFT of
  *                  the requested sub-rectangle, v grows toward the image
  *                  bottom; corner 0 of the quad receives (u0,v0).
- *   tint_rgba      display-gamma tint multiplied with the sampled texel in
+ *   tint_rgba      display-domain tint multiplied with the sampled texel in
  *                  the SAME non-linear space; the product is written to
- *                  attachment 0 (RGBA8) and linearized once by the
- *                  composite pow(2.2). >1 is clamped by RGBA8.
+ *                  attachment 0 (G0). G0 is GL_SRGB8_ALPHA8, so sampling it
+ *                  performs the one hardware sRGB->linear decode.
  *   normal_xyz     face world normal (same axis-aligned classes as flat).
  *   emissive_rgba  linear HDR self-emission (NOT textured in v1; albedo-tinted
  *                  at composite time, not independently additive).
- * COLOR/ALPHA CONTRACT: textures are stored as plain GL_RGBA (no GPU sRGB
- * decode); the deferred composite's pow(2.2) is the single linearization
- * step, so the sampled texel is written to attachment 0 exactly like the
- * flat path — no double decode. ALPHA-CUTOUT v1 (explicit rule, not general
+ * COLOR/ALPHA CONTRACT: source textures are stored as plain GL_RGBA carrying
+ * display-encoded texels (no per-texture GPU sRGB decode). They are written
+ * into G0 exactly like the flat path; G0's SRGB8_ALPHA8 format performs the
+ * single decode when the deferred composite samples it. The composite output
+ * is encoded through zcsr_color_pipeline's LUT, not a hard-coded pow formula.
+ * ALPHA-CUTOUT v1 (explicit rule, not general
  * blending): a pixel whose sampled-alpha x tint-alpha is < 0.5 is DISCARDED
  * — it writes nothing, so the G-buffer surface submitted BENEATH it (earlier
  * in painter order) stays intact. No partial transparency, no sorting.

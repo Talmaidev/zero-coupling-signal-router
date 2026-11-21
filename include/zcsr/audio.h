@@ -12,6 +12,12 @@
 
 typedef struct zcsr_audio zcsr_audio; /* opaque; owns the background thread */
 
+/* Capability probe: true only where this legacy single-stream API has a real
+ * OS playback backend (Win32 PlaySound / macOS NSSound). Linux and Android
+ * return false because the engine provides output through zcsr/audio_mix.h
+ * (PipeWire / AAudio) instead. This is a query, not a required setup call. */
+bool        zcsr_audio_playback_available(void);
+
 zcsr_audio* zcsr_audio_start(void);          /* spawns the dedicated audio thread */
 void        zcsr_audio_stop(zcsr_audio*);    /* stops playback + joins the thread */
 /* Register a WAV file under an id so signals can reference it by id (no path in the signal). */

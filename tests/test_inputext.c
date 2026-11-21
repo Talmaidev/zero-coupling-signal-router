@@ -33,6 +33,25 @@ int main(void) {
         return 1;
     }
 
+    /* Event-driven backends can deliver down+up between two pumps. The merge
+     * step must preserve both edges for one frame; otherwise a fast click is
+     * silently lost. */
+    {
+        zcsr_mouse_state edge = { 0 };
+        zcsr_mouse_state_merge_event_edges(&edge, ZCSR_MOUSE_LEFT, 0);
+        if (edge.pressed != ZCSR_MOUSE_LEFT || edge.released != 0) {
+            printf("FAIL: press edge merge\n");
+            zcsr_input_ext_shutdown(in);
+            return 1;
+        }
+        zcsr_mouse_state_merge_event_edges(&edge, 0, ZCSR_MOUSE_LEFT);
+        if (edge.released != ZCSR_MOUSE_LEFT) {
+            printf("FAIL: release edge merge\n");
+            zcsr_input_ext_shutdown(in);
+            return 1;
+        }
+    }
+
     zcsr_input_ext_shutdown(in);
     printf("PASS: inputext logic\n");
     return 0;
