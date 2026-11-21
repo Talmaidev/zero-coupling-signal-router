@@ -88,7 +88,7 @@
 
 | 附件 | 格式 | 生产者 | 消费者 | 备注 |
 |---|---|---|---|---|
-| 0 Albedo | RGBA8 | geo 两 FS | 合成 FS（pow2.2 线性化→乘光照） | 全链路唯一线性化点 |
+| 0 Albedo | `GL_SRGB8_ALPHA8` | geo 两 FS | 合成 FS（采样时硬件 sRGB 解码→乘光照） | 采样时唯一解码，合成无手动 pow2.2 |
 | 1 Position | RGBA16F | geo FS（世界 varying） | light FS（距离/射线） | 清屏远哨兵=空气 |
 | 2 Normal | RGBA8 | geo FS（n*0.5+0.5） | light FS（**只读 xy**） | **D2：z 写而不读** |
 | 3 Emissive | RGBA16F | geo FS（uniform） | 合成 FS（直加入受光项） | v1 非纹理 |
@@ -115,7 +115,7 @@ discard 的附件一致性：cutout 在 FS 最前，四附件同生同灭，无�
 - 消费链：light FS 采样 G-buffer Position(5)/Normal(6)/Shadow(8)；
   多光 BLEND ADD 累积进光缓冲（RGBA16F，25/50/100% 缩放）；无数量上限
   （数组上限已移除，draw-call 计数）；无排序问题（加法交换）。
-- 环境光 0.03 与 pow2.2/x/(x+1) tonemap/^(1/2.2) 都在合成 FS——
+- 环境光 0.03、`x/(x+1)` tonemap 与 `linear_to_sRGB()` 都在合成 FS；G0 的 sRGB 解码由采样硬件完成——
   Math Model §6.5 记录实际顺序。
 
 ## 7. 管线 G：射线阴影与遮挡体
@@ -152,8 +152,8 @@ gbuffer/lightbuf/shadow 各自 FBO 切换都经 begin/end 配对或显式重绑�
 采样前重绑 G-buffer（end_lighting 的 state_pop 会清 4-8 单元）。
 LOW 档：无 G-buffer，加法光斑直接叠在宿主画面上（调试级）。
 bloom：合成变体（9-tap 亮度门控），options.bloom 切换，运行验证过
-（B 键）。gamma/tonemap：合成 FS 内 pow2.2 → x/(x+1) → ^(1/2.2)，
-无独立后处理 pass。
+（B 键）。颜色处理：G0 采样时硬件 sRGB 解码 → `lit/(lit+1)` tonemap →
+`linear_to_sRGB()` 输出；无手动 pow2.2，无独立后处理 pass。
 
 ## 9. 管线 I：资源生命周期与 GL 状态
 
@@ -219,12 +219,12 @@ flowchart LR
     GEO[geo_begin/face/tex_face/end] -->|世界角点+法线+材质| GB
     L2D[light2d begin_geometry] --> GB
   end
-  GB[G-buffer MRT: Albedo RGBA8 / Position RGBA16F 世界 / Normal RGBA8 / Emissive RGBA16F]
+  GB[G-buffer MRT: Albedo SRGB8_ALPHA8 / Position RGBA16F 世界 / Normal RGBA8 / Emissive RGBA16F]
   OCC[遮挡体 footprint+H] --> SH[阴影: 点光=FS slab射线 / 平行光+属性=2D掩码挤出]
   LIGHTS[zcsr_light 3D点光/平行光] --> LB[光累积 RGBA16F ADD]
   GB --> LB
   SH --> LB
-  LB --> COMP[合成: bind_default_target → albedo^2.2×(emissive+light+0.03) → x/(x+1) → ^(1/2.2)]
+  LB --> COMP[合成: bind_default_target → sample G0 硬件sRGB解码 → albedo×(emissive+light+0.03) → x/(x+1) → linear_to_sRGB]
   COMP --> WIN[默认窗口目标 → 宿主 HUD]
 ```
 

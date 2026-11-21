@@ -36,23 +36,27 @@
 
 ## 1. 颜色空间与材质语义
 
-- [FROZEN] 纹理以普通 `GL_RGBA` 内部格式上传，GPU 不做 sRGB 解码。
-  证据：`glrender_core.c:313`、`:330`（`glTexImage2D(..., GL_RGBA, ..., GL_UNSIGNED_BYTE, rgba)`）。
-- [FROZEN] Light2D 路径 B 的 Albedo 线性化点 = 合成 FS 内 `pow(albedo, vec3(2.2))`，deferred 与 bloom
-  两个变体同一处。**本规则只描述 Light2D 的 G-buffer 合成路径，不适用于路径 A 的立即 Sprite/UI**——
-  路径 A 直写默认目标，不做这个 pow。禁止在 Light2D geo 纹理路径再解一次 sRGB。
-  证据：`glrender_light2d_ext.c:126`（deferred）、`:176`（bloom）；契约原文 `gl_render_l2d_geo.h:82-85`。
-- [FROZEN] Light2D 路径 B 的输出编码 = 同一合成 FS 内 `pow(mapped, 1/2.2)`，tonemap `x/(x+1)` 也在同一 FS，
-  无独立后处理 pass。**该输出编码规则不代表路径 A 有相同的颜色转换流程**。
-  证据：`glrender_light2d_ext.c:128-129`、`:179-180`。
-- [FROZEN] tint 与平色 albedo_rgba 实际在**显示域(gamma)**与纹理想素逐通道相乘，乘积直写 RGBA8 G0，
-  合成时才整体 pow2.2——不是线性空间乘子。v1.1 已裁决旧头文件"linear"标注为错误描述。
-  证据：FS `vec4 rgba = texture(u_tex, v_uv) * u_tint;`（`glrender_l2d_geo.c:91`）；
-  公开契约 `gl_render_l2d_geo.h:23-26`（平色）、`:75-78`（tint）。
-- [FROZEN] tint/albedo 乘积 >1 被 RGBA8 截断到 1.0，G0 路径不承载 HDR。
-  证据：G0 = RGBA8（`glrender_light2d_ext.c:724`）；头文件明说 `>1 is clamped by RGBA8`（`gl_render_l2d_geo.h:26`）。
+- [FROZEN] 纹理输入以普通 `GL_RGBA` 内部格式上传，GPU 采样时不做 sRGB 解码。
+  证据：`glrender_core.c` 的 `glTexImage2D(..., GL_RGBA, ..., GL_UNSIGNED_BYTE, rgba)`。
+- [FROZEN] Light2D 路径 B 的 G0 Albedo 内部格式 = `GL_SRGB8_ALPHA8`。
+  Light2D 目标写入时显式 `glDisable(GL_FRAMEBUFFER_SRGB)`，geo FS 写入显示域数值；
+  合成 FS 采样 G0 时由硬件 sRGB 解码一次得到 `albedo_lin`。
+  **合成 FS 不执行手动 `pow(albedo, 2.2)`。** 本规则只描述 Light2D 的 G-buffer
+  合成路径，不适用于路径 A 的立即 Sprite/UI。证据：`glrender_light2d_ext.c`
+  的 `glDisable(GL_FRAMEBUFFER_SRGB)`、G0 格式选择和 deferred/bloom shader。
+- [FROZEN] Light2D 路径 B 的输出编码 = 同一合成 FS 内 `linear_to_sRGB(mapped)`，
+  tonemap `x/(x+1)` 也在同一 FS，无独立后处理 pass。**该输出编码规则不代表路径 A
+  有相同的颜色转换流程。**
+- [FROZEN] tint 与平色 albedo_rgba 实际在**显示域(gamma)**与纹理想素逐通道相乘，
+  乘积写入 sRGB G0；采样时整体解码。**这不是线性空间乘子**。v1 已裁决旧头文件
+  "linear" 标注为错误描述；真正线性 tint 需要单独的纹理/光照/输出 sRGB 工作流。
+  证据：FS `vec4 rgba = texture(u_tex, v_uv) * u_tint;`（`glrender_l2d_geo.c`）；
+  公开契约 `gl_render_l2d_geo.h` 的 albedo/tint 注释。
+- [FROZEN] tint/albedo 乘积 >1 被 8-bit G0 截断到 1.0，G0 路径不承载 HDR。
+  证据：G0 = `GL_SRGB8_ALPHA8`（`glrender_light2d_ext.c` 格式分支）；
+  头文件说明 `>1 is clamped by RGBA8`。
 - [FROZEN] HDR>1 只在 RGBA16F 附件上保留：G3 Emissive、光累积缓冲。
-  证据：`glrender_light2d_ext.c:726`（G1/G3 用 RGBA16F）、`:1141`（光缓冲 RGBA16F）。
+  证据：`glrender_light2d_ext.c` 的 G1/G3 与光缓冲格式。
 - [CURRENT-LIMITED] `zcsr_light.rgb` 注释声明为 linear light 颜色，`a` 为逐光强度，允许 >1。
   证据：`include/zcsr/light2d.h:39-42`。限制：进入光缓冲后仍走同一合成公式，
   不提供逐光 gamma 校正。
@@ -213,13 +217,16 @@
 - [CONTRACT] “0 堆”范围：引擎 renderer 状态、实例/顶点批、arena 都在调用方提供的固定缓冲区；
   `zcsr_arena_alloc_count` 只统计引擎 arena 的成功分配，不统计 libc malloc、GL 驱动或操作系统内部分配。
   需要严格拆 CPU/GPU 时用 `zcsr_gl_gpu_timer_begin/end/last_ms`（桌面 GL 3.3；Android 返回 false）。
-- [FROZEN] Light2D 路径 B 的颜色图处理：G0 Albedo 在合成阶段由 `pow(albedo, vec3(2.2))` 手动线性化。
-  路径 A 的立即 Sprite/UI 不经过 Light2D 合成，**不得把这条颜色空间契约推广到路径 A**。
-  上传入口当前不区分颜色图与数据图（`gl_render.h:36` 签名只有 rgba/w/h，无 internalformat 参数）；
-  法线/粗糙度/遮罩等数据图不属于现有 Light2D 材质能力。证据：`glrender_light2d_ext.c:126`。
+- [FROZEN] Light2D 路径 B 的颜色图处理：G0 Albedo 为 `GL_SRGB8_ALPHA8`，
+  `GL_FRAMEBUFFER_SRGB` 关闭，geo FS 写入显示域数值，合成采样时硬件 sRGB 解码一次。
+  **合成阶段不再手动 `pow(albedo, 2.2)`。** 路径 A 的立即 Sprite/UI 不经过 Light2D
+  合成，**不得把这条颜色空间契约推广到路径 A**。
+  上传入口当前不区分颜色图与数据图（`gl_render.h` 签名只有 rgba/w/h，无 internalformat
+  参数）；法线/粗糙度/遮罩等数据图不属于现有 Light2D 材质能力。
+  证据：`glrender_light2d_ext.c` 的 `glDisable(GL_FRAMEBUFFER_SRGB)`、G0 格式和 shader。
 - [FROZEN] G-buffer 附件格式表：
-  - G0 Albedo = RGBA8（`glrender_light2d_ext.c:724`）
-  - G1 Position = RGBA16F（`:726`）
+  - G0 Albedo = `GL_SRGB8_ALPHA8`
+  - G1 Position = RGBA16F
   - G2 Normal = RGBA8（`:724`）
   - G3 Emissive = RGBA16F（`:726`）
   枚举同步在 `gl_render_light2d_ext.h:22-25`。
@@ -339,7 +346,7 @@
 
 1. 共享 `zcsr_camera`（center/ppu/height_shear），世界系 X 东 Y 南 Z 上、地面 z=0。
 2. 平色凸四边形（`geo_face`）+ 纹理凸四边形（`geo_tex_face`）进 G-buffer，轴对齐法线。
-3. 颜色语义：tint 显示域乘、Albedo sRGB 内容、合成唯一 pow2.2；alpha-cutout <0.5。
+3. 颜色语义：tint 显示域乘、G0 `GL_SRGB8_ALPHA8` 采样解码、合成无手动 pow2.2；alpha-cutout <0.5。
 4. 点光（高度/半径/decay/逐光强度）+ ray 阴影（间接 GPU 证据，非同像素因果）。
 5. Painter's order：宿主按 q 键远到近提交，不穿插。
 6. 固定渲染目标 1280×720 已验证；动态 resize 不做保证。
@@ -435,13 +442,13 @@ UNKNOWN 两项（负 scale 镜像、像素对齐）源码无证据，未猜。
 
 1. 世界系 + 唯一投影公式：X 东/Y 南/Z 上、`zcsr_camera` 活指针、PPU、height_shear、
    viewport 取 GL viewport。证据：§2。
-2. G-buffer 四附件布局：G0 RGBA8 显示域 / G1 RGBA16F 世界XYZ / G2 RGBA8 编码法线 /
+2. G-buffer 四附件布局：G0 `GL_SRGB8_ALPHA8` 显示域输入 / G1 RGBA16F 世界XYZ / G2 RGBA8 编码法线 /
    G3 RGBA16F emissive + 清屏值。证据：§7。
 3. 帧序与 GL 状态配对：begin_geometry→geo→begin_lighting→add_light→end_lighting→HUD；
    geo begin/end 精确保存恢复。证据：§9。
 4. 路径 A/B 边界：路径 A 屏幕像素 straight-alpha 不受光；路径 B 世界几何进 G-buffer 受光；
    不自动互通。证据：§0、§8。
-5. 路径 B 颜色语义：Albedo 唯一线性化点在合成 FS pow(2.2)；Emissive 当前被 albedo 调制。
+5. 路径 B 颜色语义：G0 `GL_SRGB8_ALPHA8` 采样时硬件解码；合成无手动 pow2.2；Emissive 当前被 albedo 调制。
    **本条只约束路径 B，不推广到路径 A**。证据：§1。
 
 ### 14.3 MODULE-CFG 现有旋钮（游戏可调，值来自现有 API）

@@ -1,7 +1,7 @@
 #ifndef ZCSR_COLLISION_H
 #define ZCSR_COLLISION_H
 /* zcsr_collision — AABB collision. Pure functions, no state, no heap.
- * Implementer: modules/collision. */
+ * Module: modules/collision. */
 #include <stdbool.h>
 
 typedef struct { float x, y, w, h; } zcsr_aabb; /* x,y = top-left; w,h = size */

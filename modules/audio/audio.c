@@ -1,4 +1,4 @@
-/* Agent 2 (Game Core) — Audio: WAV command thread; signals-only (PLAY/STOP).
+/* Audio: WAV command thread; signals-only (PLAY/STOP).
  * Includes ONLY shared contracts from the project. Platform/thread headers are local backend
  * details, and no cross-module includes are used. */
 #include "zcsr/audio.h"

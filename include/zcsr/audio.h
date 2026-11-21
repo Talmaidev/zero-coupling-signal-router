@@ -1,8 +1,8 @@
 #ifndef ZCSR_AUDIO_H
 #define ZCSR_AUDIO_H
-/* Agent 2 (Game Core) — WAV audio player. Runs in ONE dedicated background thread.
+/* WAV audio player. Runs in ONE dedicated background thread.
  * Communicates ONLY via signals: "PLAY_SOUND" / "STOP_SOUND" (payload = registered sound id).
- * Implementer: modules/audio. Wires into the zcsr/signal.h router. */
+ * Module: modules/audio. Wires into the zcsr/signal.h router. */
 #include "signal.h"
 #include <stdbool.h>
 

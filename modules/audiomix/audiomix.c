@@ -1,4 +1,4 @@
-/* Engine-ext Agent 2 - multi-channel audio mixer.
+/* multi-channel audio mixer.
  * Fixed pools only, one mixer thread, command/finished rings, no cross-module includes.
  * Linux attempts ALSA dynamically (no CMake find_package); if no device exists, the mixer
  * still runs its logic path so headless CI can validate threading/state.

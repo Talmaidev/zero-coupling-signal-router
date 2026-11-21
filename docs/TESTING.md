@@ -19,7 +19,7 @@ Keeping them apart means the correctness suite stays fast, deterministic and CI-
 ## tests/ — unit & contract suite (`ctest`)
 
 The engine repository now has its own CTest entry points via the top-level
-`enable_testing()` and `tests/CMakeLists.txt`. The current suite has 21 tests,
+`enable_testing()` and `tests/CMakeLists.txt`. The current suite has 23 tests,
 covering core, signal, hsm, platform, glrender, light2d, audio, music, input,
 collision, save, ui and viewport, plus the cross-module checks.
 
@@ -41,20 +41,25 @@ ctest --test-dir build -R glrender         # one module by name
 ctest --test-dir build -R state            # state sort
 ```
 
-### Linux (Wayland + PipeWire, default)
+### Linux (X11/GLX or Wayland/EGL; auto prefers X11)
 
 ```sh
 cmake -S . -B build -G Ninja -DZCSR_ENABLE_BOX2D=OFF
 cmake --build build
 
-# Headless-safe tests run without a compositor:
+# Headless-safe tests run without a display server:
 ctest --test-dir build
 
-# platform_api test needs a Wayland compositor (weston/cage):
-WAYLAND_DISPLAY=wayland-0 ctest --test-dir build
+# platform_api test needs a display server:
+DISPLAY=:0 ctest --test-dir build                    # X11/GLX backend
+WAYLAND_DISPLAY=wayland-0 ctest --test-dir build     # Wayland/EGL backend
 ```
 
-Linux defaults to Wayland windowing + PipeWire audio. X11/ALSA/GLX backends were removed in v1.0 — there is no `ZCSR_LINUX_BACKEND` or `ZCSR_AUDIO_BACKEND` option anymore.
+Linux window backend selection is `ZCSR_LINUX_WINDOW_BACKEND=auto|x11|wayland|none`.
+`auto` prefers X11 when both X11/GLX and Wayland/EGL are available, then Wayland,
+otherwise headless. Audio uses `ZCSR_AUDIO_BACKEND=auto|pipewire|alsa|none`;
+`auto` prefers PipeWire, then ALSA. The old claim that X11/ALSA/GLX were removed is
+incorrect and is superseded by this section.
 
 ### Android
 

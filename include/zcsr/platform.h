@@ -2,9 +2,9 @@
 #define ZCSR_PLATFORM_H
 #include <stdbool.h>
 #include <stddef.h>
-/* Agent 5 — Platform abstraction. Win32 / X11 / Cocoa / Android, auto-selected at compile time.
+/* Platform abstraction. Win32 / X11 / Cocoa / Android, auto-selected at compile time.
  * NO OpenGL/DirectX/Vulkan. Exactly one backend is selected by the gates below.
- * Implementer: modules/platform. */
+ * Module: modules/platform. */
 
 typedef enum {
     ZCSR_PLATFORM_UNKNOWN = 0,

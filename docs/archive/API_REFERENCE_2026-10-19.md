@@ -1,5 +1,9 @@
 # ZCSR API Reference
 
+> Historical API snapshot (2026-10-19). Retained for API evolution and rationale.
+> Header/module/test counts and module names below are from that date; current
+> contracts are indexed in `docs/API_REFERENCE.md`. This file is not the current API.
+
 Generated from the contract headers in `include/zcsr/` (the single source of truth).
 Every module includes only these contract headers, never another module's source. Each
 `zcsr_foo` is an **opaque handle** + C prototypes = the stable ABI. Regenerate after contract changes.
@@ -17,7 +21,7 @@ Zero-Coupling Signal Router — shared value type (shared data primitive). ONLY 
 
 ### `zcsr/arena.h`
 
-Module — stack-only memory manager (no runtime/heap allocation). Implementer: modules/core. CONTRACT ONLY (opaque handle). Modules include this header, never another module's source.
+Module — stack-only memory manager (no runtime/heap allocation). Module: modules/core. CONTRACT ONLY (opaque handle). Modules include this header, never another module's source.
 
 | Function | Notes |
 |---|---|
@@ -30,7 +34,7 @@ Module — stack-only memory manager (no runtime/heap allocation). Implementer: 
 
 ### `zcsr/state_buffer.h`
 
-Module — read-only game state buffer (string/int/bool). Implementer: modules/core. Reads take `const zcsr_state*`; only the privileged writer mutates. No heap growth.
+Module — read-only game state buffer (string/int/bool). Module: modules/core. Reads take `const zcsr_state*`; only the privileged writer mutates. No heap growth.
 
 | Function | Notes |
 |---|---|
@@ -41,7 +45,7 @@ Module — read-only game state buffer (string/int/bool). Implementer: modules/c
 
 ### `zcsr/signal.h`
 
-Module — compile-time signal/slot. No heap, no dynamic registry. Implementer: modules/signal. Spec signatures: `void signal(string)` / `bool slot(string)`. In C, "compile-time / zero runtime overhead" means: connections live in a `static const` table built at compile time (ideally via an X-macro), and dispatch is a fixed walk over that table — no malloc, no runtime registration.
+Module — compile-time signal/slot. No heap, no dynamic registry. Module: modules/signal. Spec signatures: `void signal(string)` / `bool slot(string)`. In C, "compile-time / zero runtime overhead" means: connections live in a `static const` table built at compile time (ideally via an X-macro), and dispatch is a fixed walk over that table — no malloc, no runtime registration.
 
 | Function | Notes |
 |---|---|
@@ -49,7 +53,7 @@ Module — compile-time signal/slot. No heap, no dynamic registry. Implementer: 
 
 ### `zcsr/hsm.h`
 
-Module — Hierarchical State Machine. No global state, no heap. Transitions via signals only. Persists current state to the Core state buffer (key "hsm.state"). Implementer: modules/hsm. Config is caller-owned const tables (compile-time, zero-coupling): states form a tree via `parent` names; a transition fires when the current state — or any ANCESTOR of it — has a matching (from, signal) entry.
+Module — Hierarchical State Machine. No global state, no heap. Transitions via signals only. Persists current state to the Core state buffer (key "hsm.state"). Module: modules/hsm. Config is caller-owned const tables (compile-time, zero-coupling): states form a tree via `parent` names; a transition fires when the current state — or any ANCESTOR of it — has a matching (from, signal) entry.
 
 | Function | Notes |
 |---|---|
@@ -60,7 +64,7 @@ Module — Hierarchical State Machine. No global state, no heap. Transitions via
 
 ### `zcsr/platform.h`
 
-Module — Platform abstraction. Win32 / Wayland / Cocoa, auto-selected at compile time. NO OpenGL/DirectX/Vulkan. Exactly one backend is selected by the compile-time gates. Implementer: modules/platform (split per-backend: platform_common.c, platform_win32.c, platform_wayland.c, platform_android.c, platform_cocoa.m).
+Module — Platform abstraction. Win32 / Wayland / Cocoa, auto-selected at compile time. NO OpenGL/DirectX/Vulkan. Exactly one backend is selected by the compile-time gates. Module: modules/platform (split per-backend: platform_common.c, platform_win32.c, platform_wayland.c, platform_android.c, platform_cocoa.m).
 
 | Function | Notes |
 |---|---|
@@ -72,7 +76,7 @@ Module — Platform abstraction. Win32 / Wayland / Cocoa, auto-selected at compi
 
 ### `zcsr/overlay.h`
 
-Module — Native overlay window. Borderless, transparent, always-on-top. Renders ONLY: text, one bitmap image, up to 3 buttons. GDI/Cocoa (Linux/Wayland stub in v1). Target <1ms/frame. Implementer: modules/overlay.
+Module — Native overlay window. Borderless, transparent, always-on-top. Renders ONLY: text, one bitmap image, up to 3 buttons. GDI/Cocoa (Linux/Wayland stub in v1). Target <1ms/frame. Module: modules/overlay.
 
 | Function | Notes |
 |---|---|
@@ -89,7 +93,7 @@ Module — Native overlay window. Borderless, transparent, always-on-top. Render
 
 ### `zcsr/clock.h`
 
-Module — high-precision clock + fixed-step frame pacing (~60 FPS). Implementer: modules/input. No heap (timer placed in caller buffer).
+Module — high-precision clock + fixed-step frame pacing (~60 FPS). Module: modules/input. No heap (timer placed in caller buffer).
 
 | Function | Notes |
 |---|---|
@@ -100,7 +104,7 @@ Module — high-precision clock + fixed-step frame pacing (~60 FPS). Implementer
 
 ### `zcsr/input.h`
 
-Module — keyboard input (key down / key up). Implementer: modules/input. Events are buffered in a fixed ring (no heap). Pumped from the platform window.
+Module — keyboard input (key down / key up). Module: modules/input. Events are buffered in a fixed ring (no heap). Pumped from the platform window.
 
 | Function | Notes |
 |---|---|
@@ -111,7 +115,7 @@ Module — keyboard input (key down / key up). Implementer: modules/input. Event
 
 ### `zcsr/audio.h`
 
-Module — WAV audio player. Runs in ONE dedicated background thread. Communicates ONLY via signals: "PLAY_SOUND" / "STOP_SOUND" (payload = registered sound id). Implementer: modules/audio. Wires into the zcsr/signal.h router.
+Module — WAV audio player. Runs in ONE dedicated background thread. Communicates ONLY via signals: "PLAY_SOUND" / "STOP_SOUND" (payload = registered sound id). Module: modules/audio. Wires into the zcsr/signal.h router.
 
 | Function | Notes |
 |---|---|
@@ -123,7 +127,7 @@ Module — WAV audio player. Runs in ONE dedicated background thread. Communicat
 
 ### `zcsr/sprite.h`
 
-Module — batch sprite renderer. Submit many sprites, draw them in one flush. Target: render n*10000 (n>0) sprites within the frame budget; bench gate = 200 sprites <1ms. Implementer: modules/render. Draws onto the platform surface.
+Module — batch sprite renderer. Submit many sprites, draw them in one flush. Target: render n*10000 (n>0) sprites within the frame budget; bench gate = 200 sprites <1ms. Module: modules/render. Draws onto the platform surface.
 
 | Function | Notes |
 |---|---|
@@ -134,7 +138,7 @@ Module — batch sprite renderer. Submit many sprites, draw them in one flush. T
 
 ### `zcsr/texture.h`
 
-Module — PNG loading (stb_image, single-header) + resource cache (dedupe). Implementer: modules/render. Cache lives in a caller buffer; stb_image is configured to allocate from that buffer (STBI_MALLOC), so no global heap growth.
+Module — PNG loading (stb_image, single-header) + resource cache (dedupe). Module: modules/render. Cache lives in a caller buffer; stb_image is configured to allocate from that buffer (STBI_MALLOC), so no global heap growth.
 
 | Function | Notes |
 |---|---|
@@ -143,7 +147,7 @@ Module — PNG loading (stb_image, single-header) + resource cache (dedupe). Imp
 
 ### `zcsr/texture_atlas.h`
 
-Engine-ext — texture atlas shelf-packing + UV region table. Pure logic, no GL. Implementer: modules/atlas. The caller owns all memory: the region table and any packing scratch.
+Engine-ext — texture atlas shelf-packing + UV region table. Pure logic, no GL. Module: modules/atlas. The caller owns all memory: the region table and any packing scratch.
 
 | Function | Notes |
 |---|---|
@@ -153,7 +157,7 @@ Engine-ext — texture atlas shelf-packing + UV region table. Pure logic, no GL.
 
 ### `zcsr/collision.h`
 
-Module — AABB collision. Pure functions, no state, no heap. Implementer: modules/gamelogic.
+Module — AABB collision. Pure functions, no state, no heap. Module: modules/gamelogic.
 
 | Function | Notes |
 |---|---|
@@ -162,13 +166,13 @@ Module — AABB collision. Pure functions, no state, no heap. Implementer: modul
 
 ### `zcsr/save.h`
 
-Module — binary save/load of game state. No heap, no file I/O in the contract (caller persists the bytes). Writes a small header (magic + version + length + checksum) so loads can be validated. Implementer: modules/gamelogic.
+Module — binary save/load of game state. No heap, no file I/O in the contract (caller persists the bytes). Writes a small header (magic + version + length + checksum) so loads can be validated. Module: modules/gamelogic.
 
 *(types/enums only — see header)*
 
 ### `zcsr/window_event.h`
 
-Module — window-level events (close request) + clean shutdown. Ties to the platform surface. Implementer: modules/input (or platform).
+Module — window-level events (close request) + clean shutdown. Ties to the platform surface. Module: modules/input (or platform).
 
 | Function | Notes |
 |---|---|
@@ -179,7 +183,7 @@ Module — window-level events (close request) + clean shutdown. Ties to the pla
 
 ### `zcsr/gl_render.h`
 
-Module — GPU rendering (OpenGL 3.3 Core). OPTIONAL renderer, beside the existing software/overlay path (which stays unchanged). Implementer: modules/glrender (vendors glad; glad used ONLY inside that module). Includes only shared contracts. No runtime heap: renderer state lives in a caller buffer; GPU memory is the driver's.
+Module — GPU rendering (OpenGL 3.3 Core). OPTIONAL renderer, beside the existing software/overlay path (which stays unchanged). Module: modules/glrender (vendors glad; glad used ONLY inside that module). Includes only shared contracts. No runtime heap: renderer state lives in a caller buffer; GPU memory is the driver's.
 
 **Legacy sprite path (per-sprite vertex batch):**
 
@@ -206,7 +210,7 @@ Module — GPU rendering (OpenGL 3.3 Core). OPTIONAL renderer, beside the existi
 |---|---|
 | `void zcsr_gl_submit_atlas_batch(zcsr_gl_renderer*, const zcsr_gl_atlas_sprite* sprites, size_t count)` | all sprites sharing one atlas coalesce into one glDrawArrays |
 
-**Instanced sprite path (Phase 3):**
+**Instanced sprite path:**
 
 `zcsr_gl_instance` struct = 72 bytes; the last 12 bytes (tex, z, has_alpha + 3 bytes tail padding) are CPU-only metadata for sort, not read by the shader. GPU attrs occupy the first 60 bytes.
 
@@ -239,7 +243,7 @@ Opaque instances (a >= 1 and mode not MIX/ADD) are sorted by tex for batching. T
 
 ### `zcsr/culling.h`
 
-Engine-ext — viewport culling for 2D AABBs. Pure logic, no GL, no heap. Implementer: modules/culling. The caller owns all memory: the box array, the grid scratch, and the output index list.
+Engine-ext — viewport culling for 2D AABBs. Pure logic, no GL, no heap. Module: modules/culling. The caller owns all memory: the box array, the grid scratch, and the output index list.
 
 Two strategies:
 - **linear**: test every box against the view (O(n), cache-friendly).
@@ -255,7 +259,7 @@ Two strategies:
 
 ### `zcsr/audio_mix.h`
 
-Module — multi-channel WAV mixer. NEW module; COEXISTS with the single-stream zcsr/audio.h (does not change/break it). 16 software channels, one dedicated audio thread, lock-free ring buffer. Backend: Win WASAPI / Linux ALSA / macOS AudioUnit. Implementer: modules/audiomix. Signals-friendly: audio_play / audio_finished. No runtime heap (fixed pools).
+Module — multi-channel WAV mixer. NEW module; COEXISTS with the single-stream zcsr/audio.h (does not change/break it). 16 software channels, one dedicated audio thread, lock-free ring buffer. Backend: Win WASAPI / Linux ALSA / macOS AudioUnit. Module: modules/audiomix. Signals-friendly: audio_play / audio_finished. No runtime heap (fixed pools).
 
 | Function | Notes |
 |---|---|
@@ -270,7 +274,7 @@ Module — multi-channel WAV mixer. NEW module; COEXISTS with the single-stream 
 
 ### `zcsr/input_ext.h`
 
-Module — mouse + gamepad input. ADDITIVE to zcsr/input.h (keyboard there is unchanged). Implementer: modules/inputext. Pumped from the platform surface once per frame. Backend: Win XInput+GetAsyncKeyState+window subclass (WM_MOUSEWHEEL) / Linux X11+evdev / macOS IOKit HID + GameController. No runtime heap: state lives in a caller buffer.
+Module — mouse + gamepad input. ADDITIVE to zcsr/input.h (keyboard there is unchanged). Module: modules/inputext. Pumped from the platform surface once per frame. Backend: Win XInput+GetAsyncKeyState+window subclass (WM_MOUSEWHEEL) / Linux X11+evdev / macOS IOKit HID + GameController. No runtime heap: state lives in a caller buffer.
 
 | Function | Notes |
 |---|---|
@@ -282,7 +286,7 @@ Module — mouse + gamepad input. ADDITIVE to zcsr/input.h (keyboard there is un
 
 ### `zcsr/image.h`
 
-Module — image loading, decoding, and offline CPU processing to 8-bit RGBA (RGBA32). SEPARATED from rendering (per project decision): this module ONLY produces pixel buffers. The GPU path (glrender) and the software path (render) CONSUME the RGBA32 it produces through their existing texture-create entry points. `image` never includes a renderer; renderers never include `image`. Implementer: modules/image (vendors stb_image, used ONLY here for multi-format decode). No runtime heap: decode and all processing write into a CALLER-PROVIDED buffer; stb_image is configured (STBI_MALLOC) to bump-allocate from that buffer.
+Module — image loading, decoding, and offline CPU processing to 8-bit RGBA (RGBA32). SEPARATED from rendering (per project decision): this module ONLY produces pixel buffers. The GPU path (glrender) and the software path (render) CONSUME the RGBA32 it produces through their existing texture-create entry points. `image` never includes a renderer; renderers never include `image`. Module: modules/image (vendors stb_image, used ONLY here for multi-format decode). No runtime heap: decode and all processing write into a CALLER-PROVIDED buffer; stb_image is configured (STBI_MALLOC) to bump-allocate from that buffer.
 
 | Function | Notes |
 |---|---|

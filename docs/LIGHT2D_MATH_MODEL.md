@@ -38,7 +38,7 @@ s_y = H/2 + ((y − c_y) − k·z)·p
 单凭屏幕坐标不能同时定 x/y/z——逆变换必须指定 z。
 
 ### 1.4 投影不变量 【CURRENT，自动化】
-test_light2d_math（ctest `light2d_math`，24 断言）：z=0 往返、已知 z 往返、
+test_light2d_math（ctest `light2d_math`，29 断言）：z=0 往返、已知 z 往返、
 k-shift 定律、view_rect、zoom 钳位 [8,1024]、排序键序、slab 用例。
 G-buffer 对 k 不变（世界数据不随投影改写）= 场景级属性，Q3 双 k 截图
 探针运行验证（Position/Normal 窗格逐字节不变）。
@@ -53,7 +53,7 @@ G-buffer 对 k 不变（世界数据不随投影改写）= 场景级属性，Q3 
 
 | 附件 | 格式 | 数学职责 | 写入 | 读取 |
 |---|---|---|---|---|
-| G0 Albedo | RGBA8 | 材质色（显示域，见 §5） | geo FS | 合成 FS |
+| G0 Albedo | `GL_SRGB8_ALPHA8` | 材质色（显示域写入，采样时硬件解码为线性） | geo FS | 合成 FS |
 | G1 Position | RGBA16F | 世界 XYZ（清屏远哨兵=空气） | geo FS（varying 直传） | light FS |
 | G2 Normal | RGBA8 | 表面朝向（编码见 §2.3） | geo FS | light FS（仅 xy） |
 | G3 Emissive | RGBA16F | 线性自发光 | geo FS（uniform） | 合成 FS |
@@ -78,30 +78,33 @@ UV：(u0,v0)=子矩形图像左上，v 向图像底（与 sprite 管线一致；
 红象限探针证伪翻转）。UNSUPPORTED：任意半透明混合/排序；alpha→遮挡体。
 
 ### 3.2 颜色空间 【CURRENT】
-纹理以普通 GL_RGBA 上传（无 sRGB 内部格式）→ GPU 无解码。
-**全链路唯一线性化 = 合成 FS 的 `A_lin = pow(max(A_stored,0), 2.2)`**
-（ext.c deferred/bloom FS）。因此 texel 直写 G0（同平色路径编码），
-纹理路径禁止二次解码。输出：`C_out = (C_lin/(C_lin+1))^(1/2.2)`，
-tonemap 与 gamma 在同一合成 FS。
 
-**tint / albedo 的实际乘法空间（v1.1 契约裁决）**：geo FS 在
-显示域直接做 `rgba = texture(UV) ⊙ tint` 后写入 G0（RGBA8），
-合成时才整体 `pow(2.2)`。因此 tint 与平色 albedo_rgba 实际是
-**显示域（gamma）乘子**，与纹理想素同空间相乘——**不是线性空间
-乘法**。
-**裁决**：旧版头文件曾将 tint/albedo 标注为 "linear"，该描述与实际
-实现不符，自 v1.1 起视为已纠正的契约说明。需要真正线性 tint 的
-调用者不能把当前路径当作已支持该语义；要在线性空间做颜色调制，
-必须单独设计纹理解码 + 光照域 + 输出编码的完整 sRGB 工作流，
-并重新跑合成回归——暂不实现。
-数学推论：`(texel·tint)^2.2 = texel^2.2 · tint^2.2`，tint 本身
-也被 gamma 化。
+G0 的内部格式是 `GL_SRGB8_ALPHA8`（`light2d.c` 的 G-buffer formats）。
+`GL_FRAMEBUFFER_SRGB` 在 Light2D 目标写入时被显式关闭，所以 geo FS 写入的是
+**显示域（gamma）数值**，驱动不会在写入时再做一次 encode。合成 FS 采样 G0 时，
+硬件按 sRGB 规则解码一次，得到 `albedo_lin`。因此全链路只有这一处解码，
+合成 FS **不再**执行手动 `pow(2.2)`。
 
-**HDR >1 的适用范围**：G0 是 RGBA8，tint/albedo 乘积 >1 会被
-归一化格式截断到 1.0，**G0 路径不能承载 HDR Albedo**——不能因为
-tint 参数是 float 就推断经过 RGBA8 后仍保留超出 1 的数据。
-HDR >1 仅在 RGBA16F 附件上保留：G3 Emissive 与光缓冲（light
-accumulation RGBA16F）。
+```
+albedo_lin = sRGB_decode(texture(G0))
+C_lin      = albedo_lin ⊙ (E_lin + Σ light_lin + ambient)
+C_out      = linear_to_sRGB(C_lin / (C_lin + 1))
+```
+
+`tint / albedo` 的实际乘法空间（v1 限制）：geo FS 在显示域直接做
+`rgba = texture(UV) ⊙ tint` 后写入 G0。因此 tint 与纹理想素同空间相乘，
+**不是线性空间乘法**。这是当前 v1 的已知限制，不是“旧算法残留”；
+需要真正线性 tint 的调用者不能把当前路径当作已支持该语义。要在线性空间做
+颜色调制，必须单独设计纹理解码 + 光照域 + 输出编码的完整 sRGB 工作流，并重新
+跑合成回归。
+
+数学推论：当前路径是 `sRGB_decode(display(texel) ⊙ display(tint))`，
+不是 `linear(texel) ⊙ linear(tint)`。旧版头文件曾把 tint/albedo 标注为
+"linear"；该描述已被 v1.1 契约裁决纠正，当前代码/文档以本段为准。
+
+**HDR >1 的适用范围**：G0 是 8-bit sRGB 目标，tint/albedo 乘积 >1 会被
+截断到 1.0，**G0 路径不能承载 HDR Albedo**。HDR >1 仅在 RGBA16F 附件上保留：
+G3 Emissive 与光缓冲（light accumulation RGBA16F）。
 
 ## 4. 光照模型
 
@@ -130,8 +133,9 @@ PROPOSED 候选（未来统一用，当前不用）：`a = max(0,1−r²)²`—�
 （gain=全局 options.gain；逐光强度=a 已乘进 color——light2d.c draw_high）。
 合成（ext.c deferred/bloom FS 直查）：
 ```
-C_lin = albedo_lin ⊙ (E_lin + Σ light_lin + vec3(0.03))    （环境光 0.03 固定）
-C_out = ( C_lin/(C_lin+1) )^(1/2.2)
+albedo_lin = sRGB_decode(G0)                  （采样时硬件解码一次）
+C_lin      = albedo_lin ⊙ (E_lin + Σ light_lin + vec3(0.03))
+C_out      = linear_to_sRGB(C_lin / (C_lin + 1))
 ```
 **Emissive 当前语义（合并前审计明确）**：E_lin 在合成中**先与光照/
 环境光相加，再被 albedo_lin 逐通道调制**——即发光面的颜色也受其
@@ -210,7 +214,7 @@ x_tip = xmax·Lz/(Lz−H) 含 Lz=3/5 双光高与 near-H 长影边界 + 退化�
 | 光照方向 | max(0,N·L̂) 逐样例 | 源码审计（公式直查） | 审计（无数值单测） |
 | 衰减 | r≥1 无第一项 | 源码审计 | 审计 |
 | 射线相交 | 4 密封用例+边界+尖端双光高+near-H 两侧 | ctest 29 项 + autoquit proof | ✅自动（CPU 镜像） |
-| 颜色空间 | 线性化仅合成一处 | 源码 grep（无二次 pow2.2） | ✅审计 |
+| 颜色空间 | G0 sRGB 采样唯一解码；合成无手动 pow2.2 | 源码审计（格式/采样/合成） | ✅审计 |
 | 合成目标 | 结果落默认目标 | v15 修复 + 探针 | ✅运行 |
 | 平行光 | — | 无运行证据 | ⚠️未验证 |
 
@@ -242,7 +246,7 @@ x_tip = xmax·Lz/(Lz−H) 含 Lz=3/5 双光高与 near-H 长影边界 + 退化�
 1. 世界→屏幕：§1.2（三处实现一致，ctest 断言）。
 2. 几何→四附件：§2.2 生产者/消费者表。
 3. Normal 支持域：§2.3（朝上+轴对齐；斜面=PROPOSED 触发条件）。
-4. 线性化点：§3.2（合成 FS 唯一）；输出编码：同 FS ^(1/2.2)。
+4. 颜色解码：G0 `GL_SRGB8_ALPHA8` 采样时硬件解码一次；输出由 `linear_to_sRGB()` 编码；合成 FS 无手动 pow(2.2)。tint 显示域乘法是已知 v1 限制。
 5. 光方向/衰减/可见性/emissive：§4.2-4.4（合成表达式逐因子）。
 6. 射线=线段（非无限射线）；遮挡体=footprint×[0,H] 棱柱（§5.1-5.2）。
 7. 排序=painter's order（无深度测试），q 仅参考键（§5.3）。

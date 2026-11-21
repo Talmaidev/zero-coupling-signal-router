@@ -1,4 +1,4 @@
-/* Engine-ext Agent 1 — macOS / NSOpenGL backend for the GL 3.3 renderer.
+/* macOS / NSOpenGL backend for the GL 3.3 renderer.
  *
  * Compiled ONLY on APPLE (the zcsr_module() CMake function globs *.m there and enables -fobjc-arc).
  * It defines nothing but the platform hooks declared in glrender_internal.h; every platform-

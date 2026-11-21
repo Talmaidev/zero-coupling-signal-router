@@ -1,5 +1,5 @@
 /* platform_common.c — shared pool, DPI, focus, display helpers, unknown-platform stubs. */
-/* Agent 5 — Platform abstraction. Win32 / X11 / Cocoa, gated on ZCSR_PLATFORM (zcsr/platform.h).
+/* Platform abstraction. Win32 / X11 / Cocoa, gated on ZCSR_PLATFORM (zcsr/platform.h).
  * No OpenGL/DirectX/Vulkan. */
 #include "zcsr/platform.h"
 #include "platform_internal.h"

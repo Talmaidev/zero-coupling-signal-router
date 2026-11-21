@@ -1,6 +1,6 @@
 #ifndef ZCSR_IMAGE_H
 #define ZCSR_IMAGE_H
-/* Engine-ext Agent — image loading, decoding, and offline CPU processing to 8-bit RGBA (RGBA32).
+/* Image loading, decoding, and offline CPU processing to 8-bit RGBA (RGBA32).
  *
  * SEPARATED from rendering (per project decision): this module ONLY produces pixel buffers.
  * The GPU path (glrender) and the software path (render) CONSUME the RGBA32 it produces through
@@ -8,7 +8,7 @@
  * never includes a renderer; renderers never include `image`. Decouples decode/processing from
  * upload/draw so both render paths share one decoder.
  *
- * Implementer: modules/image (vendors stb_image, used ONLY here for multi-format decode).
+ * Module: modules/image. (vendors stb_image, used ONLY here for multi-format decode).
  * No runtime heap: decode and all processing write into a CALLER-PROVIDED buffer; stb_image is
  * configured (STBI_MALLOC) to bump-allocate from that buffer, so there is no global heap growth.
  * The caller sizes the buffer to cover decode scratch + the packed RGBA output. */

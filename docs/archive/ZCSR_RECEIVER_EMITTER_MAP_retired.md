@@ -1,5 +1,8 @@
 # ZCSR Receiver Emitter Map
 
+> 历史 API 快照（已退役）。保留用于追溯 UI 事件与 Receiver 接口演进；
+> 不代表当前实现或当前 API。
+
 本文列出 ZCSR UI Runtime 当前实际发出的所有语义事件，供 UI Receiver（Layer 2）编写接收端。
 所有引用均指向仓库真实文件和行号。状态：IMPLEMENTED=已落盘可编译，DESIGNED=仅规划未实现。
 

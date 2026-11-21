@@ -1,4 +1,4 @@
-/* Agent 1 (Game Core) — Input & Window: keyboard events, window close, 60FPS timer.
+/* Input & Window: keyboard events, window close, 60FPS timer.
  * Includes ONLY shared contracts. */
 #include "zcsr/clock.h"
 #include "zcsr/input.h"

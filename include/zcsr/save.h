@@ -1,7 +1,7 @@
 #ifndef ZCSR_SAVE_H
 #define ZCSR_SAVE_H
 /* zcsr_save — binary save/load of game state. No heap, no file I/O in the contract
- * (caller persists the bytes). Implementer: modules/save. */
+ * (caller persists the bytes). Module: modules/save. */
 #include <stddef.h>
 #include <stdint.h>
 

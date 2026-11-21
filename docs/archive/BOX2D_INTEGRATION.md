@@ -1,5 +1,8 @@
 # Box2D v3.1.1 Optional Integration
 
+> Historical integration note. Retained for design evolution and build rationale; it
+> is not part of the current 1.0 implementation contract.
+
 Zero-coupling by design: **no zcsr module knows physics exists**. Box2D is an
 external dependency fetched only when explicitly enabled, and only the
 integration-level `demo_physics` links against it.

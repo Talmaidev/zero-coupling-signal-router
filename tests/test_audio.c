@@ -1,4 +1,4 @@
-/* Agent 2 (Game Core) — audio tests: fixed WAV registration, signal-only PLAY/STOP slots, and
+/* audio tests: fixed WAV registration, signal-only PLAY/STOP slots, and
  * dedicated thread lifecycle. This stays device-neutral so it is stable on headless CI. */
 #include "zcsr/audio.h"
 #include "zcsr/signal.h"

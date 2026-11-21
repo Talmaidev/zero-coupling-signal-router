@@ -1,4 +1,4 @@
-/* Engine-ext Agent 3 - universal input extension.
+/* universal input extension.
  * Additive mouse/gamepad state beside the existing keyboard module. Includes only contracts plus
  * native backend headers. State and queues live entirely in the caller buffer.
  */

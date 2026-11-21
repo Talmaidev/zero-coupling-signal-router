@@ -1,11 +1,12 @@
-# zcsr Android port — Phase 1B / 1C
+# zcsr Android port
 
-## Phase 1B / 1C
+## Implemented renderer paths
 
-- **Phase 1B**: EGL + GLES 3.x, pure-color clear-frame.
-- **Phase 1C.0**: generated RGBA texture, upload, regular sprite batch.
-- **Phase 1C.1**: atlas UV region sampling.
-- **Phase 1C.2**: instanced sprite batch.
+- EGL + GLES 3.x clear-frame.
+- Generated RGBA texture upload and regular sprite batch.
+- Atlas UV region sampling.
+- Instanced sprite batch.
+- 8x8 bitmap font text path.
 
 ## Renderer lifecycle
 
@@ -20,31 +21,28 @@
 
 ## Constraints
 
-- Public `zcsr/gl_render.h` API unchanged in 1C.
+- Public `zcsr/gl_render.h` API unchanged for this port.
 - No PNG/image/stb_image.
-- No audio/input in 1C.
+- No audio/input in this port.
 - Renderer state in caller buffer.
 - Test textures generated programmatically.
 - APK packaging via `tools/android_pack.sh`.
 
 ## Verified on device (Redmi K60 Pro, socrates)
 
-- APK: `build/android/zcsr_phase1c.apk` (versionCode from AndroidManifest.xml).
+- APK built under `build/android/` (versionCode from AndroidManifest.xml).
 - Device GLES: `OpenGL ES 3.2` (EGL 1.5), window size `1440x3200`.
 - Scenes rotate every ~2 s: batch -> atlas -> instanced -> batch.
-- All three draw paths PASS in logcat, no GL errors, no zcsr crash.
+- All draw paths PASS in logcat, no GL errors, no zcsr crash.
 - Window teardown/recreation (HOME -> resume) re-initializes EGL and repaints.
 
 ## Test log excerpts
 
 ```
 zcsr-gl : EGL 1.5; GLES=OpenGL ES 3.2 V@...; size=1440x3200
-zcsr    : 1C.0 texture=2 upload=PASS filter=NEAREST
-zcsr    : 1C.0 sprite batch PASS: 200 grid + 2 center sprites
-zcsr    : 1C.1 atlas PASS: four UV regions sampled
-zcsr    : 1C.2 instanced PASS: 202 instances submitted
+zcsr    : texture=2 upload=PASS filter=NEAREST
+zcsr    : sprite batch PASS: 200 grid + 2 center sprites
+zcsr    : atlas PASS: four UV regions sampled
+zcsr    : instanced PASS: 202 instances submitted
+zcsr    : text PASS: 8x8 bitmap font rendered (6 lines)
 ```
-
-## Phase 1 (complete)
-
-Phase 1 handover is recorded in commit `b541845`; this directory keeps no separate handover file.

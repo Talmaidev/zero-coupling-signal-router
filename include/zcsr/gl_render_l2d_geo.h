@@ -20,10 +20,12 @@
  *   corners_xyz  4 world-space corners in boundary order, simple, convex,
  *                planar. Each is a real (x,y,z); vertical faces keep their
  *                per-pixel world z via interpolation.
- *   albedo_rgba  surface color in the SAME display (gamma) encoding as the
- *                texels: written straight to attachment 0 (RGBA8) and
- *                linearized once by the deferred composite's pow(2.2).
- *                NOT a linear-space value; >1 is clamped by RGBA8.
+ *   albedo_rgba  surface color in display (gamma) encoding. Written to G0
+ *                (`GL_SRGB8_ALPHA8`); `GL_FRAMEBUFFER_SRGB` is disabled while
+ *                writing, so the stored byte is the display-domain value.
+ *                The composite samples G0 and the driver decodes it to linear
+ *                RGB once. The composite does NOT apply a manual pow(2.2).
+ *                NOT a linear-space input; >1 is clamped by the 8-bit target.
  *   normal_xyz   unit world normal of the whole face. v1 supports the
  *                axis-aligned classes the light shader decodes: up faces
  *                (0,0,1) and in-plane wall normals; other directions lose
@@ -73,16 +75,20 @@ bool zcsr_gl_l2d_geo_face(zcsr_gl_renderer* renderer,
  *                  the requested sub-rectangle, v grows toward the image
  *                  bottom; corner 0 of the quad receives (u0,v0).
  *   tint_rgba      display-gamma tint multiplied with the sampled texel in
- *                  the SAME non-linear space; the product is written to
- *                  attachment 0 (RGBA8) and linearized once by the
- *                  composite pow(2.2). >1 is clamped by RGBA8.
+ *                  the SAME non-linear space; the product is written to G0
+ *                  (`GL_SRGB8_ALPHA8`) and hardware-decoded once when sampled
+ *                  by the composite. The composite has no manual pow(2.2).
+ *                  >1 is clamped by the 8-bit target. This is a v1 limitation:
+ *                  a true linear-space tint would require a separate
+ *                  texture-decode/lighting/output-encode workflow.
  *   normal_xyz     face world normal (same axis-aligned classes as flat).
  *   emissive_rgba  linear HDR self-emission (NOT textured in v1; albedo-tinted
  *                  at composite time, not independently additive).
- * COLOR/ALPHA CONTRACT: textures are stored as plain GL_RGBA (no GPU sRGB
- * decode); the deferred composite's pow(2.2) is the single linearization
- * step, so the sampled texel is written to attachment 0 exactly like the
- * flat path — no double decode. ALPHA-CUTOUT v1 (explicit rule, not general
+ * COLOR/ALPHA CONTRACT: input textures are stored as plain GL_RGBA (no GPU
+ * sRGB decode at upload). G0 is `GL_SRGB8_ALPHA8`; `GL_FRAMEBUFFER_SRGB` is
+ * disabled for the G-buffer write, and the composite's sample of G0 is the
+ * single sRGB decode. The composite has no manual pow(2.2), so the texel is
+ * not decoded twice. ALPHA-CUTOUT v1 (explicit rule, not general
  * blending): a pixel whose sampled-alpha x tint-alpha is < 0.5 is DISCARDED
  * — it writes nothing, so the G-buffer surface submitted BENEATH it (earlier
  * in painter order) stays intact. No partial transparency, no sorting.

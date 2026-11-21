@@ -1,10 +1,10 @@
 #ifndef ZCSR_AUDIO_MIX_H
 #define ZCSR_AUDIO_MIX_H
-/* Engine-ext Agent 2 — multi-channel WAV mixer. NEW module; COEXISTS with the single-stream
+/* multi-channel WAV mixer. NEW module; COEXISTS with the single-stream
  * zcsr/audio.h (does not change/break it). 16 software channels, one dedicated audio thread,
  * lock-free command/PCM rings. Backend: Win WASAPI / Linux ALSA / Android AAudio (API 26+
  * dynamically loaded at runtime). Other unsupported platforms use the stub backend.
- * Implementer: modules/audiomix. Signals-friendly: audio_play / audio_finished.
+ * Module: modules/audiomix. Signals-friendly: audio_play / audio_finished.
  * Fixed pools; no runtime heap for mixer/sample/PCM storage. */
 #include <stdbool.h>
 #include <stdint.h>

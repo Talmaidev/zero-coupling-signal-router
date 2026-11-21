@@ -1,4 +1,4 @@
-/* Agent 5 — gamelogic tests: AABB collision + binary save/load (round-trip + reject paths). */
+/* gamelogic tests: AABB collision + binary save/load (round-trip + reject paths). */
 #include "zcsr/collision.h"
 #include "zcsr/save.h"
 #include <stdio.h>

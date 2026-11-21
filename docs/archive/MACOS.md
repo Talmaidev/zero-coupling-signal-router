@@ -1,5 +1,9 @@
 # macOS (Cocoa) Support
 
+> Historical architecture note (2026-05). Retained for platform-backend evolution and
+> design rationale. Module names below are from that snapshot; the current editor is
+> Windows-only and this file is not a current support claim.
+
 Official macOS backends for the zero-coupling game core. Each platform-touching module gains a
 Cocoa backend behind its **unchanged** `include/zcsr/*.h` contract — `core` / `signal` / `hsm` /
 `gamelogic` are pure C and untouched.

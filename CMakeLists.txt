@@ -62,35 +62,35 @@ function(zcsr_module name)
   endif()
 endfunction()
 
-zcsr_module(core)      # Agent 1
-zcsr_module(signal)    # Agent 2
-zcsr_module(hsm)       # Agent 3
-zcsr_module(platform)  # Agent 5
+zcsr_module(core)      # arena / state buffer / value / log / diagnostics
+zcsr_module(signal)    # signal router
+zcsr_module(hsm)       # hierarchical state machine
+zcsr_module(platform)  # window / surface / lifecycle
 if(NOT WIN32)
   set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/modules/platform/platform_win32.c
       PROPERTIES HEADER_FILE_ONLY TRUE)
 endif()
 
-# --- Task #7: Classic 2D Game Core extension (zero-coupling, builds on the contracts above) ---
-zcsr_module(input)     # Game Core Agent 1 — input / window / 60FPS timer
-zcsr_module(audio)     # Game Core Agent 2 — WAV audio (signals only)
+# --- Classic 2D Game Core extension (zero-coupling, builds on the contracts above) ---
+zcsr_module(input)     # keyboard input, window close, frame clock
+zcsr_module(audio)     # single-stream WAV audio, signal-driven
 # zcsr_module(render)  # 已删除：PNG 解码归 modules/image（同样 vendor stb_image），
 #                       批渲染归 modules/glrender + modules/sprite。
 #                       原 modules/render 全仓零引用（仅 android_main.c 里一个同名局部变量
 #                       zcsr_renderer_storage，不是该模块的 API），故整目录移除。
-zcsr_module(collision) # Game Core Agent 4 — AABB collision only
-zcsr_module(save)      # Game Core Agent 4 — binary save/load only
+zcsr_module(collision) # AABB collision only
+zcsr_module(save)      # binary save/load only
 
 # --- Engine extension (Game-Usable Core): additive, zero-coupling, optional next to the above ---
-zcsr_module(glrender)  # Engine-ext Agent 1 — OpenGL 3.3 renderer (vendors glad; coexists w/ software render)
-zcsr_module(audiomix)  # Engine-ext Agent 2 — multi-channel WAV mixer (coexists w/ single-stream audio)
-zcsr_module(inputext)  # Engine-ext Agent 3 — mouse + gamepad (additive to keyboard input)
+zcsr_module(glrender)  # OpenGL 3.3 renderer (vendors glad; coexists with software render)
+zcsr_module(audiomix)  # multi-channel WAV mixer (coexists with single-stream audio)
+zcsr_module(inputext)  # mouse + gamepad (additive to keyboard input)
 zcsr_module(light2d)   # Light2D additive lighting (no GL calls; drives glrender via gl_render_light2d_ext.h)
 target_link_libraries(zcsr_light2d PUBLIC zcsr_glrender)
 target_include_directories(zcsr_light2d PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/glad/include)
-zcsr_module(image)
-zcsr_module(assets)   # 开发者自带资源导入（相对路径 -> 纹理/字体/WAV）
-target_link_libraries(zcsr_assets PUBLIC zcsr_image zcsr_glrender zcsr_audiomix)     # Engine-ext Agent — decode→RGBA32 + offline CPU processing (separated from rendering; vendors stb_image)
+zcsr_module(image)     # PNG/JPEG/... decode to RGBA32 + offline CPU processing (vendored stb_image)
+zcsr_module(assets)    # caller-provided asset import (relative path -> texture/font/WAV)
+target_link_libraries(zcsr_assets PUBLIC zcsr_image zcsr_glrender zcsr_audiomix)     # import/decode/upload dependencies
 zcsr_module(atlas)     # Texture atlas shelf-packing + region table (pure logic, no GL)
 zcsr_module(culling)   # Viewport culling: linear + uniform grid (pure logic, no GL)
 zcsr_module(font)      # TrueType font loader/rasterizer (stb_truetype, no GL dependency)
@@ -119,11 +119,11 @@ zcsr_module(resource)      # Resource Manager + Handle + Generation + Cache
 # zcsr_module(app_shell) removed: settings is zcsr_ui_page_manager/pages/settings.
 # zcsr_module(overlay) removed: debug overlay is zcsr_tools/zcsr_debug_overlay.
 # zcsr_module(gamelogic) split: collision + save, each one responsibility.
-# Per-backend system libs are added by the implementer when each backend lands, e.g.:
+# Per-backend system libs are added by the selected backend when it lands, e.g.:
 #   glrender: opengl32+gdi32 (Win) / GL+X11 (Linux, find_package(OpenGL)) / -framework OpenGL (mac)
 #   audiomix: (Win WASAPI: ole32) / ALSA (Linux: find_package(ALSA), asound) / -framework AudioToolbox,AudioUnit (mac)
 #   inputext: xinput (Win) / X11 (have) + evdev(none) (Linux) / -framework IOKit,GameController (mac)
-# Phase-0 stubs make no backend calls, so they link with no extra libs.
+# Backend-specific system libs are linked only for the selected backend.
 if(NOT WIN32)
   find_package(Threads REQUIRED)
   target_link_libraries(zcsr_core PUBLIC Threads::Threads)  # log.c uses C11 threads
@@ -151,11 +151,11 @@ if(UNIX AND NOT APPLE)
 endif()
 
 if(UNIX AND NOT APPLE)
-  # Linux: Wayland window backend + EGL + PipeWire audio (post-migration default).
-  # X11/GLX/ALSA/evdev legacy backends removed in commit 5.
+  # Linux: X11/GLX or Wayland/EGL window backend; PipeWire or ALSA audio.
+  # Selection is availability-driven; auto prefers X11, then Wayland.
   #
-  # 依赖全部改成"探测到才启用"：这台机器没有 Wayland/PipeWire 开发包时（默认 Kali
-  # X11 桌面、容器、CI），configure 仍然成功，所有库与纯 CPU 测试照常构建，只是
+  # 依赖全部改成"探测到才启用"：没有显示/音频开发包时（容器、CI、无桌面环境），
+  # configure 仍然成功，所有库与纯 CPU 测试照常构建，只是
   # 窗口/音频后端不参与链接 —— 引擎本身零依赖，不该被宿主显示栈挡住编译。
 
   find_package(PkgConfig REQUIRED)

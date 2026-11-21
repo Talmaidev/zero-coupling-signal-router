@@ -1,4 +1,4 @@
-/* Agent 1 — Cocoa (macOS) key-event pump. Objective-C, compiled only on Apple.
+/* Cocoa (macOS) key-event pump. Objective-C, compiled only on Apple.
  * Implements the C-ABI shim in input_cocoa.h. Includes only the same-module shim header and the
  * system Cocoa framework — no cross-module includes (zero-coupling preserved).
  *

@@ -1,9 +1,9 @@
 #ifndef ZCSR_GL_RENDER_H
 #define ZCSR_GL_RENDER_H
-/* Engine-ext Agent 1 — GPU rendering.
+/* GPU rendering.
  * Desktop: OpenGL 3.3 Core. Android: OpenGL ES 3.x.
  * OPTIONAL renderer, beside the existing
- * software/overlay path (which stays unchanged). Implementer: modules/glrender (vendors glad;
+ * software/overlay path (which stays unchanged). Module: modules/glrender. (vendors glad;
  * glad used ONLY inside that module). Includes only shared contracts. No runtime heap: renderer
  * state lives in a caller buffer; GPU memory is the driver's. */
 #include "platform.h"       /* zcsr_surface */

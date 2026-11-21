@@ -1,6 +1,6 @@
 #ifndef ZCSR_LOG_H
 #define ZCSR_LOG_H
-/* Unified logging API (platform-independent contract). Implementer: modules/core.
+/* Unified logging API (platform-independent contract). Module: modules/core.
  * CONTRACT ONLY. Modules include this header, never another module's source.
  *
  * Design notes:

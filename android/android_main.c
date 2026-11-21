@@ -1,4 +1,4 @@
-/* zcsr Android Phase 1B — EGL/GLES lifecycle + clear-frame proof. */
+/* zcsr Android — EGL/GLES lifecycle + clear-frame proof. */
 #include <android_native_app_glue.h>
 #include <android/log.h>
 #include <GLES3/gl3.h>
@@ -152,7 +152,7 @@ static bool zcsr_android_create_test_texture(zcsr_android_runtime* runtime) {
     if (!zcsr_android_check_gl("texture filter")) {
         LOGE("texture filter setup failed"); return false;
     }
-    LOGI("1C.0 texture=%u upload=PASS filter=NEAREST",
+    LOGI("texture=%u upload=PASS filter=NEAREST",
          (unsigned int)runtime->test_texture);
     return true;
 }
@@ -216,7 +216,7 @@ static bool zcsr_android_draw_batch_scene(
     if (!zcsr_android_check_gl("sprite batch draw")) {
         LOGE("sprite batch generated GL error"); return false;
     }
-    LOGI("1C.0 sprite batch PASS: 200 grid + 2 center sprites");
+    LOGI("sprite batch PASS: 200 grid + 2 center sprites");
     return true;
 }
 
@@ -257,7 +257,7 @@ static bool zcsr_android_draw_atlas_scene(
     if (!zcsr_android_check_gl("atlas batch draw")) {
         LOGE("atlas draw generated GL error"); return false;
     }
-    LOGI("1C.1 atlas PASS: four UV regions sampled");
+    LOGI("atlas PASS: four UV regions sampled");
     return true;
 }
 
@@ -296,7 +296,7 @@ static bool zcsr_android_draw_instanced_scene(
     if (!zcsr_android_check_gl("instanced sprite draw")) {
         LOGE("instanced draw generated GL error"); return false;
     }
-    LOGI("1C.2 instanced PASS: 202 instances submitted");
+    LOGI("instanced PASS: 202 instances submitted");
     return true;
 }
 
@@ -322,7 +322,7 @@ static bool zcsr_android_draw_text_scene(
     if (!zcsr_android_check_gl("text draw")) {
         LOGE("text draw generated GL error"); return false;
     }
-    LOGI("1C.3 text PASS: 8x8 bitmap font rendered (6 lines)");
+    LOGI("text PASS: 8x8 bitmap font rendered (6 lines)");
     return true;
 }
 

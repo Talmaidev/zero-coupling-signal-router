@@ -56,8 +56,10 @@ static const char* geo_fs =
     "}\n";
 
 /* Textured variant: same shear VS plus a UV channel; FS samples the host
- * texture on unit 0. Plain GL_RGBA textures carry the same encoding the
- * composite linearizes once (pow 2.2) — no second decode here. Cutout rule:
+ * texture on unit 0. Host textures are plain GL_RGBA (display-domain texels).
+ * The product is written to G0 `GL_SRGB8_ALPHA8`; GL_FRAMEBUFFER_SRGB is
+ * disabled during the write, so no encode happens here. The composite samples
+ * G0 and the driver performs the single sRGB decode. Cutout rule:
  * alpha < 0.5 discards so transparent pixels never overwrite the G-buffer
  * surface beneath (painter order supplies that surface). */
 static const char* geo_tex_vs =

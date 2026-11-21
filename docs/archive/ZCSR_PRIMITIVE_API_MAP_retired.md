@@ -1,5 +1,8 @@
 # ZCSR Primitive API Map
 
+> 历史 API 快照（已退役）。保留用于追溯 Primitive 接口演进；
+> 不代表当前实现或当前 API。
+
 本文是 ZCSR UI Runtime 全部基础 Primitive 的公开 API 清单。
 基于实际头文件和实现，标注每个 Primitive 的当前状态。
 状态：IMPLEMENTED=已实现可编译，PARTIAL=部分实现有缺口，MISSING=未实现。

@@ -108,16 +108,15 @@ zcsr_gl_l2d_geo_tex_face(r, tex, corners_xyz, uv_st, tint_rgba,
 - **UV**：`(u0,v0)` = 子矩形**图像左上**，v 向图像底增长（与 sprite 管线
   一致；运行时证据：v=0.25 采样到夹具顶行象限=红色，翻转假设会被证伪）。
   角点 0 对应 (u0,v0)。
-- **颜色空间**：纹理以普通 GL_RGBA 上传（无 GL sRGB 内部格式）→ GPU 不做
-  sRGB 解码；**合成 pass 的 pow(2.2) 是全链路唯一线性化环节**。texel×tint
-  直写 attachment 0（RGBA8），与平色路径同一编码——**禁止在纹理路径再
-  解一次 sRGB**。
-- **tint / albedo 乘法空间（v1.1 契约裁决）**：tint 与平色 albedo_rgba
-  实际在**显示域（gamma）**与纹理想素逐通道相乘，乘积直写 RGBA8 G0，
-  合成时整体 pow(2.2) 线性化。**这不是线性空间乘法**。旧版头文件曾将
-  tint 标注为 "linear"，该描述与实际实现不符，自 v1.1 起视为已纠正的
-  契约说明；需要真正线性 tint 的调用者不能把当前路径当作已支持。
-  RGBA8 会把 >1 的 tint/albedo 截断到 1.0——G0 路径不能承载 HDR；
+- **颜色空间**：G0 Albedo 的内部格式是 `GL_SRGB8_ALPHA8`；Light2D 写入时
+  `GL_FRAMEBUFFER_SRGB` 被显式关闭，geo FS 写入显示域数值，合成 FS 采样时
+  由硬件 sRGB 解码一次得到 `albedo_lin`。**合成 FS 不再手动 `pow(2.2)`**。
+  纹理输入仍是普通 `GL_RGBA`，因此纹理路径不能把输入当线性值。
+- **tint / albedo 乘法空间（v1 限制）**：tint 与平色 albedo_rgba 实际在
+  **显示域（gamma）**与纹理想素逐通道相乘，乘积写入 sRGB G0，采样时整体
+  解码。**这不是线性空间乘法**。旧版头文件曾将 tint 标注为 "linear"，
+  该描述已被纠正；需要真正线性 tint 的调用者不能把当前路径当作已支持。
+  8-bit G0 会把 >1 的 tint/albedo 截断到 1.0——G0 路径不能承载 HDR；
   HDR >1 仅在 RGBA16F 附件（Emissive、光缓冲）上保留。
 - **Alpha-cutout v1（精确规则，源码 glrender_l2d_geo.c:92）**：
   `if (rgba.a < 0.5) discard;` 其中 `rgba = texel × tint`。
@@ -246,7 +245,7 @@ CTests**——CTest 全绿不覆盖纹理视觉路径。
 - 世界坐标 / PPU / height-shear 投影数学
 - 平色与纹理四边形进入 G-buffer
 - UV 方向与 alpha-cutout 规则
-- Albedo RGBA8 sRGB → 合成 pow(2.2) 线性化
+- G0 Albedo `GL_SRGB8_ALPHA8` → 采样时硬件 sRGB 解码，合成无手动 pow(2.2)
 - 点光源距离衰减公式
 - 逐像素射线阴影（两点间接证据，非同像素因果验证）
 - 29 项 CPU 数学断言 CTest 通过

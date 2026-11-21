@@ -1,6 +1,6 @@
 #ifndef ZCSR_VALUE_H
 #define ZCSR_VALUE_H
-/* Zero-Coupling Signal Router — shared value type (Agent 1 data primitive).
+/* Zero-Coupling Signal Router — shared value type (core data primitive).
  * ONLY string / int / bool, per spec. No heap. C11/C17. */
 #include <stdint.h>
 #include <stdbool.h>

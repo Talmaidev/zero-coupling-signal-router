@@ -1,4 +1,4 @@
-/* Agent 2 — signal/slot dispatch. No heap, no dynamic registry.
+/* signal/slot dispatch. No heap, no dynamic registry.
  * Runtime over a compile-time `static const zcsr_conn[]` table (declared via the
  * ZCSR_DEFINE_ROUTER X-macro in zcsr/signal.h). This TU holds the dispatch walk. */
 #include "zcsr/signal.h"

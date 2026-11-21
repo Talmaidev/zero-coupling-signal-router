@@ -89,7 +89,7 @@ void zcsr_gl_l2d_target_destroy(zcsr_gl_renderer* renderer,
  * emissive as zero, position as a FAR sentinel (air receives no light — the
  * reference engine clears its view-space position channel to zfar), and the
  * 2D neutral normal as (0.5,0.5).
- * Geometry output layout: location 0 Albedo RGBA8; location 1 Position RGBA16F
+ * Geometry output layout: location 0 Albedo GL_SRGB8_ALPHA8; location 1 Position RGBA16F
  * with xyz in WORLD 3D coordinates (x,y ground plane, z elevation; painter
  * converts its pixel-space geometry through the camera); location 2 Normal
  * RGBA8 with xy encoded from [-1,+1] to [0,1] ((0,0) decodes to the UP

@@ -1,37 +1,53 @@
-# Task #7 — Classic 2D Game Core (Phase 0: contracts)
+# Classic 2D Game Core — Historical Architecture Notes
 
-Extends the zero-coupling `zcsr` foundation into a minimal 2D game core. Same rules: modules
-include **only** `include/zcsr/*` contracts (never each other); no heap (fixed/caller buffers);
-`tools/check_no_cross_includes.sh` enforces it. C11.
+> Historical architecture note (2026-05). Retained for design evolution. The module
+> names below are the snapshot names from that date; later work split `render` into
+> `image` + `glrender` + `sprite`, and `gamelogic` into `collision` + `save`.
+> This file is not the current implementation contract.
 
-## Modules ↔ Agents
-| Agent | Module             | Contracts | Owns |
-|-------|--------------------|-----------|------|
-| 1 | `modules/input`     | `clock.h`, `input.h`, `window_event.h` | keyboard down/up, window close + cleanup, 60FPS frame timer |
-| 2 | `modules/audio`     | `audio.h` | WAV player in ONE dedicated thread; **signals only** (`PLAY_SOUND`/`STOP_SOUND`) |
-| 3 | `modules/render`    | `texture.h`, `sprite.h` | PNG via stb_image (single-header) + resource cache; batch sprite renderer |
-| 4 | `modules/gamelogic` | `collision.h`, `save.h` | AABB collision; binary save/load (header + checksum) |
-| 5 | integration/tests   | — | update ctests; bench (200 sprites <1ms/frame); zero-coupling guard |
+Extends the zero-coupling `zcsr` foundation into a minimal 2D game core. Same rules:
+modules include **only** `include/zcsr/*` contracts (never each other); no heap
+(fixed/caller buffers); `tools/check_no_cross_includes.sh` enforces it. C11.
 
-分工：Phase-0 契约、Validation 和评审单独执行；后端 1–4 分别实现。
+## Module / contract map (2026-05 snapshot)
+
+| Module (then) | Contracts | Responsibility |
+|---|---|---|
+| `modules/input` | `clock.h`, `input.h`, `window_event.h` | keyboard down/up, window close + cleanup, frame timer |
+| `modules/audio` | `audio.h` | WAV player in one dedicated thread; **signals only** (`PLAY_SOUND`/`STOP_SOUND`) |
+| `modules/render` | `texture.h`, `sprite.h` | PNG via stb_image + resource cache; batch sprite renderer |
+| `modules/gamelogic` | `collision.h`, `save.h` | AABB collision; binary save/load (header + checksum) |
+| `integration/tests` | — | CTest coverage, sprite benchmark, zero-coupling guard |
+
+Contract work, validation and review were separate from backend implementation; this
+division is historical process information, not a current ownership map.
 
 ## Key invariants
-- Audio talks to the rest of the game ONLY through the **signal router** (`signal.h`): wire
-  `PLAY_SOUND` → `zcsr_audio_slot_play`, `STOP_SOUND` → `zcsr_audio_slot_stop`. No direct calls
-  from game logic into audio.
+
+- Audio talks to the rest of the game ONLY through the **signal router**
+  (`signal.h`): wire `PLAY_SOUND` → `zcsr_audio_slot_play`, `STOP_SOUND` →
+  `zcsr_audio_slot_stop`. No direct calls from game logic into audio.
 - Rendering reuses the platform **surface** (`platform.h`) — no new windowing.
-- `stb_image.h` is vendored under `third_party/` and included **only** by `modules/render`
-  (configured with `STBI_MALLOC` to allocate from the cache buffer, no global heap growth).
-- All cross-module communication is via contracts + signals; no module includes another module.
-- Later extension work may make small behavior-preserving fixes to this core when required for
-  coexistence with a new module. Such fixes must preserve the public contract, remain no-heap and
-  zero-coupled, and be reviewed explicitly.
+- `stb_image.h` is vendored under `third_party/` and included **only** by the
+  render/image path (configured with `STBI_MALLOC` to allocate from the cache
+  buffer, no global heap growth).
+- All cross-module communication is via contracts + signals; no module includes
+  another module.
+- Later extension work may make small behavior-preserving fixes to this core when
+  required for coexistence with a new module. Such fixes must preserve the public
+  contract, remain no-heap and zero-coupled, and be reviewed explicitly.
 
-## Bench / acceptance (Agent 5)
-- `200 sprites render < 1ms/frame` (gate); renderer should scale toward n*10000 sprites.
-- All ctests pass; `check_coupling` green; existing task #6 modules unaffected.
+## Historical acceptance notes
 
-## Phase plan
-- **Phase 0 (this):** contracts (`include/zcsr/` headers) + module stub skeleton + build wiring.
-- **Phase 1（并行实现）：** 后端 1 input/clock/window，后端 2 audio，后端 3 render，后端 4 gamelogic。
-- **Phase 2：** integration demo（input → game logic → render + audio-via-signals）+ tests + bench。
+- 200 sprites render under 1 ms/frame was the early target; this is a historical
+  gate, not a current performance claim. The current performance baseline lives in
+  the repository README.
+- All CTests pass; coupling guard green; existing earlier modules unaffected.
+
+## Evolution after this snapshot
+
+- `modules/render` was retired and split: PNG/JPEG decode moved to `modules/image`,
+  batching to `modules/glrender` + `modules/sprite`.
+- `modules/gamelogic` was split into `modules/collision` and `modules/save`.
+- The current module set, public headers and test counts are indexed in
+  `docs/ARCHITECTURE.md`, `docs/API_REFERENCE.md` and `docs/TESTING.md`.

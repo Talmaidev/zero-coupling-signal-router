@@ -1,7 +1,7 @@
 #ifndef ZCSR_CLOCK_H
 #define ZCSR_CLOCK_H
-/* Agent 1 (Game Core) — high-precision clock + fixed-step frame pacing (~60 FPS).
- * Implementer: modules/input. No heap (timer placed in caller buffer). */
+/* high-precision clock + fixed-step frame pacing (~60 FPS).
+ * Module: modules/input. No heap (timer placed in caller buffer). */
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>

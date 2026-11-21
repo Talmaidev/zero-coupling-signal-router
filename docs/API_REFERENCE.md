@@ -1,6 +1,6 @@
 # ZCSR API Reference
 
-The public API is defined by the headers in `include/zcsr/`. There are 62 headers; each module implements the functions declared in its own contract header.
+The public API is defined by the headers in `include/zcsr/`. There are 63 headers; each module implements the functions declared in its own contract header.
 
 The headers are authoritative. This page is an index, not a second copy of the prototypes.
 
@@ -10,7 +10,7 @@ The headers are authoritative. This page is an index, not a second copy of the p
 |---|---|
 | Core | `arena.h`, `state_buffer.h`, `value.h`, `log.h`, `diagnostics.h` |
 | Signal / state machine | `signal.h`, `hsm.h` |
-| Platform / input | `platform.h`, `window_event.h`, `input.h`, `input_ext.h`, `input_ext_android.h`, `clock.h` |
+| Platform / input | `platform.h`, `window_event.h`, `input.h`, `input_ext.h`, `input_ext_android.h`, `input_keymap.h`, `clock.h` |
 | Rendering | `gl_render.h`, `gl_render_l2d_geo.h`, `gl_render_light2d_ext.h`, `texture.h`, `texture_atlas.h`, `sprite.h`, `color.h`, `transform.h`, `camera.h`, `camera3d.h`, `viewport.h` |
 | Light2D | `light2d.h`, `light2d_floor.h`, `light2d_wall.h`, `light2d_box.h`, `light2d_light.h` |
 | Audio | `audio.h`, `audio_mix.h`, `music.h` |
@@ -25,4 +25,4 @@ The headers are authoritative. This page is an index, not a second copy of the p
 - Memory is caller-provided or fixed-pool storage; the engine's own code does not allocate with `malloc/free`.
 - CMake target names match the module directories under `modules/`.
 
-The previous generated reference is in `docs/archive/API_REFERENCE_2026-10-19.md`. It is historical and does not describe the current target set.
+The 2026-10-19 generated reference snapshot is retained in `docs/archive/API_REFERENCE_2026-10-19.md` for API evolution and rationale. It is historical, has older module names/counts, and does not describe the current target set.

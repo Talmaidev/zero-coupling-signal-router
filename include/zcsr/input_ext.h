@@ -1,7 +1,7 @@
 #ifndef ZCSR_INPUT_EXT_H
 #define ZCSR_INPUT_EXT_H
-/* Engine-ext Agent 3 — mouse + gamepad input. ADDITIVE to zcsr/input.h (keyboard there is
- * unchanged). Implementer: modules/inputext. Pumped from the platform surface once per frame.
+/* mouse + gamepad input. ADDITIVE to zcsr/input.h (keyboard there is
+ * unchanged). Module: modules/inputext. Pumped from the platform surface once per frame.
  * Backend: Win RawInput+XInput / Linux X11+evdev / macOS IOKit HID + GameController.
  * No runtime heap: state lives in a caller buffer. */
 #include "platform.h"  /* zcsr_surface */

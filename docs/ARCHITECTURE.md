@@ -14,6 +14,7 @@ UIM, the runtime shell, the editor and the 2.5D tools are separate repositories.
 
 **Exclusions:** Allocations made internally by system libraries are NOT counted against the zero-heap constraint:
 - Wayland client library (`libwayland-client`)
+- X11/GLX (`libX11`, `libGL`)
 - PipeWire (`libpipewire-0.3`, `libspa-0.2`)
 - EGL / OpenGL (libEGL, libOpenGL, GLAD loader)
 - Operating system APIs (Win32, Android NDK, Cocoa)
@@ -37,7 +38,7 @@ The native debug overlay and 2.5D workspace live in the `zcsr_tools` repository,
 | Platform | Window | Rendering | Audio | Input |
 |----------|--------|-----------|-------|-------|
 | Windows | Win32 | WGL + OpenGL | WASAPI | Win32 message pump |
-| Linux | Wayland + xdg-shell | EGL + OpenGL | PipeWire | Wayland (wl_keyboard, wl_pointer) |
+| Linux | X11/GLX or Wayland/EGL (auto prefers X11 when both exist) | GLX/EGL + OpenGL 3.3 Core | PipeWire or ALSA | X11/XIM or Wayland (wl_keyboard, wl_pointer) |
 | Android | ANativeWindow | EGL + OpenGL | AAudio | AInputEvent |
 | macOS | Cocoa | NSOpenGL | AudioUnit | Cocoa events |
 
@@ -46,28 +47,37 @@ The native debug overlay and 2.5D workspace live in the `zcsr_tools` repository,
 `modules/platform/` is split per-backend:
 - `platform_common.c` — shared pool, DPI, focus callbacks, display helpers
 - `platform_win32.c` — Windows backend
-- `platform_wayland.c` — Wayland backend
+- `platform_x11.c` — X11/GLX backend
+- `platform_wayland.c` — Wayland/EGL backend
 - `platform_android.c` — Android backend
 - `platform_cocoa.m` — macOS backend
 - `platform_internal.h` — shared struct definitions and internal interfaces
 
+Linux selects one window backend at configure time with
+`ZCSR_LINUX_WINDOW_BACKEND=auto|x11|wayland|none`. `auto` prefers X11/GLX when
+both X11 and Wayland development packages exist, then falls back to Wayland/EGL.
 Each backend file contains only its platform's code; no cross-platform `#if` blocks.
 
 ## Audio Backend
 
 `modules/audiomix/`:
-- `audiomix.c` — core mixer (channel mixing, format conversion)
-- `audiomix_pipewire.c` — PipeWire output backend (Linux)
+- `audiomix.c` — core mixer (channel mixing, format conversion) plus Linux ALSA output
+- `audiomix_pipewire.c` — optional PipeWire output backend (Linux)
 - `audiomix_internal.h` — shared backend struct and interface
 
-The PipeWire backend uses a SPSC ring buffer between the mixer thread and the realtime process callback, with int32 accumulation and clamping to avoid overflow.
+CMake selects the Linux backend by availability (`ZCSR_AUDIO_BACKEND=auto|pipewire|alsa|none`).
+`auto` prefers PipeWire, then ALSA; only when neither exists does the mixer use
+the documented silent fallback. `zcsr_audiomix_backend_name()` reports the
+compiled backend. The PipeWire backend uses a SPSC ring buffer between the mixer
+thread and the realtime process callback, with int32 accumulation and clamping
+to avoid overflow.
 
 ## Input Backend
 
 `modules/input/` — keyboard input (zcsr_input)
 `modules/inputext/` — mouse + gamepad input (zcsr_input_ext)
 
-Linux uses Wayland `wl_keyboard` and `wl_pointer` with evdev keycode mapping (zcsr_keycode = evdev + 8, matching X11 convention).
+Linux uses either X11/XIM or Wayland `wl_keyboard`/`wl_pointer` with evdev keycode mapping (zcsr_keycode = evdev + 8, matching X11 convention). `inputext` adds mouse/gamepad on both paths; the selected window backend determines which native event pump is compiled.
 
 ## Thread Model
 

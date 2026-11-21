@@ -1,7 +1,7 @@
 #ifndef ZCSR_WINDOW_EVENT_H
 #define ZCSR_WINDOW_EVENT_H
-/* Agent 1 (Game Core) — window-level events (close request) + clean shutdown.
- * Ties to the platform surface. Implementer: modules/input (or platform). */
+/* window-level events (close request) + clean shutdown.
+ * Ties to the platform surface. Module: modules/input (or platform). */
 #include "platform.h"
 #include <stdbool.h>
 
