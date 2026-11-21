@@ -66,7 +66,11 @@ static LRESULT CALLBACK zcsr_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
         return DefWindowProcA(hwnd, msg, wp, lp);
     }
     if (msg == WM_CLOSE) {
-        ShowWindow(hwnd, SW_HIDE);
+        /* Do not hide or destroy here: the app owns the decision (unsaved
+         * changes must be able to cancel). Record the request and let
+         * zcsr_window_close_requested() deliver it. */
+        zcsr_surface* s = zcsr_surface_find_by_hwnd(hwnd);
+        if (s) s->close_requested = true;
         return 0;
     }
     if (msg == WM_DPICHANGED) {
@@ -160,6 +164,7 @@ zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
         return 0;
     }
     surface->hwnd = hwnd;
+    surface->close_requested = false;
     surface->mode = ZCSR_WINDOW_BORDERLESS; /* CreateWindowEx uses WS_POPUP + WS_EX_LAYERED overlay */
     /* Stash the requested bounds as the windowed-mode geometry; borderless
      * is always full-screen, so expand to the monitor now. */
@@ -362,6 +367,22 @@ bool zcsr_display_get(int index, zcsr_display_info* out) {
     slot = zcsr_win_index_to_slot(index);
     if (slot < 0) return false;
     return zcsr_win_fill_info(slot, out);
+}
+
+bool zcsr_platform_win32_take_close(zcsr_surface* s) {
+    bool r;
+    size_t i;
+    if (!s) return false;
+    /* Identity check before touching any field: zcsr_window_close_requested()
+     * is public and a caller may pass a surface this backend never created
+     * (or a stale one). Dereferencing such a pointer is undefined behaviour. */
+    for (i = 0; i < ZCSR_SURFACE_POOL; ++i) {
+        if (s == &zcsr_surfaces[i]) break;
+    }
+    if (i == ZCSR_SURFACE_POOL || !s->in_use) return false;
+    r = s->close_requested;
+    s->close_requested = false;
+    return r;
 }
 
 /* Resolve a stable display id to a current HMONITOR and its monitor rect. */
