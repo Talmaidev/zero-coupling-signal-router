@@ -31,6 +31,7 @@ typedef struct { float x, y, w, h; } zcsr_rectf; /* float rectangle, for viewpor
 
 /* Layout is part of the public contract (viewport math and UI hit-tests pass
  * these by value across module boundaries). Freeze width AND field order. */
+#ifndef __cplusplus
 _Static_assert(sizeof(zcsr_rect) == 16, "zcsr_rect ABI: must stay 16 bytes");
 _Static_assert(offsetof(zcsr_rect, x) == 0, "zcsr_rect ABI: x offset");
 _Static_assert(offsetof(zcsr_rect, y) == 4, "zcsr_rect ABI: y offset");
@@ -41,6 +42,7 @@ _Static_assert(offsetof(zcsr_rectf, x) == 0, "zcsr_rectf ABI: x offset");
 _Static_assert(offsetof(zcsr_rectf, y) == 4, "zcsr_rectf ABI: y offset");
 _Static_assert(offsetof(zcsr_rectf, w) == 8, "zcsr_rectf ABI: w offset");
 _Static_assert(offsetof(zcsr_rectf, h) == 12, "zcsr_rectf ABI: h offset");
+#endif
 
 typedef struct zcsr_surface zcsr_surface; /* opaque native top-level surface */
 
