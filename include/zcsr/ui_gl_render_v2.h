@@ -3,7 +3,9 @@
 /* OpenGL rendering backend for ZCSR UI v2 runtime.
  * Translates the abstract draw command list into gl_render primitives.
  * Implemented in modules/ui/ui_gl_render_v2.c. */
+#include <stddef.h>
 #include "zcsr/ui_draw_v2.h"
+#include "zcsr/ui_gl_backend.h"
 #include "zcsr/gl_render.h"
 
 #ifdef __cplusplus
