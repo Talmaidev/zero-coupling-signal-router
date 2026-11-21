@@ -41,6 +41,8 @@ struct zcsr_surface {
     int   win_x, win_y, win_w, win_h;
     bool  drag_region_enabled;
     int   drag_x, drag_y, drag_w, drag_h;
+    /* WM_CLOSE records a request; the app decides whether to exit. */
+    bool  close_requested;
 #elif defined(__linux__) && !defined(__ANDROID__)
     /* Wayland objects — stored as void* to keep this header free of
      * <wayland-client.h>; platform_wayland.c casts to concrete types. */
