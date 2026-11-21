@@ -1,25 +1,9 @@
 ZCSR change notes
 2026-11-21
 
-history
-- keep one author line
-- remove temporary notes and review dumps
-- keep source, build files and technical docs
-- keep the full engine history on main
-- keep perf and docs work as change tags
-- no release tag for now
-
-scope
-- core
-- render
-- input
-- audio
-- tools
-- docs
-- build
-- tests
-
-refs
-- change/perf-fastpath
-- change/docs-alignment
-- archive/wip-engine-20261121
+1.0.0
+- first stable public release of the C11 2.5D engine
+- 26 module libraries; 31 CTest cases pass in Debug and Release
+- public history spans 2026-05-24 to 2026-11-21 on main
+- source, build files and technical docs are the release surface
+- old work branches and tags remain only in the private archive

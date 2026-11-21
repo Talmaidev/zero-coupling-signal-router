@@ -1,0 +1,10 @@
+#ifndef ZCSR_VERSION_H
+#define ZCSR_VERSION_H
+
+#define ZCSR_VERSION_MAJOR 1
+#define ZCSR_VERSION_MINOR 0
+#define ZCSR_VERSION_PATCH 0
+
+#define ZCSR_VERSION_STRING "1.0.0"
+
+#endif

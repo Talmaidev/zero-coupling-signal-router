@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING
     "Minimum supported macOS version")
 
-project(zcsr C)
+project(zcsr VERSION 1.0.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)          # C11/C17 — no C++
 set(CMAKE_C_STANDARD_REQUIRED ON)

@@ -13,9 +13,9 @@ zcsr_editor                        开发者入口，编辑页面/布局/资产
   ├── UIM                          UI Instance Model + page manager
   ├── zcsr_runtime_shell           窗口、主循环、宿主生命周期
   ├── zcsr_tools                   debug overlay + 2.5D workspace
-  └── zcsr engine                  25 个静态库
+  └── zcsr engine                  26 个静态库
        ├── core / signal / hsm / platform
-       ├── glrender / light2d / sprite / camera / camera3d / culling / atlas / font / image
+       ├── glrender / light2d / sprite / camera / camera3d / culling / atlas / font / image / color_pipeline
        ├── audio / audiomix / music / input / inputext / assets / resource / file_service
        └── collision / save / ui / viewport
 ```
@@ -42,9 +42,11 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-当前基线是 26 个模块库、31 个 CTest。测试覆盖 core、signal、hsm、platform、glrender、light2d、audio、music、input、collision、save、ui、viewport、color_pipeline 等模块。
+当前基线是 26 个模块库、31 个 CTest。Debug 与 Release 均通过 31/31。测试覆盖 core、signal、hsm、platform、glrender、light2d、audio、music、input、collision、save、ui、viewport、color_pipeline 等模块。
 
-## Release 1.0 口径
+## Release 1.0.0 口径
+
+当前版本：`1.0.0`（`include/zcsr/version.h`）。
 
 1.0 只收可构建、可回归、产品实际使用的契约：
 
