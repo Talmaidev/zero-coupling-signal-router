@@ -34,6 +34,7 @@ PFNGLCHECKFRAMEBUFFERSTATUSPROC glad_glCheckFramebufferStatus;
 PFNGLDELETEFRAMEBUFFERSPROC glad_glDeleteFramebuffers;
 PFNGLVERTEXATTRIBDIVISORPROC glad_glVertexAttribDivisor;
 PFNGLDRAWELEMENTSINSTANCEDPROC glad_glDrawElementsInstanced;
+PFNGLDRAWARRAYSINSTANCEDPROC glad_glDrawArraysInstanced;
 PFNGLUNIFORM1FPROC glad_glUniform1f;
 PFNGLUNIFORM3FPROC glad_glUniform3f;
 PFNGLUNIFORM4FPROC glad_glUniform4f;
@@ -93,6 +94,7 @@ typedef union {
     PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers;
     PFNGLVERTEXATTRIBDIVISORPROC glVertexAttribDivisor;
     PFNGLDRAWELEMENTSINSTANCEDPROC glDrawElementsInstanced;
+    PFNGLDRAWARRAYSINSTANCEDPROC glDrawArraysInstanced;
     PFNGLUNIFORM1FPROC glUniform1f;
     PFNGLUNIFORM3FPROC glUniform3f;
     PFNGLUNIFORM4FPROC glUniform4f;
@@ -156,6 +158,7 @@ int gladLoadGLLoader(GLADloadproc load) {
     ZCSR_LOAD(glDeleteFramebuffers);
     ZCSR_LOAD(glVertexAttribDivisor);
     ZCSR_LOAD(glDrawElementsInstanced);
+    ZCSR_LOAD(glDrawArraysInstanced);
     ZCSR_LOAD(glUniform1f);
     ZCSR_LOAD(glUniform3f);
     ZCSR_LOAD(glUniform4f);

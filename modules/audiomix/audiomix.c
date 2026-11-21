@@ -1,7 +1,8 @@
 /* Engine-ext Agent 2 - multi-channel audio mixer.
  * Fixed pools only, one mixer thread, command/finished rings, no cross-module includes.
- * Linux attempts ALSA dynamically (no CMake find_package); if no device exists, the mixer
- * still runs its logic path so headless CI can validate threading/state.
+ * Linux uses the optional PipeWire backend when CMake found libpipewire-0.3/libspa-0.2;
+ * without it the silent fallback keeps the mixer's timing/threading contract so headless
+ * CI can validate state. That fallback is a documented capability, not a claimed sound path.
  */
 #include <stdlib.h>
 #include "zcsr/audio_mix.h"
@@ -1572,10 +1573,6 @@ void zcsr_mix_backend_close(zcsr_mix_backend* b) {
         CloseHandle(b->wave_event);
         b->wave_event = NULL;
     }
-    if (b->wave_buffer) {
-        free(b->wave_buffer);
-        b->wave_buffer = NULL;
-    }
 
     *b = (zcsr_mix_backend){ 0 };
 
@@ -1767,8 +1764,6 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
         }
 
         b->wave_buffer_frames = ZCSR_MIX_PERIOD_FRAMES * 4;
-        b->wave_buffer = (int16_t*)calloc(b->wave_buffer_frames * 2, sizeof(int16_t));
-        if (!b->wave_buffer) goto fail;
 
         b->use_waveout = true;
         b->opened = true;
@@ -2505,8 +2500,94 @@ void zcsr_mix_backend_write(
     }
 }
 
+#elif defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_AUDIO_BACKEND_ALSA)
+/* Real ALSA output for laptops without a PipeWire session. 44.1 kHz stereo
+ * S16, four periods of 512 frames; a blocking write is the mixer thread's
+ * pacing, so no extra sleep is added on success. */
+void zcsr_mix_backend_open(zcsr_mix_backend* b) {
+    snd_pcm_hw_params_t* hw = NULL;
+    unsigned rate = ZCSR_MIX_RATE;
+    snd_pcm_uframes_t period = ZCSR_MIX_PERIOD_FRAMES;
+    unsigned periods = 4;
+    int rc;
+    if (!b) return;
+    b->opened = false;
+    b->alsa_pcm = NULL;
+    rc = snd_pcm_open(&b->alsa_pcm, "default", SND_PCM_STREAM_PLAYBACK, 0);
+    if (rc < 0) {
+        fprintf(stderr, "[audiomix] ALSA open(default) failed: %s\n", snd_strerror(rc));
+        b->alsa_pcm = NULL;
+        return;
+    }
+    snd_pcm_hw_params_alloca(&hw);
+    snd_pcm_hw_params_any(b->alsa_pcm, hw);
+    snd_pcm_hw_params_set_access(b->alsa_pcm, hw, SND_PCM_ACCESS_RW_INTERLEAVED);
+    snd_pcm_hw_params_set_format(b->alsa_pcm, hw, SND_PCM_FORMAT_S16_LE);
+    snd_pcm_hw_params_set_channels(b->alsa_pcm, hw, 2);
+    snd_pcm_hw_params_set_rate_near(b->alsa_pcm, hw, &rate, NULL);
+    snd_pcm_hw_params_set_period_size_near(b->alsa_pcm, hw, &period, NULL);
+    snd_pcm_hw_params_set_periods_near(b->alsa_pcm, hw, &periods, NULL);
+    rc = snd_pcm_hw_params(b->alsa_pcm, hw);
+    if (rc < 0) {
+        fprintf(stderr, "[audiomix] ALSA hw_params failed: %s\n", snd_strerror(rc));
+        snd_pcm_close(b->alsa_pcm);
+        b->alsa_pcm = NULL;
+        return;
+    }
+    rc = snd_pcm_prepare(b->alsa_pcm);
+    if (rc < 0) {
+        fprintf(stderr, "[audiomix] ALSA prepare failed: %s\n", snd_strerror(rc));
+        snd_pcm_close(b->alsa_pcm);
+        b->alsa_pcm = NULL;
+        return;
+    }
+    b->opened = true;
+}
+
+void zcsr_mix_backend_close(zcsr_mix_backend* b) {
+    zcsr_mixer* owner;
+    if (!b) return;
+    owner = b->owner;
+    if (b->alsa_pcm) {
+        snd_pcm_drop(b->alsa_pcm);
+        snd_pcm_close(b->alsa_pcm);
+    }
+    *b = (zcsr_mix_backend){ 0 };
+    b->owner = owner;
+}
+
+void zcsr_mix_backend_write(zcsr_mix_backend* b, const int16_t* pcm, unsigned frames) {
+    unsigned done = 0;
+    if (!b || !b->alsa_pcm || !pcm || frames == 0) {
+        zcsr_mix_sleep_period();
+        return;
+    }
+    while (done < frames) {
+        snd_pcm_sframes_t wrote = snd_pcm_writei(
+            b->alsa_pcm, pcm + (size_t)done * 2U, frames - done);
+        if (wrote > 0) {
+            done += (unsigned)wrote;
+            continue;
+        }
+        if (wrote == -EPIPE) {
+            snd_pcm_prepare(b->alsa_pcm);
+            continue;
+        }
+        if (wrote == -ESTRPIPE) {
+            while (snd_pcm_resume(b->alsa_pcm) == -EAGAIN) {
+                zcsr_mix_sleep_period();
+            }
+            snd_pcm_prepare(b->alsa_pcm);
+            continue;
+        }
+        fprintf(stderr, "[audiomix] ALSA write failed: %s\n", snd_strerror((int)wrote));
+        zcsr_mix_sleep_period();
+        return;
+    }
+}
+
 #elif defined(__linux__) && !defined(__ANDROID__) && !defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
-/* Headless/no-PipeWire Linux: keep the mixer contract and consume periods
+/* Headless/no-PipeWire/no-ALSA Linux: keep the mixer contract and consume periods
  * silently.  This is a real backend implementation, not a fake success path. */
 void zcsr_mix_backend_close(zcsr_mix_backend* b) {
     zcsr_mixer* owner;
@@ -2581,6 +2662,8 @@ static bool zcsr_mix_backend_close_ex(zcsr_mixer* m) {
 #elif defined(__linux__) && !defined(__ANDROID__)
 #  if defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
     return !m->backend.opened && m->backend.pw.loop == NULL;
+#  elif defined(ZCSR_AUDIO_BACKEND_ALSA)
+    return !m->backend.opened && m->backend.alsa_pcm == NULL;
 #  else
     return !m->backend.opened;
 #  endif
@@ -2762,6 +2845,35 @@ static bool zcsr_linux_monotonic_ms(uint64_t* out_ms) {
     return true;
 }
 
+/* PipeWire 的 backend_write 只把 PCM 写进 SPSC ring 就返回（ring 满时丢帧），
+ * 不像 Win32 的 waveOut 会阻塞到播放完成。因此 mixer 线程必须自己按
+ * 512 帧 / 44100 Hz 的墙钟节奏走；否则会以 CPU 速度把整首歌渲染完，
+ * zcsr_mix_stream_consumed_frames() 瞬间涨到文件结尾，音乐 position 直接
+ * 跳到 duration。这里用 CLOCK_MONOTONIC 的绝对截止时间，避免累计漂移；
+ * 落后超过两个周期时重置，不做突发追赶。 */
+static void zcsr_linux_pace_period(uint64_t* next_ns) {
+    struct timespec ts;
+    uint64_t now_ns;
+    const uint64_t period_ns =
+        (uint64_t)ZCSR_MIX_PERIOD_FRAMES * 1000000000ull / (uint64_t)ZCSR_MIX_RATE;
+
+    if (!next_ns) return;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        zcsr_mix_sleep_period();
+        return;
+    }
+
+    now_ns = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    if (*next_ns == 0ull || now_ns > *next_ns + period_ns * 2ull) {
+        *next_ns = now_ns;
+    }
+    *next_ns += period_ns;
+
+    ts.tv_sec = (time_t)(*next_ns / 1000000000ull);
+    ts.tv_nsec = (long)(*next_ns % 1000000000ull);
+    (void)clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
+}
+
 static void zcsr_linux_poll_cards(zcsr_mixer* m) {
     char current[sizeof m->device_cards_snapshot];
     size_t total = 0U;
@@ -2870,6 +2982,7 @@ static void* zcsr_mix_thread_main(void* arg)
 
 #if defined(__linux__) && !defined(__ANDROID__)
     uint64_t next_cards_poll_ms = 0U;
+    uint64_t next_period_ns = 0ull;
     bool first_cards_poll_done = false;
     bool cards_poll_deadline_valid = false;
 #endif
@@ -2963,6 +3076,13 @@ static void* zcsr_mix_thread_main(void* arg)
             ZCSR_MIX_PERIOD_FRAMES);
 
 #if defined(__linux__) && !defined(__ANDROID__)
+        /* PipeWire 不阻塞写；按墙钟节奏推进，Windows 由 waveOut 阻塞限速。 */
+        if (m->backend.opened) {
+            zcsr_linux_pace_period(&next_period_ns);
+        }
+#endif
+
+#if defined(__linux__) && !defined(__ANDROID__)
         {
             uint64_t now_ms;
 
@@ -3001,6 +3121,32 @@ static void* zcsr_mix_thread_main(void* arg)
     return 0;
 #else
     return 0;
+#endif
+}
+
+bool zcsr_mix_output_supported(void) {
+#if defined(_WIN32) || defined(__APPLE__) || defined(__ANDROID__)
+    return true;
+#elif defined(__linux__) && (defined(ZCSR_AUDIO_BACKEND_PIPEWIRE) || defined(ZCSR_AUDIO_BACKEND_ALSA))
+    return true;
+#else
+    return false;
+#endif
+}
+
+const char* zcsr_audiomix_backend_name(void) {
+#if defined(__ANDROID__)
+    return "aaudio";
+#elif defined(__APPLE__)
+    return "audiounit";
+#elif defined(_WIN32)
+    return "wasapi";
+#elif defined(__linux__) && defined(ZCSR_AUDIO_BACKEND_PIPEWIRE)
+    return "pipewire";
+#elif defined(__linux__) && defined(ZCSR_AUDIO_BACKEND_ALSA)
+    return "alsa";
+#else
+    return "silent";
 #endif
 }
 

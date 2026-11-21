@@ -91,6 +91,31 @@ typedef struct {
     char path[1024];
 } posix_dir_t;
 
+#define POSIX_DIR_POOL_CAPACITY 16
+static posix_dir_t g_posix_dirs[POSIX_DIR_POOL_CAPACITY];
+static bool g_posix_dir_used[POSIX_DIR_POOL_CAPACITY];
+
+static posix_dir_t* posix_dir_alloc(void) {
+    for (size_t i = 0u; i < POSIX_DIR_POOL_CAPACITY; ++i) {
+        if (!g_posix_dir_used[i]) {
+            g_posix_dir_used[i] = true;
+            memset(&g_posix_dirs[i], 0, sizeof(g_posix_dirs[i]));
+            return &g_posix_dirs[i];
+        }
+    }
+    return NULL;
+}
+
+static void posix_dir_free(posix_dir_t* dir) {
+    for (size_t i = 0u; i < POSIX_DIR_POOL_CAPACITY; ++i) {
+        if (dir == &g_posix_dirs[i]) {
+            g_posix_dir_used[i] = false;
+            memset(&g_posix_dirs[i], 0, sizeof(g_posix_dirs[i]));
+            return;
+        }
+    }
+}
+
 static zcsr_file_result_t posix_dir_open(const char* native_path, void** out_dir) {
     if (!native_path || !out_dir) return ZCSR_FILE_ERR_ARGUMENT;
 
@@ -99,16 +124,16 @@ static zcsr_file_result_t posix_dir_open(const char* native_path, void** out_dir
         return posix_err(errno);
     }
 
-    posix_dir_t* dir = (posix_dir_t*)calloc(1, sizeof(posix_dir_t));
+    posix_dir_t* dir = posix_dir_alloc();
     if (!dir) {
         closedir(d);
-        return ZCSR_FILE_ERR_IO;
+        return ZCSR_FILE_ERR_INTERNAL;
     }
     dir->dir = d;
     size_t n = strlen(native_path);
     if (n >= sizeof(dir->path)) {
         closedir(d);
-        free(dir);
+        posix_dir_free(dir);
         return ZCSR_FILE_ERR_ARGUMENT;
     }
     memcpy(dir->path, native_path, n + 1);
@@ -194,7 +219,7 @@ static zcsr_file_result_t posix_dir_close(void* dir_ptr) {
     posix_dir_t* dir = (posix_dir_t*)dir_ptr;
     if (!dir) return ZCSR_FILE_ERR_ARGUMENT;
     if (dir->dir) closedir(dir->dir);
-    free(dir);
+    posix_dir_free(dir);
     return ZCSR_FILE_OK;
 }
 
@@ -213,6 +238,31 @@ typedef struct {
     int fd;
 } posix_file_t;
 
+#define POSIX_FILE_POOL_CAPACITY 64
+static posix_file_t g_posix_files[POSIX_FILE_POOL_CAPACITY];
+static bool g_posix_file_used[POSIX_FILE_POOL_CAPACITY];
+
+static posix_file_t* posix_file_alloc(void) {
+    for (size_t i = 0u; i < POSIX_FILE_POOL_CAPACITY; ++i) {
+        if (!g_posix_file_used[i]) {
+            g_posix_file_used[i] = true;
+            memset(&g_posix_files[i], 0, sizeof(g_posix_files[i]));
+            return &g_posix_files[i];
+        }
+    }
+    return NULL;
+}
+
+static void posix_file_free(posix_file_t* file) {
+    for (size_t i = 0u; i < POSIX_FILE_POOL_CAPACITY; ++i) {
+        if (file == &g_posix_files[i]) {
+            g_posix_file_used[i] = false;
+            memset(&g_posix_files[i], 0, sizeof(g_posix_files[i]));
+            return;
+        }
+    }
+}
+
 static zcsr_file_result_t posix_open_read(const char* native_path, void** out_file) {
     if (!native_path || !out_file) return ZCSR_FILE_ERR_ARGUMENT;
 
@@ -221,10 +271,10 @@ static zcsr_file_result_t posix_open_read(const char* native_path, void** out_fi
         return posix_err(errno);
     }
 
-    posix_file_t* file = (posix_file_t*)calloc(1, sizeof(posix_file_t));
+    posix_file_t* file = posix_file_alloc();
     if (!file) {
         close(fd);
-        return ZCSR_FILE_ERR_IO;
+        return ZCSR_FILE_ERR_INTERNAL;
     }
     file->fd = fd;
     *out_file = file;
@@ -239,10 +289,10 @@ static zcsr_file_result_t posix_open_write(const char* native_path, void** out_f
         return posix_err(errno);
     }
 
-    posix_file_t* file = (posix_file_t*)calloc(1, sizeof(posix_file_t));
+    posix_file_t* file = posix_file_alloc();
     if (!file) {
         close(fd);
-        return ZCSR_FILE_ERR_IO;
+        return ZCSR_FILE_ERR_INTERNAL;
     }
     file->fd = fd;
     *out_file = file;
@@ -314,7 +364,7 @@ static zcsr_file_result_t posix_close(void* file_ptr) {
     posix_file_t* file = (posix_file_t*)file_ptr;
     if (!file) return ZCSR_FILE_ERR_ARGUMENT;
     int rc = close(file->fd);
-    free(file);
+    posix_file_free(file);
     return rc == 0 ? ZCSR_FILE_OK : posix_err(errno);
 }
 

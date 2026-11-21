@@ -31,6 +31,10 @@ zcsr_gl_renderer* zcsr_gl_create(zcsr_surface* surface, void* buffer, size_t byt
         memset(r, 0, sizeof(*r));
         return 0;
     }
+    /* Context is current now: classify GL_VENDOR/GL_RENDERER at runtime. This
+     * never selects a vendor path and never fails creation; it makes the actual
+     * Mesa driver visible on Intel/AMD iGPU machines. */
+    zcsr_gl_detect_gpu(r);
     if (!zcsr_gl_core_init(r)) {
         /* core_init may have created partial GL resources (program/vao/vbo/fbo/white_tex/font_tex)
          * before failing — release them before tearing down platform. */

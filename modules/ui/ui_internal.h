@@ -9,6 +9,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define ZCSR_UI_MAX_INSTANCE_COUNT 4
+#define ZCSR_UI_MAX_NODE_COUNT 256
+#define ZCSR_UI_MAX_EVENT_COUNT 128
+#define ZCSR_UI_MAX_DRAW_COMMAND_COUNT 1024
+#define ZCSR_UI_TEXT_CAPACITY 256
+
 /* Internal node representation. */
 typedef struct ZCSR_UI_Node {
     ZCSR_NodeId       id;
@@ -27,7 +33,7 @@ typedef struct ZCSR_UI_Node {
     int32_t           int_val;
     float             scroll_x, scroll_y;
     float             content_w, content_h;
-    char*             text_buf;
+    char              text_buf[ZCSR_UI_TEXT_CAPACITY];
     uint32_t          text_cap;
     uint32_t          caret_byte;
 
@@ -62,18 +68,18 @@ typedef struct ZCSR_UI_Node {
 } ZCSR_UI_Node;
 
 struct ZCSR_UI {
-    ZCSR_UI_Node* nodes;
+    ZCSR_UI_Node nodes[ZCSR_UI_MAX_NODE_COUNT];
     uint32_t      node_count;
     uint32_t      node_capacity;
     ZCSR_NodeId   next_id;
 
-    ZCSR_UIEvent* events;
+    ZCSR_UIEvent events[ZCSR_UI_MAX_EVENT_COUNT];
     uint32_t      event_cap;
     uint32_t      event_head;
     uint32_t      event_count;
     uint64_t      event_sequence;
 
-    ZCSR_DrawCommand* draw_cmds;
+    ZCSR_DrawCommand draw_cmds[ZCSR_UI_MAX_DRAW_COMMAND_COUNT];
     uint32_t          draw_cap;
     uint32_t          draw_count;
 
@@ -84,6 +90,7 @@ struct ZCSR_UI {
     float       scroll_capture_start_y;
     float       scroll_capture_start_offset;
     uint32_t    captured_pointer;
+    bool        in_use;
 };
 
 ZCSR_UI_Node* ui_find_node(ZCSR_UI* ui, ZCSR_NodeId id);

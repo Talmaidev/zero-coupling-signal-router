@@ -12,6 +12,7 @@
 #define ZCSR_MAX_MOUNTS 16
 #define ZCSR_MAX_URI_LEN 512
 #define ZCSR_MAX_PATH_LEN 256
+#define ZCSR_FILE_SERVICE_POOL_CAPACITY 4
 
 typedef struct zcsr_mount_entry {
     char scheme[64];
@@ -23,6 +24,11 @@ typedef struct zcsr_mount_entry {
 struct zcsr_file_service {
     zcsr_mount_entry_t mounts[ZCSR_MAX_MOUNTS];
 };
+
+/* 固定服务池：Zero-Heap Policy 下不允许 create/destroy 走 calloc/free。
+ * 服务句柄只在主线程生命周期内使用；容量按宿主同时打开的 file service 计。 */
+static struct zcsr_file_service g_file_services[ZCSR_FILE_SERVICE_POOL_CAPACITY];
+static bool g_file_service_used[ZCSR_FILE_SERVICE_POOL_CAPACITY];
 
 /* 内部：路径规范化 + 防止 .. 穿越
  *
@@ -72,8 +78,22 @@ static void normalize_path(char* path) {
 
         if (len == 1u && src[start] == '.') continue;
         if (len == 2u && src[start] == '.' && src[start + 1] == '.') {
-            while (o > prefix && out[o - 1] != '/') o--;
-            if (o > prefix && out[o - 1] == '/') o--;
+            size_t seg = o;
+            bool last_dotdot;
+            while (seg > prefix && out[seg - 1u] != '/') seg--;
+            last_dotdot = (o - seg == 2u && out[seg] == '.' && out[seg + 1u] == '.');
+
+            if (o > prefix && !last_dotdot) {
+                o = seg;
+                if (o > prefix && out[o - 1u] == '/') o--;
+            } else if (prefix == 0u) {
+                /* Relative paths must keep leading "..": build/../pvz is
+                 * different from build/pvz. Absolute paths still clamp at /. */
+                if (o > 0u && out[o - 1u] != '/') out[o++] = '/';
+                if (o + 2u >= sizeof(out)) break;
+                out[o++] = '.';
+                out[o++] = '.';
+            }
             continue;
         }
 
@@ -141,17 +161,30 @@ static zcsr_file_result_t resolve_uri(zcsr_file_service_t* fs,
 }
 
 zcsr_file_service_t* zcsr_file_service_create(void) {
-    zcsr_file_service_t* fs = (zcsr_file_service_t*)calloc(1, sizeof(zcsr_file_service_t));
-    if (!fs) {
-        ZCSR_LOG_ERROR("file_service", "Failed to allocate file service");
+    for (size_t i = 0u; i < ZCSR_FILE_SERVICE_POOL_CAPACITY; ++i) {
+        if (!g_file_service_used[i]) {
+            g_file_service_used[i] = true;
+            memset(&g_file_services[i], 0, sizeof(g_file_services[i]));
+            return &g_file_services[i];
+        }
     }
-    return fs;
+    ZCSR_LOG_ERROR("file_service", "No free file service slots (max %d)",
+                   ZCSR_FILE_SERVICE_POOL_CAPACITY);
+    return NULL;
 }
 
 void zcsr_file_service_destroy(zcsr_file_service_t* fs) {
     if (!fs) return;
-    free(fs);
-    ZCSR_LOG_INFO("file_service", "File service destroyed");
+    for (size_t i = 0u; i < ZCSR_FILE_SERVICE_POOL_CAPACITY; ++i) {
+        if (fs == &g_file_services[i]) {
+            if (!g_file_service_used[i]) return;
+            memset(&g_file_services[i], 0, sizeof(g_file_services[i]));
+            g_file_service_used[i] = false;
+            ZCSR_LOG_INFO("file_service", "File service destroyed");
+            return;
+        }
+    }
+    ZCSR_LOG_WARN("file_service", "Destroy ignored: handle is not from the service pool");
 }
 
 zcsr_file_result_t zcsr_file_service_mount(zcsr_file_service_t* fs,

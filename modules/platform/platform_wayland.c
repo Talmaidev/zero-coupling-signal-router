@@ -1,12 +1,7 @@
-/* platform_wayland.c — Wayland window backend（目前 Linux 上唯一实现的窗口后端）。
+/* platform_wayland.c — Wayland window backend (SteamOS/Gamescope primary).
  *
- * 编译门槛（两处都要满足，缺一不可）：
- *   1) 本文件的整文件守卫 `#if defined(__linux__) && !defined(__ANDROID__)`；
- *   2) CMake 里 Linux 分支把本文件显式 target_sources 进 zcsr_platform，
- *      并定义 ZCSR_LINUX_BACKEND_WAYLAND / 链接 libwayland-client。
- * 注意：守卫故意不检查 ZCSR_LINUX_BACKEND_WAYLAND —— 因为本文件是 Linux 的
- * 默认（唯一）后端。将来补 X11 后端时，必须先把这个守卫改成后端二选一，
- * 否则 platform_x11.c 与本文件会在同一平台上重复定义同名符号。
+ * 编译门槛：Linux 非 Android，且 CMake 选中 ZCSR_LINUX_BACKEND_WAYLAND。
+ * X11 构建里本文件整文件剔除；platform_x11.c 提供同名符号。
  *
  * Zero-heap: uses the fixed surface pool from platform_internal.h, no malloc/calloc.
  * System library (libwayland-client) internal allocations are out of scope.
@@ -37,11 +32,10 @@
 #define WL_COMPOSITOR(s)((struct wl_compositor*)(s)->wl_compositor)
 #define XDG_WM_BASE(s)  ((struct xdg_wm_base*)(s)->xdg_wm_base)
 #define WL_SEAT(s)      ((struct wl_seat*)(s)->wl_seat)
+#define WL_OUTPUT(s)    ((struct wl_output*)(s)->wl_output)
 #define WL_SURFACE(s)   ((struct wl_surface*)(s)->wl_surface)
 #define XDG_SURFACE(s)  ((struct xdg_surface*)(s)->xdg_surface)
 #define XDG_TOPLEVEL(s) ((struct xdg_toplevel*)(s)->xdg_toplevel)
-#define WL_KEYBOARD(s)  ((struct wl_keyboard*)(s)->wl_keyboard)
-#define WL_POINTER(s)   ((struct wl_pointer*)(s)->wl_pointer)
 
 /* ================================================================== */
 /* xdg_wm_base ping/pong                                              */
@@ -70,10 +64,19 @@ static const struct xdg_surface_listener xdg_surface_listener = {
 /* ================================================================== */
 static void toplevel_configure(void* data, struct xdg_toplevel* tl,
                                 int32_t w, int32_t h, struct wl_array* states) {
-    (void)tl; (void)states;
     zcsr_surface* s = data;
+    uint32_t* state;
+    bool fullscreen = false;
+    (void)tl;
+    if (states) {
+        wl_array_for_each(state, states) {
+            if (*state == XDG_TOPLEVEL_STATE_FULLSCREEN) fullscreen = true;
+        }
+    }
     if (w > 0) s->width = w;
     if (h > 0) s->height = h;
+    if (fullscreen) s->mode = ZCSR_WINDOW_FULLSCREEN;
+    else if (s->mode == ZCSR_WINDOW_FULLSCREEN) s->mode = ZCSR_WINDOW_WINDOWED;
 }
 static void toplevel_close(void* data, struct xdg_toplevel* tl) {
     (void)tl;
@@ -86,20 +89,100 @@ static const struct xdg_toplevel_listener toplevel_listener = {
 };
 
 /* ================================================================== */
+/* wl_output — real monitor geometry/scale/refresh                    */
+/* ================================================================== */
+static zcsr_display_info g_wayland_display;
+
+static void output_geometry(void* data, struct wl_output* output,
+                            int32_t x, int32_t y,
+                            int32_t physical_width, int32_t physical_height,
+                            int32_t subpixel, const char* make,
+                            const char* model, int32_t transform) {
+    zcsr_surface* s = data;
+    (void)output; (void)physical_width; (void)physical_height;
+    (void)subpixel; (void)make; (void)model; (void)transform;
+    if (!s) return;
+    g_wayland_display.x = x;
+    g_wayland_display.y = y;
+}
+
+static void output_mode(void* data, struct wl_output* output,
+                        uint32_t flags, int32_t width, int32_t height,
+                        int32_t refresh) {
+    zcsr_surface* s = data;
+    (void)output;
+    if (!s) return;
+    if ((flags & WL_OUTPUT_MODE_CURRENT) != 0u) {
+        s->output_width = width > 0 ? width : 0;
+        s->output_height = height > 0 ? height : 0;
+        s->output_refresh = refresh > 0 ? refresh / 1000 : 0;
+        g_wayland_display.width = s->output_width;
+        g_wayland_display.height = s->output_height;
+        g_wayland_display.refresh_hz = s->output_refresh;
+        g_wayland_display.is_primary = 1;
+        zcsr_display_set_name(&g_wayland_display,
+                              s->output_name[0] ? s->output_name : "Wayland");
+    }
+}
+
+static void output_done(void* data, struct wl_output* output) {
+    zcsr_surface* s = data;
+    (void)output;
+    if (!s) return;
+    zcsr_surface_update_dpi_scale(s, (float)(s->output_scale > 0 ? s->output_scale : 1));
+    g_wayland_display.dpi_scale = (float)(s->output_scale > 0 ? s->output_scale : 1);
+}
+
+static void output_scale(void* data, struct wl_output* output, int32_t factor) {
+    zcsr_surface* s = data;
+    (void)output;
+    if (!s) return;
+    s->output_scale = factor > 0 ? factor : 1;
+}
+
+static void output_name(void* data, struct wl_output* output, const char* name) {
+    zcsr_surface* s = data;
+    (void)output;
+    if (!s || !name) return;
+    zcsr_copy_name(s->output_name, sizeof(s->output_name), name);
+    zcsr_display_set_name(&g_wayland_display, name);
+}
+
+static void output_description(void* data, struct wl_output* output,
+                               const char* description) {
+    (void)data; (void)output; (void)description;
+}
+
+static const struct wl_output_listener output_listener = {
+    .geometry = output_geometry,
+    .mode = output_mode,
+    .done = output_done,
+    .scale = output_scale,
+    .name = output_name,
+    .description = output_description,
+};
+
+/* ================================================================== */
 /* registry — bind global objects                                     */
 /* ================================================================== */
 static void registry_global(void* data, struct wl_registry* reg,
                              uint32_t name, const char* iface, uint32_t version) {
-    (void)version;
     zcsr_surface* s = data;
     if (strcmp(iface, "wl_compositor") == 0) {
-        s->wl_compositor = wl_registry_bind(reg, name, &wl_compositor_interface, 4);
+        uint32_t v = version < 4u ? version : 4u;
+        s->wl_compositor = wl_registry_bind(reg, name, &wl_compositor_interface, v);
     } else if (strcmp(iface, "xdg_wm_base") == 0) {
-        s->xdg_wm_base = wl_registry_bind(reg, name, &xdg_wm_base_interface, 1);
+        uint32_t v = version < 1u ? version : 1u;
+        s->xdg_wm_base = wl_registry_bind(reg, name, &xdg_wm_base_interface, v);
         xdg_wm_base_add_listener(XDG_WM_BASE(s), &wm_base_listener, s);
     } else if (strcmp(iface, "wl_seat") == 0) {
-        s->wl_seat = wl_registry_bind(reg, name, &wl_seat_interface, 7);
+        uint32_t v = version < 7u ? version : 7u;
+        s->wl_seat = wl_registry_bind(reg, name, &wl_seat_interface, v);
         /* seat capabilities listener is bound by the input module (inputext_wayland.c). */
+    } else if (strcmp(iface, "wl_output") == 0 && !s->wl_output) {
+        uint32_t v = version < 4u ? version : 4u;
+        s->wl_output = wl_registry_bind(reg, name, &wl_output_interface, v);
+        wl_output_add_listener(WL_OUTPUT(s), &output_listener, s);
     }
     /* wl_shm not needed — we use EGL, not shared-memory buffers. */
 }
@@ -120,8 +203,15 @@ zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
 
     s->width  = bounds.w > 0 ? bounds.w : 800;
     s->height = bounds.h > 0 ? bounds.h : 600;
+    s->mode = ZCSR_WINDOW_WINDOWED;
     s->configured = false;
     s->close_requested = false;
+    s->output_width = 0;
+    s->output_height = 0;
+    s->output_refresh = 0;
+    s->output_scale = 1;
+    s->output_name[0] = '\0';
+    s->dpi_scale = 1.0f;
 
     s->wl_display = wl_display_connect(NULL);
     if (!s->wl_display) goto fail;
@@ -165,12 +255,17 @@ fail:
     return NULL;
 }
 
+zcsr_surface* zcsr_surface_create_opaque(const char* title, zcsr_rect bounds) {
+    /* Wayland toplevels are opaque unless a translucent buffer is attached.
+     * The benchmark path uses the same surface; no layered variant exists. */
+    return zcsr_surface_create(title, bounds);
+}
+
 void zcsr_surface_destroy(zcsr_surface* s) {
     if (!s) return;
-    if (s->wl_pointer)    { wl_pointer_destroy(WL_POINTER(s));       s->wl_pointer = NULL; }
-    if (s->wl_keyboard)   { wl_keyboard_destroy(WL_KEYBOARD(s));     s->wl_keyboard = NULL; }
+    if (s->xdg_toplevel)  { xdg_toplevel_destroy(XDG_TOPLEVEL(s));     s->xdg_toplevel = NULL; }
     if (s->wl_seat)       { wl_seat_destroy(WL_SEAT(s));              s->wl_seat = NULL; }
-    if (s->xdg_toplevel)  { xdg_toplevel_destroy(XDG_TOPLEVEL(s));   s->xdg_toplevel = NULL; }
+    if (s->wl_output)     { wl_output_destroy(WL_OUTPUT(s));          s->wl_output = NULL; }
     if (s->xdg_surface)   { xdg_surface_destroy(XDG_SURFACE(s));      s->xdg_surface = NULL; }
     if (s->wl_surface)    { wl_surface_destroy(WL_SURFACE(s));        s->wl_surface = NULL; }
     if (s->xdg_wm_base)   { xdg_wm_base_destroy(XDG_WM_BASE(s));      s->xdg_wm_base = NULL; }
@@ -213,6 +308,16 @@ void* zcsr_surface_native_display(const zcsr_surface* s) {
     return s ? (void*)s->wl_display : NULL;   /* wl_display* */
 }
 
+/* Android lifecycle binding is not supported on Wayland. */
+bool zcsr_surface_attach_native(zcsr_surface* s, void* native_window) {
+    (void)s; (void)native_window;
+    return false;
+}
+
+void zcsr_surface_detach_native(zcsr_surface* s) {
+    (void)s;
+}
+
 /* ================================================================== */
 /* Internal accessors for input / inputext modules (zero-coupling:    */
 /* declared extern in those TUs, no cross-module header include).     */
@@ -223,7 +328,14 @@ void* zcsr_platform_wayland_seat(const zcsr_surface* s) {
 
 bool zcsr_platform_wayland_take_close(zcsr_surface* s) {
     bool requested;
+    size_t i;
     if (!s) return false;
+    /* Match the Win32/X11 guard: a public API caller may pass an unknown or
+     * stale surface pointer. Check pool identity before dereferencing it. */
+    for (i = 0; i < ZCSR_SURFACE_POOL; ++i) {
+        if (s == &zcsr_surfaces[i]) break;
+    }
+    if (i == ZCSR_SURFACE_POOL || !s->in_use) return false;
     requested = s->close_requested;
     s->close_requested = false;
     return requested;
@@ -236,44 +348,56 @@ int zcsr_surface_width(const zcsr_surface* s)  { return s ? s->width : 0; }
 int zcsr_surface_height(const zcsr_surface* s) { return s ? s->height : 0; }
 
 /* ================================================================== */
-/* Stubs for features not implemented in the Wayland backend v1.     */
-/* These match the contract signatures in zcsr/platform.h.           */
+/* Display + window state                                             */
 /* ================================================================== */
 
-/* Display enumeration — single fallback monitor (Wayland output
- * enumeration via wl_output / xdg-output is a later enhancement). */
 int zcsr_display_count(void) { return 1; }
 
 bool zcsr_display_get(int index, zcsr_display_info* out) {
     if (!out || index != 0) return false;
-    memset(out, 0, sizeof(*out));
+    if (g_wayland_display.width > 0 && g_wayland_display.height > 0) {
+        *out = g_wayland_display;
+    } else {
+        *out = zcsr_unknown_display(0);
+        zcsr_display_set_name(out, "Wayland");
+    }
     out->id = 0;
-    out->width = 1920;   /* plausible fallback; real value needs wl_output */
-    out->height = 1080;
-    out->refresh_hz = 0;
-    out->dpi_scale = 1.0f;
+    if (out->dpi_scale <= 0.0f) out->dpi_scale = 1.0f;
     out->is_primary = 1;
-    zcsr_display_set_name(out, "Wayland");
     return true;
 }
 
-/* Window mode — Wayland clients cannot force window manager state;
- * fullscreen via xdg_toplevel_set_fullscreen is a later enhancement. */
 bool zcsr_surface_set_mode(zcsr_surface* s, zcsr_window_mode mode) {
-    if (!s) return false;
+    if (!s || !s->xdg_toplevel) return false;
     if (mode != ZCSR_WINDOW_WINDOWED && mode != ZCSR_WINDOW_BORDERLESS &&
         mode != ZCSR_WINDOW_FULLSCREEN) return false;
-    s->mode = mode;
-    return true;
+    if (mode == ZCSR_WINDOW_FULLSCREEN) {
+        xdg_toplevel_set_fullscreen(XDG_TOPLEVEL(s), NULL);
+        s->mode = mode;
+        wl_surface_commit(WL_SURFACE(s));
+        return true;
+    }
+    if (mode == ZCSR_WINDOW_WINDOWED) {
+        xdg_toplevel_unset_fullscreen(XDG_TOPLEVEL(s));
+        s->mode = mode;
+        wl_surface_commit(WL_SURFACE(s));
+        return true;
+    }
+    /* xdg-shell has no client-side borderless state. Returning false is
+     * honest; pretending by setting a struct field is the bug this replaces. */
+    return false;
 }
 
 zcsr_window_mode zcsr_surface_get_mode(const zcsr_surface* s) {
-    (void)s;
-    return ZCSR_WINDOW_WINDOWED;
+    return s ? s->mode : ZCSR_WINDOW_WINDOWED;
 }
 
-/* Cursor — Wayland cursor via wl_pointer.set_cursor + wl_surface
- * buffer attach is a later enhancement. v1 returns false. */
+/* Cursor — wl_cursor needs wl_shm + a cursor theme; not wired in this
+ * backend yet. Return false rather than a fake success. */
+bool zcsr_surface_set_cursor_shape(zcsr_surface* s, zcsr_cursor_shape shape) {
+    (void)s; (void)shape;
+    return false;
+}
 bool zcsr_surface_set_cursor_visible(zcsr_surface* s, bool visible) {
     (void)s; (void)visible;
     return false;
@@ -289,14 +413,20 @@ bool zcsr_surface_reset_cursor(zcsr_surface* s) {
     return false;
 }
 
-/* Size limits — not enforced in v1 (xdg_toplevel set_min_size/set_max_size
- * is available but requires storing the limits; apply is a no-op stub). */
-void zcsr_surface_apply_size_limits(zcsr_surface* s) { (void)s; }
+/* Size limits — real xdg_toplevel min/max requests. */
+void zcsr_surface_apply_size_limits(zcsr_surface* s) {
+    if (!s || !s->xdg_toplevel) return;
+    xdg_toplevel_set_min_size(XDG_TOPLEVEL(s), s->min_w, s->min_h);
+    xdg_toplevel_set_max_size(XDG_TOPLEVEL(s), s->max_w, s->max_h);
+    wl_surface_commit(WL_SURFACE(s));
+}
 
-/* ---- Additional platform API stubs (v1: not implemented) ---- */
 bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
-    if (!s || w <= 0 || h <= 0) return false;
+    if (!s || !s->wl_surface || w <= 0 || h <= 0) return false;
     if (s->mode == ZCSR_WINDOW_FULLSCREEN) return false;
+    /* Wayland has no absolute set-size request; the buffer size is the
+     * client's contribution, and the compositor may still constrain it.
+     * glrender resizes the wl_egl_window on the next frame. */
     s->width = w;
     s->height = h;
     return true;
@@ -313,7 +443,9 @@ void zcsr_surface_get_client_size(const zcsr_surface* s, int* w, int* h) {
     if (h) *h = s->height;
 }
 float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
-    (void)s; return 1.0f;
+    if (!s) return 1.0f;
+    if (s->output_scale > 0) return (float)s->output_scale;
+    return s->dpi_scale > 0.0f ? s->dpi_scale : 1.0f;
 }
 
 #endif /* defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_LINUX_BACKEND_WAYLAND) */

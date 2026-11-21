@@ -8,7 +8,8 @@
 #include "zcsr/gl_render.h"
 #include "zcsr/gl_render_l2d_geo.h"
 
-#include <stdlib.h>
+#include <stdbool.h>
+#include <string.h>
 
 struct zcsr_light2d_wall {
     float y;       /* 墙的 y 坐标 */
@@ -17,10 +18,35 @@ struct zcsr_light2d_wall {
     float tint[4];
 };
 
+#define ZCSR_LIGHT2D_WALL_POOL_CAPACITY 256
+static zcsr_light2d_wall g_wall_pool[ZCSR_LIGHT2D_WALL_POOL_CAPACITY];
+static bool g_wall_pool_used[ZCSR_LIGHT2D_WALL_POOL_CAPACITY];
+
+static zcsr_light2d_wall* wall_pool_acquire(void) {
+    size_t i;
+    for (i = 0; i < ZCSR_LIGHT2D_WALL_POOL_CAPACITY; ++i) {
+        if (!g_wall_pool_used[i]) {
+            g_wall_pool_used[i] = true;
+            return &g_wall_pool[i];
+        }
+    }
+    return NULL;
+}
+
+static bool wall_pool_contains(const zcsr_light2d_wall* wall) {
+    size_t i;
+    for (i = 0; i < ZCSR_LIGHT2D_WALL_POOL_CAPACITY; ++i) {
+        if (wall == &g_wall_pool[i]) return true;
+    }
+    return false;
+}
+
 int zcsr_light2d_wall_create(zcsr_light2d_wall** out_wall) {
+    zcsr_light2d_wall* wall;
     if (!out_wall) return -1;
-    zcsr_light2d_wall* wall = (zcsr_light2d_wall*)calloc(1, sizeof(zcsr_light2d_wall));
+    wall = wall_pool_acquire();
     if (!wall) return -2;
+    memset(wall, 0, sizeof(*wall));
     wall->y = 2.0f; wall->h = 2.0f;
     wall->min_x = -2.0f; wall->max_x = 10.0f;
     wall->tint[0]=wall->tint[1]=wall->tint[2]=wall->tint[3]=1.0f;
@@ -29,7 +55,15 @@ int zcsr_light2d_wall_create(zcsr_light2d_wall** out_wall) {
 }
 
 void zcsr_light2d_wall_destroy(zcsr_light2d_wall* wall) {
-    free(wall);
+    size_t i;
+    if (!wall || !wall_pool_contains(wall)) return;
+    for (i = 0; i < ZCSR_LIGHT2D_WALL_POOL_CAPACITY; ++i) {
+        if (wall == &g_wall_pool[i]) {
+            g_wall_pool_used[i] = false;
+            memset(wall, 0, sizeof(*wall));
+            return;
+        }
+    }
 }
 
 int zcsr_light2d_wall_set_geometry(zcsr_light2d_wall* wall,

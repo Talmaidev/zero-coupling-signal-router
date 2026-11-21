@@ -30,7 +30,9 @@ typedef struct { int x, y, w, h; } zcsr_rect;
 typedef struct { float x, y, w, h; } zcsr_rectf; /* float rectangle, for viewport/rendering */
 
 /* Layout is part of the public contract (viewport math and UI hit-tests pass
- * these by value across module boundaries). Freeze width AND field order. */
+ * these by value across module boundaries). Freeze width AND field order.
+ * Skipped when parsed as C++ (C11 keyword); a C++ caller includes this header
+ * inside its own extern "C" block. */
 #ifndef __cplusplus
 _Static_assert(sizeof(zcsr_rect) == 16, "zcsr_rect ABI: must stay 16 bytes");
 _Static_assert(offsetof(zcsr_rect, x) == 0, "zcsr_rect ABI: x offset");
@@ -52,6 +54,10 @@ typedef struct zcsr_surface zcsr_surface; /* opaque native top-level surface */
  * Threading: surface create/destroy is currently only supported from the engine
  * main thread. These functions are not thread-safe. */
 zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds);
+
+/* Create a non-layered, opaque presentation surface. On Win32 this avoids the
+ * layered OpenGL path entirely (the overlay variant is created layered). */
+zcsr_surface* zcsr_surface_create_opaque(const char* title, zcsr_rect bounds);
 /* Threading: see zcsr_surface_create. Main thread only; not thread-safe. */
 void          zcsr_surface_destroy(zcsr_surface*);
 void*         zcsr_surface_native_handle(const zcsr_surface*); /* HWND / X11 Window / NSWindow* / ANativeWindow* */
@@ -188,8 +194,8 @@ typedef void (*zcsr_focus_fn)(
  * Do not destroy the surface or change its window state
  * reentrantly from this callback.
  *
- * On platforms without focus events (macOS stub), the callback
- * may be registered but will never be invoked.
+ * All four desktop/mobile backends dispatch it: Win32, X11, Android, Wayland
+ * (wl_keyboard enter/leave) and macOS (NSWindow key notifications).
  */
 void zcsr_surface_set_focus_callback(
     zcsr_surface* surface,
@@ -197,18 +203,44 @@ void zcsr_surface_set_focus_callback(
     void* user
 );
 
+/* Backend bridge: report focus obtained/lost when the OS focus signal lives in
+ * another module (Wayland's wl_keyboard is owned by inputext). Not an app
+ * setup call; normal Win32/X11/Android/Cocoa paths call this internally. */
+void zcsr_surface_notify_focus(zcsr_surface* surface, bool focused);
+
 #if defined(__ANDROID__)
+#include <android/configuration.h>
 /*
  * Internal platform bridge: converts NativeActivity focus commands into
  * engine focus events. Called only from android_main's onAppCmd handler.
  * Dispatches to all active surfaces' focus callbacks.
  */
 void zcsr_platform_android_dispatch_focus(zcsr_focus_event event);
+/* Push the current AConfiguration so DPI scale is derived from the real
+ * device density bucket (density/160), not a hardcoded 1.0. */
+void zcsr_platform_android_set_config(AConfiguration* config);
+/* Fill the current display mode refresh rate from the Java Display API.
+ * ANativeWindow exposes setFrameRate but no getFrameRate; without this the
+ * platform record would have to guess 0 or repeat the requested value. */
+void zcsr_platform_android_set_display_refresh_hz(int hz);
 #endif
 
 /* ---- Cursor control (additive) ----
  * Show/hide the system cursor, set a custom RGBA cursor bitmap, or reset to default.
- * Returns true on success, false on platforms without cursor support (Linux/Android/macOS first release). */
+ * Win32/X11/macOS support standard shapes; Win32 also supports a custom bitmap;
+ * Wayland and Android return false rather than pretending support. */
+
+typedef enum {
+    ZCSR_CURSOR_ARROW = 0,
+    ZCSR_CURSOR_IBEAM,
+    ZCSR_CURSOR_CROSSHAIR,
+    ZCSR_CURSOR_HAND,
+    ZCSR_CURSOR_HIDDEN
+} zcsr_cursor_shape;
+
+/* Select a standard cursor. Cursor shape support is per-backend; query
+ * ZCSR_PLATFORM_CAP_CURSOR_SHAPE before relying on it. */
+bool zcsr_surface_set_cursor_shape(zcsr_surface* surface, zcsr_cursor_shape shape);
 
 bool zcsr_surface_set_cursor_visible(zcsr_surface* surface, bool visible);
 
@@ -220,5 +252,23 @@ bool zcsr_surface_set_cursor_bitmap(zcsr_surface* surface,
 
 /* Restore the platform default cursor. */
 bool zcsr_surface_reset_cursor(zcsr_surface* surface);
+
+/* ---- Capability query (diagnostic; never a feature switch) ----
+ * Reports what this build/backend actually implements. Missing bits mean the
+ * caller must not claim that feature, not that the app has to call something
+ * to enable it. */
+enum {
+    ZCSR_PLATFORM_CAP_DISPLAY       = 1u << 0,
+    ZCSR_PLATFORM_CAP_INPUT         = 1u << 1,
+    ZCSR_PLATFORM_CAP_FOCUS_EVENTS  = 1u << 2,
+    ZCSR_PLATFORM_CAP_CONTENT_SIZE  = 1u << 3,
+    ZCSR_PLATFORM_CAP_CURSOR_SHAPE  = 1u << 4,
+    ZCSR_PLATFORM_CAP_CURSOR_BITMAP = 1u << 5,
+    ZCSR_PLATFORM_CAP_CLIPBOARD     = 1u << 6,
+    ZCSR_PLATFORM_CAP_IME_COMMIT    = 1u << 7,
+    ZCSR_PLATFORM_CAP_SOFT_KEYBOARD = 1u << 8,
+    ZCSR_PLATFORM_CAP_ASSETS        = 1u << 9
+};
+unsigned zcsr_platform_capabilities(void);
 
 #endif /* ZCSR_PLATFORM_H */

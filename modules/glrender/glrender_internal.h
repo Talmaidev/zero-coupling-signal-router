@@ -11,6 +11,10 @@
 #include "zcsr/gl_render.h"
 #include "zcsr/gl_render_light2d_ext.h"
 
+/* Instance VBO ring size. A frame with 7 10k batches writes 7 slots; the next
+ * frame rotates back only after the driver has had a full frame to consume them. */
+#define ZCSR_GL_INSTANCE_SLOTS 8
+
 /* Platform system headers must precede the vendored GL loader where the platform's GL headers
  * depend on them (Windows: windows.h before GL/gl.h). */
 #if defined(__ANDROID__)
@@ -47,11 +51,42 @@
 #  define ZCSR_GL_GLSL_FRAGMENT_PRECISION ""
 #endif
 
+/* Per-draw instance cap. Default 10k keeps the renderer's fixed memory small;
+ * a build may override it to benchmark a single large instanced draw. */
+#ifndef ZCSR_GL_MAX_INSTANCES
+#define ZCSR_GL_MAX_INSTANCES 10000
+#endif
+
+/* Runtime-classified GPU identity. This is diagnostic state, not a feature gate:
+ * Intel and AMD iGPUs both take the same GL 3.3 Core path, and no vendor-specific
+ * algorithm is selected here. The classification exists so a driver/backend
+ * problem can be identified from the one startup line instead of guessed. */
+typedef enum {
+    ZCSR_GL_GPU_UNKNOWN = 0,
+    ZCSR_GL_GPU_INTEL,
+    ZCSR_GL_GPU_AMD,
+    ZCSR_GL_GPU_NVIDIA,
+    ZCSR_GL_GPU_APPLE,
+    ZCSR_GL_GPU_SOFTWARE
+} zcsr_gl_gpu_vendor;
+
+typedef enum {
+    ZCSR_GL_DRIVER_GENERIC = 0,
+    ZCSR_GL_DRIVER_IRIS,
+    ZCSR_GL_DRIVER_I965,
+    ZCSR_GL_DRIVER_RADEONSI,
+    ZCSR_GL_DRIVER_ZINK,
+    ZCSR_GL_DRIVER_LLVMPIPE,
+    ZCSR_GL_DRIVER_NOUVEAU,
+    ZCSR_GL_DRIVER_NVIDIA,
+    ZCSR_GL_DRIVER_APPLE,
+    ZCSR_GL_DRIVER_MESA
+} zcsr_gl_gpu_driver;
+
 enum {
     ZCSR_GL_MAX_SPRITES = 10000,
     ZCSR_GL_MAX_VERTICES = ZCSR_GL_MAX_SPRITES * 6,
-    ZCSR_GL_MAX_TEXTURES = 128,
-    ZCSR_GL_MAX_INSTANCES = 10000
+    ZCSR_GL_MAX_TEXTURES = 128
 };
 
 /* Interleaved vertex: pos(2) + uv(2) + color(4) + mode(1) + amount(1) = 10 floats. */
@@ -118,6 +153,14 @@ struct zcsr_gl_renderer {
     zcsr_surface* surface;
     int width;
     int height;
+    /* Runtime GL identity, filled once after the context is current. */
+    zcsr_gl_gpu_vendor gpu_vendor;
+    zcsr_gl_gpu_driver gpu_driver;
+    bool gpu_software;
+    bool gpu_probed;
+    char gpu_vendor_string[64];
+    char gpu_renderer_string[160];
+    char gpu_version_string[64];
     zcsr_gl_vertex vertices[ZCSR_GL_MAX_VERTICES];
     size_t vertex_count;
     zcsr_gl_draw draws[ZCSR_GL_MAX_SPRITES];
@@ -144,12 +187,20 @@ struct zcsr_gl_renderer {
 
     /* ---- instanced rendering resources (unit quad + per-instance VBO) ---- */
     unsigned int inst_program;
+    unsigned int inst_program_mul;
     unsigned int inst_vao;
+    unsigned int inst_vao_mul;
     unsigned int inst_corner_vbo;
     unsigned int inst_ebo;
     unsigned int inst_vbo;
+    bool inst_skip_upload;      /* diagnostic: keep GPU VBO contents, skip glBufferSubData */
+    bool inst_orphan;           /* diagnostic: discard VBO storage before each upload */
+    unsigned int inst_slot;     /* rotating VBO slot; avoids overwriting in-flight instance data */
+    bool inst_current_mul;      /* current run uses the multiply-only program/VAO */
     int inst_uniform_view;
     int inst_uniform_tex;
+    int inst_uniform_view_mul;
+    int inst_uniform_tex_mul;
 
     /* ---- optional GPU elapsed-time query (desktop GL 3.3) ---- */
     unsigned int gpu_timer_queries[2];
@@ -187,6 +238,12 @@ struct zcsr_gl_renderer {
     int l2d_deferred_loc_lightcount;
     int l2d_deferred_loc_lightdata;
     int l2d_deferred_loc_lightcolor;
+    /* Display-transfer LUT: the final composite samples this instead of
+     * embedding the transfer formula in the shader. */
+    unsigned int l2d_color_lut_tex;
+    int l2d_deferred_loc_color_lut;
+    int l2d_bloom_loc_color_lut;
+    const zcsr_color_pipeline_desc* color_pipeline;
     /* Light2d v2 (JoyECS-style): shadow-mask pass + light accumulation buffer. */
     unsigned int l2d_prog_shadow;
     unsigned int l2d_prog_light;
@@ -316,6 +373,11 @@ bool zcsr_gl_make_current(zcsr_gl_renderer* r);
 void zcsr_gl_update_size(zcsr_gl_renderer* r);
 void zcsr_gl_swap(zcsr_gl_renderer* r);
 void zcsr_gl_platform_set_vsync(zcsr_gl_renderer* r, bool on);
+
+/* Query GL_VENDOR/GL_RENDERER/GL_VERSION once the context is current. Never
+ * fails the renderer: an unknown or software driver stays on the generic path
+ * and is only reported in the startup diagnostic. */
+void zcsr_gl_detect_gpu(zcsr_gl_renderer* r);
 
 /* ---- Core (shader/program/VAO/VBO/FBO/white-tex/texture CRUD/clear/set_target) -------------- */
 /* Shared shader helpers (used by both core sprite-program and instanced program). */

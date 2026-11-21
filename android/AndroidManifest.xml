@@ -16,7 +16,8 @@
             android:name="android.app.NativeActivity"
             android:exported="true"
             android:label="zcsr_phase0"
-            android:configChanges="orientation|keyboardHidden|screenSize">
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+            android:configChanges="orientation|keyboardHidden|screenSize|density|fontScale|uiMode">
             <meta-data
                 android:name="android.app.lib_name"
                 android:value="zcsr_phase0" />

@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <assert.h>
 #include <stdatomic.h>
 
@@ -151,6 +153,15 @@ static void test_audiomix_device_callback_api(void) {
 }
 
 int main(void) {
+    const char* backend = zcsr_audiomix_backend_name();
+    assert(backend && backend[0]);
+#if defined(_WIN32)
+    assert(strcmp(backend, "wasapi") == 0 || strcmp(backend, "waveout") == 0);
+#elif defined(__linux__)
+    assert(strcmp(backend, "alsa") == 0 ||
+           strcmp(backend, "pipewire") == 0 ||
+           strcmp(backend, "silent") == 0);
+#endif
     const char* wav = "zcsr_audiomix_test.wav";
     int finished[32];
     if (!write_wav(wav, 1000)) {

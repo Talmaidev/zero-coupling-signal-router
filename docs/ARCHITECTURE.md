@@ -37,15 +37,23 @@ The native debug overlay and 2.5D workspace live in the `zcsr_tools` repository,
 | Platform | Window | Rendering | Audio | Input |
 |----------|--------|-----------|-------|-------|
 | Windows | Win32 | WGL + OpenGL | WASAPI | Win32 message pump |
-| Linux | Wayland + xdg-shell | EGL + OpenGL | PipeWire | Wayland (wl_keyboard, wl_pointer) |
-| Android | ANativeWindow | EGL + OpenGL | AAudio | AInputEvent |
+| Linux | X11/GLX or Wayland + xdg-shell | GLX/EGL + OpenGL 3.3 Core | PipeWire or ALSA | X11/XIM or Wayland (wl_keyboard, wl_pointer) |
+| Android | ANativeWindow | EGL + OpenGL ES | AAudio | AInputEvent |
 | macOS | Cocoa | NSOpenGL | AudioUnit | Cocoa events |
+
+The Linux render path is the same GL 3.3 Core code for Intel `iris`, AMD
+`radeonsi`, NVIDIA, and software Mesa. GPU vendor/driver/backend is classified
+at runtime from `GL_VENDOR`/`GL_RENDERER`/`GL_VERSION` for diagnostics only;
+there is no vendor macro and no application call required to enable an iGPU.
+Build-time macros select only window/audio backend availability
+(`ZCSR_LINUX_BACKEND_X11`, `ZCSR_LINUX_BACKEND_WAYLAND`).
 
 ### Linux Backend Split (post-v1)
 
 `modules/platform/` is split per-backend:
 - `platform_common.c` — shared pool, DPI, focus callbacks, display helpers
 - `platform_win32.c` — Windows backend
+- `platform_x11.c` — X11 backend
 - `platform_wayland.c` — Wayland backend
 - `platform_android.c` — Android backend
 - `platform_cocoa.m` — macOS backend
@@ -56,18 +64,29 @@ Each backend file contains only its platform's code; no cross-platform `#if` blo
 ## Audio Backend
 
 `modules/audiomix/`:
-- `audiomix.c` — core mixer (channel mixing, format conversion)
-- `audiomix_pipewire.c` — PipeWire output backend (Linux)
+- `audiomix.c` — core mixer (channel mixing, format conversion) + Linux ALSA output
+- `audiomix_pipewire.c` — optional PipeWire output backend (Linux)
 - `audiomix_internal.h` — shared backend struct and interface
 
-The PipeWire backend uses a SPSC ring buffer between the mixer thread and the realtime process callback, with int32 accumulation and clamping to avoid overflow.
+CMake selects the Linux backend by availability (`ZCSR_AUDIO_BACKEND=auto|pipewire|alsa|none`).
+`auto` prefers PipeWire, then ALSA; only when neither exists does the mixer use
+the documented silent fallback. `zcsr_audiomix_backend_name()` reports the
+compiled backend. The PipeWire backend uses a SPSC ring buffer between the mixer
+thread and the realtime process callback, with int32 accumulation and clamping
+to avoid overflow.
 
 ## Input Backend
 
-`modules/input/` — keyboard input (zcsr_input)
-`modules/inputext/` — mouse + gamepad input (zcsr_input_ext)
+`modules/input/` — keyboard contracts (`zcsr_input`), unified `ZCSR_KEY_*` enum,
+and native-to-ZCSR translation tables in `input_keymap.c`.
+`modules/inputext/` — mouse + gamepad input (`zcsr_input_ext`).
 
-Linux uses Wayland `wl_keyboard` and `wl_pointer` with evdev keycode mapping (zcsr_keycode = evdev + 8, matching X11 convention).
+Every backend translates its native code to the same `ZCSR_KEY_*` value. The
+native code is not exposed as the public key identity. Text is delivered
+separately (`zcsr_input_ext_take_text`); `zcsr_key_event.key` carries only a
+unified physical key. X11 uses XIM/XIC for committed UTF-8 text, Wayland uses
+xkbcommon keymaps, Win32 uses `WM_CHAR`/`WM_IME_CHAR`, Android uses
+`KeyEvent.getUnicodeChar`, and Cocoa uses `NSEvent characters`.
 
 ## Thread Model
 

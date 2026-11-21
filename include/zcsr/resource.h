@@ -57,7 +57,9 @@ typedef enum zcsr_resource_result {
     ZCSR_RESOURCE_ERROR_OUT_OF_MEMORY
 } zcsr_resource_result_t;
 
-/* 资源处理器回调 */
+/* 资源处理器回调。
+ * 所有权在处理器：返回的 out_data 由处理器/调用方持有，资源管理器只借用指针，
+ * 不 malloc、不 free，也不得在 unload 后继续访问。 */
 typedef zcsr_resource_result_t (*zcsr_resource_processor_fn)(
     const char* path,
     void** out_data,

@@ -23,6 +23,12 @@
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
 #include <X11/Xmd.h>
+#include <X11/Xresource.h>
+#include <X11/cursorfont.h>
+#include <X11/extensions/Xrandr.h>
+#include <locale.h>
+#include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -71,16 +77,135 @@ bool zcsr_platform_x11_next_key(zcsr_surface* s, unsigned int* keycode, int* is_
     return true;
 }
 
+/* ---------------- UTF-8 text ring (XIM/XIC producer) ---------------- */
+static void x_push_text_byte(zcsr_surface* s, unsigned char b) {
+    size_t next;
+    if (!s) return;
+    next = (s->x_text_head + 1u) % sizeof(s->x_text_buf);
+    if (next == s->x_text_tail) return; /* full: drop, never overwrite unconsumed text */
+    s->x_text_buf[s->x_text_head] = (char)b;
+    s->x_text_head = next;
+}
+
+static void x_push_text(zcsr_surface* s, const char* bytes, int n) {
+    int i;
+    if (!s || !bytes || n <= 0) return;
+    for (i = 0; i < n; ++i) x_push_text_byte(s, (unsigned char)bytes[i]);
+}
+
+/* XLookupString without an XIC returns the core keyboard's locale bytes,
+ * normally Latin-1. Convert each byte to UTF-8 so a host with no input method
+ * still delivers ASCII/accented physical keys instead of silently dropping text. */
+static void x_push_latin1_bytes(zcsr_surface* s, const char* bytes, int n) {
+    int i;
+    if (!s || !bytes || n <= 0) return;
+    for (i = 0; i < n; ++i) {
+        unsigned char c = (unsigned char)bytes[i];
+        uint32_t cp = c;
+        char utf8[4];
+        int k = 0;
+        if (c < 0x80u) {
+            utf8[k++] = (char)c;
+        } else {
+            utf8[k++] = (char)(0xC0u | (cp >> 6));
+            utf8[k++] = (char)(0x80u | (cp & 0x3Fu));
+        }
+        x_push_text(s, utf8, k);
+    }
+}
+
+size_t zcsr_platform_x11_take_text(zcsr_surface* s, char* out, size_t capacity) {
+    size_t n = 0;
+    size_t max;
+    if (!s || !out || capacity == 0u) return 0u;
+    max = capacity - 1u;
+    while (n < max && s->x_text_tail != s->x_text_head) {
+        out[n++] = s->x_text_buf[s->x_text_tail];
+        s->x_text_tail = (s->x_text_tail + 1u) % sizeof(s->x_text_buf);
+    }
+    /* Do not hand a truncated UTF-8 sequence to inputext. Leave the lead byte
+     * and any partial continuations in the ring for the next take. */
+    if (n > 0u) {
+        unsigned char last = (unsigned char)out[n - 1u];
+        if (last >= 0x80u) {
+            size_t start = n - 1u;
+            size_t want;
+            while (start > 0u && ((unsigned char)out[start] & 0xC0u) == 0x80u) {
+                --start;
+            }
+            if (((unsigned char)out[start] & 0xC0u) == 0x80u) {
+                n = start; /* malformed: no lead, drop the orphan continuation */
+            } else {
+                unsigned char lead = (unsigned char)out[start];
+                if ((lead & 0xE0u) == 0xC0u) want = 2u;
+                else if ((lead & 0xF0u) == 0xE0u) want = 3u;
+                else if ((lead & 0xF8u) == 0xF0u) want = 4u;
+                else want = 1u;
+                if (n - start < want) {
+                    /* Rewind the bytes we copied from the ring. */
+                    size_t rewind = n - start;
+                    s->x_text_tail = (s->x_text_tail + sizeof(s->x_text_buf) - rewind)
+                                     % sizeof(s->x_text_buf);
+                    n = start;
+                }
+            }
+        }
+    }
+    out[n] = '\0';
+    return n;
+}
+
+/* Xft.dpi is the real UI scale on X11 desktops. Fall back to physical
+ * pixels-per-inch; only use it when it indicates a scaled desktop. */
+static float x_query_dpi_scale(Display* dpy, int screen) {
+    char* resources;
+    XrmDatabase db;
+    char* type = NULL;
+    XrmValue value;
+    float scale = 1.0f;
+
+    resources = XResourceManagerString(dpy);
+    if (resources) {
+        db = XrmGetStringDatabase(resources);
+        if (db) {
+            if (XrmGetResource(db, "Xft.dpi", "Xft.Dpi", &type, &value) &&
+                value.addr && value.size > 0) {
+                double dpi = strtod((char*)value.addr, NULL);
+                if (dpi > 0.0) scale = (float)(dpi / 96.0);
+            }
+            XrmDestroyDatabase(db);
+        }
+    }
+    if (scale <= 1.0f) {
+        int px = DisplayWidth(dpy, screen);
+        int mm = DisplayWidthMM(dpy, screen);
+        if (mm > 0 && px > 0) {
+            float dpi = (float)px * 25.4f / (float)mm;
+            if (dpi >= 110.0f) scale = dpi / 96.0f;
+        }
+    }
+    if (scale < 1.0f) scale = 1.0f;
+    if (scale > 4.0f) scale = 4.0f;
+    return scale;
+}
+
 /* ---------------- 鼠标状态（inputext 消费） ---------------- */
 /* buttons 返回"物理按住"与"上一帧以来按下过的边沿"的并集：这样一次快速
- * 按下+抬起（两次 pump 之间完成）也能被上层看到一次，不会整帧丢失。 */
+ * 按下+抬起（两次 pump 之间完成）也能被上层看到一次，不会整帧丢失。
+ * down_* 返回当前左键按下的起点和 X modifier mask；左键抬起或失焦时清。 */
 bool zcsr_platform_x11_mouse_state(zcsr_surface* s, int* x, int* y,
-                                   unsigned int* buttons, int* wheel) {
+                                   unsigned int* buttons, int* wheel,
+                                   int* down_x, int* down_y, int* have_down,
+                                   unsigned int* down_mods) {
     if (!s) return false;
     if (x) *x = s->x_mouse_x;
     if (y) *y = s->x_mouse_y;
     if (buttons) *buttons = s->x_mouse_buttons | s->x_buttons_latch;
     if (wheel) *wheel = s->x_wheel;
+    if (down_x) *down_x = s->x_down_x;
+    if (down_y) *down_y = s->x_down_y;
+    if (have_down) *have_down = s->x_have_down ? 1 : 0;
+    if (down_mods) *down_mods = s->x_down_mods;
     s->x_buttons_latch = 0;
     return true;
 }
@@ -96,7 +221,15 @@ int zcsr_platform_x11_take_wheel(zcsr_surface* s) {
 
 bool zcsr_platform_x11_take_close(zcsr_surface* s) {
     bool r;
+    size_t i;
     if (!s) return false;
+    /* The public close query can receive an arbitrary pointer. Validate
+     * membership in the fixed surface pool before touching any field; a
+     * non-NULL foreign/stale pointer is not a zcsr_surface. */
+    for (i = 0; i < ZCSR_SURFACE_POOL; ++i) {
+        if (s == &zcsr_surfaces[i]) break;
+    }
+    if (i == ZCSR_SURFACE_POOL || !s->in_use) return false;
     r = s->close_requested;
     s->close_requested = false;
     return r;
@@ -165,11 +298,17 @@ zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
     s->x_key_head = s->x_key_tail = 0;
     s->x_wheel = 0;
     s->x_mouse_buttons = 0;
+    s->x_buttons_latch = 0;
+    s->x_text_head = s->x_text_tail = 0;
+    s->x_im = NULL;
+    s->x_ic = NULL;
+    s->dpi_scale = 1.0f;
 
     dpy = XOpenDisplay(NULL);
     if (!dpy) return NULL;          /* 没有 DISPLAY，调用方会看到 NULL 而不是崩溃 */
     s->x_display = dpy;
     s->x_screen = DefaultScreen(dpy);
+    s->dpi_scale = x_query_dpi_scale(dpy, s->x_screen);
 
     XSetErrorHandler(x_error_handler);
 
@@ -191,6 +330,24 @@ zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
     s->x_atom_wm_delete = (long)XInternAtom(dpy, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(dpy, win, (Atom*)&s->x_atom_wm_delete, 1);
 
+    /* XIM is the real X11 text producer. If the host has no input method,
+     * Xutf8LookupString still delivers the core keyboard's Latin-1/UTF-8
+     * keysym text; no fake success is reported. */
+    setlocale(LC_ALL, "");
+    XSetLocaleModifiers("");
+    s->x_im = (void*)XOpenIM(dpy, NULL, NULL, NULL);
+    if (s->x_im) {
+        s->x_ic = (void*)XCreateIC((XIM)s->x_im,
+            XNInputStyle, (XIMStyle)(XIMPreeditNothing | XIMStatusNothing),
+            XNClientWindow, win,
+            XNFocusWindow, win,
+            NULL);
+        if (!s->x_ic) {
+            XCloseIM((XIM)s->x_im);
+            s->x_im = NULL;
+        }
+    }
+
     if (title) XStoreName(dpy, win, title);
 
     hints = XAllocSizeHints();
@@ -210,10 +367,33 @@ zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
     return s;
 }
 
+zcsr_surface* zcsr_surface_create_opaque(const char* title, zcsr_rect bounds) {
+    /* X11 windows are natively opaque; the layered-overlay variant does not
+     * exist here. Keep the same creation path so callers get identical
+     * window/event/client-size semantics on Linux. */
+    return zcsr_surface_create(title, bounds);
+}
+
 void zcsr_surface_destroy(zcsr_surface* s) {
     if (!s) return;
     if (s->x_display) {
         Display* dpy = X_DISPLAY(s);
+        if (s->x_ic) {
+            XDestroyIC((XIC)s->x_ic);
+            s->x_ic = NULL;
+        }
+        if (s->x_im) {
+            XCloseIM((XIM)s->x_im);
+            s->x_im = NULL;
+        }
+        if (s->x_cursor_shape) {
+            XFreeCursor(dpy, (Cursor)s->x_cursor_shape);
+            s->x_cursor_shape = 0;
+        }
+        if (s->x_cursor_blank) {
+            XFreeCursor(dpy, (Cursor)s->x_cursor_blank);
+            s->x_cursor_blank = 0;
+        }
         if (s->x_window) {
             XDestroyWindow(dpy, X_WIN(s));
             s->x_window = 0;
@@ -233,9 +413,24 @@ void zcsr_surface_pump_events(zcsr_surface* s) {
     while (XPending(dpy) > 0) {
         XEvent ev;
         XNextEvent(dpy, &ev);
+        if (XFilterEvent(&ev, X_WIN(s))) continue;
         switch (ev.type) {
         case KeyPress:
             x_push_key(s, (unsigned int)ev.xkey.keycode, 1);
+            if (s->x_ic) {
+                char utf8[64];
+                int status = 0;
+                int n = Xutf8LookupString((XIC)s->x_ic, &ev.xkey,
+                                          utf8, (int)sizeof(utf8), NULL, &status);
+                if (n > 0 && (status == XLookupChars || status == XLookupBoth)) {
+                    x_push_text(s, utf8, n);
+                }
+            } else {
+                char bytes[64];
+                int n = XLookupString(&ev.xkey, bytes, (int)sizeof(bytes),
+                                      NULL, NULL);
+                x_push_latin1_bytes(s, bytes, n);
+            }
             break;
         case KeyRelease:
             /* X11 auto-repeat 会成对发 Release/Press；当前按原始事件上报，
@@ -245,6 +440,7 @@ void zcsr_surface_pump_events(zcsr_surface* s) {
         case MotionNotify:
             s->x_mouse_x = ev.xmotion.x;
             s->x_mouse_y = ev.xmotion.y;
+            s->x_mouse_mods = ev.xmotion.state;
             break;
         case ButtonPress:
             if (ev.xbutton.button == Button4)      s->x_wheel += 1;
@@ -254,6 +450,13 @@ void zcsr_surface_pump_events(zcsr_surface* s) {
                 s->x_buttons_latch |= (1u << (ev.xbutton.button & 31u));
                 s->x_mouse_x = ev.xbutton.x;
                 s->x_mouse_y = ev.xbutton.y;
+                s->x_mouse_mods = ev.xbutton.state;
+                if (ev.xbutton.button == Button1) {
+                    s->x_down_x = ev.xbutton.x;
+                    s->x_down_y = ev.xbutton.y;
+                    s->x_down_mods = ev.xbutton.state;
+                    s->x_have_down = true;
+                }
             }
             break;
         case ButtonRelease:
@@ -261,6 +464,11 @@ void zcsr_surface_pump_events(zcsr_surface* s) {
                 s->x_mouse_buttons &= ~(1u << (ev.xbutton.button & 31u));
                 s->x_mouse_x = ev.xbutton.x;
                 s->x_mouse_y = ev.xbutton.y;
+                s->x_mouse_mods = ev.xbutton.state;
+                if (ev.xbutton.button == Button1) {
+                    s->x_have_down = false;
+                    s->x_down_mods = 0;
+                }
             }
             break;
         case ConfigureNotify:
@@ -271,13 +479,21 @@ void zcsr_surface_pump_events(zcsr_surface* s) {
             break;
         case FocusIn:
             s->x_focused = true;
+            if (s->x_ic) XSetICFocus((XIC)s->x_ic);
             zcsr_surface_dispatch_focus(s, ZCSR_FOCUS_GAINED);
             break;
         case FocusOut:
             s->x_focused = false;
+            if (s->x_ic) XUnsetICFocus((XIC)s->x_ic);
             memset(s->x_keys, 0, sizeof(s->x_keys));
             s->x_key_head = s->x_key_tail = 0;
             s->x_mouse_buttons = 0;
+            s->x_buttons_latch = 0;
+            s->x_mouse_mods = 0;
+            s->x_have_down = false;
+            s->x_down_mods = 0;
+            s->x_down_x = 0;
+            s->x_down_y = 0;
             zcsr_surface_dispatch_focus(s, ZCSR_FOCUS_LOST);
             break;
         case ClientMessage:
@@ -318,9 +534,47 @@ bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
     return true;
 }
 
-float zcsr_surface_get_dpi_scale(const zcsr_surface* s) { (void)s; return 1.0f; }
+float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
+    if (!s) return 1.0f;
+    return s->dpi_scale > 0.0f ? s->dpi_scale : 1.0f;
+}
 
 /* ---------------- display enumeration ---------------- */
+static int x_query_refresh_hz(Display* dpy) {
+    XRRScreenResources* res;
+    XRROutputInfo* out_info;
+    XRRCrtcInfo* crtc;
+    Window root;
+    int hz = 0;
+    int i;
+    if (!dpy) return 0;
+    root = DefaultRootWindow(dpy);
+    res = XRRGetScreenResourcesCurrent(dpy, root);
+    if (!res) return 0;
+    for (i = 0; i < res->noutput && hz == 0; ++i) {
+        out_info = XRRGetOutputInfo(dpy, res, res->outputs[i]);
+        if (!out_info) continue;
+        if (out_info->connection == RR_Connected && out_info->crtc != None) {
+            crtc = XRRGetCrtcInfo(dpy, res, out_info->crtc);
+            if (crtc) {
+                for (int m = 0; m < res->nmode; ++m) {
+                    const XRRModeInfo* mode = &res->modes[m];
+                    if (mode->id == crtc->mode && mode->hTotal && mode->vTotal) {
+                        double refresh = (double)mode->dotClock /
+                            ((double)mode->hTotal * (double)mode->vTotal);
+                        hz = (int)(refresh + 0.5);
+                        break;
+                    }
+                }
+                XRRFreeCrtcInfo(crtc);
+            }
+        }
+        XRRFreeOutputInfo(out_info);
+    }
+    XRRFreeScreenResources(res);
+    return hz;
+}
+
 int zcsr_display_count(void) { return 1; }
 
 bool zcsr_display_get(int index, zcsr_display_info* out) {
@@ -333,14 +587,15 @@ bool zcsr_display_get(int index, zcsr_display_info* out) {
         out->width  = DisplayWidth(dpy, scr);
         out->height = DisplayHeight(dpy, scr);
         out->x = 0; out->y = 0;
+        out->dpi_scale = x_query_dpi_scale(dpy, scr);
+        out->refresh_hz = x_query_refresh_hz(dpy);
         XCloseDisplay(dpy);
     } else {
         out->width = 1920;
         out->height = 1080;
     }
     out->id = 0;
-    out->refresh_hz = 0;
-    out->dpi_scale = 1.0f;
+    if (out->dpi_scale <= 0.0f) out->dpi_scale = 1.0f;
     out->is_primary = 1;
     zcsr_display_set_name(out, "X11");
     return true;
@@ -370,7 +625,96 @@ zcsr_window_mode zcsr_surface_get_mode(const zcsr_surface* s) {
     return s ? s->mode : ZCSR_WINDOW_WINDOWED;
 }
 
+/* Real XRandR mode switch. The contract limits this to exclusive fullscreen;
+ * windowed/borderless return false without touching the output mode. */
+bool zcsr_surface_set_refresh_hz(zcsr_surface* s, int hz) {
+    Display* dpy;
+    XRRScreenResources* res;
+    XRROutputInfo* primary;
+    RROutput primary_id;
+    Window root;
+    bool changed = false;
+    int i;
+    if (!s || !s->x_display || hz <= 0) return false;
+    if (s->mode != ZCSR_WINDOW_FULLSCREEN) return false;
+    dpy = X_DISPLAY(s);
+    root = DefaultRootWindow(dpy);
+    res = XRRGetScreenResourcesCurrent(dpy, root);
+    if (!res) return false;
+    primary_id = XRRGetOutputPrimary(dpy, root);
+    primary = NULL;
+    for (i = 0; i < res->noutput; ++i) {
+        if (res->outputs[i] == primary_id) {
+            primary = XRRGetOutputInfo(dpy, res, res->outputs[i]);
+            break;
+        }
+    }
+    for (i = 0; i < res->noutput && !changed; ++i) {
+        XRROutputInfo* out_info;
+        XRRCrtcInfo* crtc;
+        int m;
+        if (primary && res->outputs[i] != primary_id) continue;
+        out_info = (res->outputs[i] == primary_id)
+            ? primary : XRRGetOutputInfo(dpy, res, res->outputs[i]);
+        if (!out_info) continue;
+        if (out_info->connection != RR_Connected || out_info->crtc == None) {
+            if (res->outputs[i] != primary_id) XRRFreeOutputInfo(out_info);
+            continue;
+        }
+        crtc = XRRGetCrtcInfo(dpy, res, out_info->crtc);
+        if (!crtc) {
+            if (res->outputs[i] != primary_id) XRRFreeOutputInfo(out_info);
+            continue;
+        }
+        for (m = 0; m < res->nmode; ++m) {
+            const XRRModeInfo* mode = &res->modes[m];
+            double refresh;
+            if (!mode->hTotal || !mode->vTotal) continue;
+            if ((unsigned int)mode->width != crtc->width ||
+                (unsigned int)mode->height != crtc->height) continue;
+            refresh = (double)mode->dotClock /
+                ((double)mode->hTotal * (double)mode->vTotal);
+            if (fabs(refresh - (double)hz) > 1.0) continue;
+            if (XRRSetCrtcConfig(dpy, res, out_info->crtc, CurrentTime,
+                    crtc->x, crtc->y, mode->id, RR_Rotate_0,
+                    crtc->outputs, crtc->noutput) == RRSetConfigSuccess) {
+                XSync(dpy, False);
+                changed = true;
+            }
+            break;
+        }
+        XRRFreeCrtcInfo(crtc);
+        if (res->outputs[i] != primary_id) XRRFreeOutputInfo(out_info);
+    }
+    if (primary) XRRFreeOutputInfo(primary);
+    XRRFreeScreenResources(res);
+    return changed;
+}
+
 /* ---------------- 光标 ---------------- */
+bool zcsr_surface_set_cursor_shape(zcsr_surface* s, zcsr_cursor_shape shape) {
+    Display* dpy;
+    unsigned int glyph;
+    Cursor cursor;
+    if (!s || !s->x_display || !s->x_window) return false;
+    dpy = X_DISPLAY(s);
+    if (shape == ZCSR_CURSOR_HIDDEN) return zcsr_surface_set_cursor_visible(s, false);
+    switch (shape) {
+    case ZCSR_CURSOR_IBEAM:     glyph = XC_xterm; break;
+    case ZCSR_CURSOR_CROSSHAIR: glyph = XC_crosshair; break;
+    case ZCSR_CURSOR_HAND:      glyph = XC_hand2; break;
+    case ZCSR_CURSOR_ARROW:
+    default:                    glyph = XC_left_ptr; break;
+    }
+    cursor = XCreateFontCursor(dpy, glyph);
+    if (!cursor) return false;
+    XDefineCursor(dpy, X_WIN(s), cursor);
+    if (s->x_cursor_shape) XFreeCursor(dpy, (Cursor)s->x_cursor_shape);
+    s->x_cursor_shape = (unsigned long)cursor;
+    XFlush(dpy);
+    return true;
+}
+
 bool zcsr_surface_set_cursor_visible(zcsr_surface* s, bool visible) {
     Display* dpy;
     if (!s || !s->x_display) return false;
@@ -407,7 +751,23 @@ bool zcsr_surface_reset_cursor(zcsr_surface* s) {
 }
 
 /* ---------------- 其余契约（X11 v1 最小实现） ---------------- */
-void zcsr_surface_apply_size_limits(zcsr_surface* s) { (void)s; }
+void zcsr_surface_apply_size_limits(zcsr_surface* s) {
+    XSizeHints hints;
+    if (!s || !s->x_display || !s->x_window) return;
+    memset(&hints, 0, sizeof(hints));
+    if (s->min_w > 0 || s->min_h > 0) {
+        hints.flags |= PMinSize;
+        hints.min_width = s->min_w;
+        hints.min_height = s->min_h;
+    }
+    if (s->max_w > 0 || s->max_h > 0) {
+        hints.flags |= PMaxSize;
+        hints.max_width = s->max_w;
+        hints.max_height = s->max_h;
+    }
+    XSetWMNormalHints(X_DISPLAY(s), X_WIN(s), &hints);
+    XFlush(X_DISPLAY(s));
+}
 
 bool zcsr_surface_set_drag_region(zcsr_surface* s, int x, int y, int w, int h) {
     (void)s; (void)x; (void)y; (void)w; (void)h;

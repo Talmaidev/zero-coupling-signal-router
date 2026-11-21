@@ -20,3 +20,6 @@ zcsr_audiomix_test.wav
 .zcode/
 build_merge/
 build_main/
+
+# runtime UI layout state
+settings_layout.txt

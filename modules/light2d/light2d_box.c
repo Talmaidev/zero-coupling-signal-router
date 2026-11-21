@@ -8,7 +8,8 @@
 #include "zcsr/gl_render.h"
 #include "zcsr/gl_render_l2d_geo.h"
 
-#include <stdlib.h>
+#include <stdbool.h>
+#include <string.h>
 
 struct zcsr_light2d_box {
     float min_x, max_x;
@@ -17,10 +18,35 @@ struct zcsr_light2d_box {
     float tint[4];
 };
 
+#define ZCSR_LIGHT2D_BOX_POOL_CAPACITY 256
+static zcsr_light2d_box g_box_pool[ZCSR_LIGHT2D_BOX_POOL_CAPACITY];
+static bool g_box_pool_used[ZCSR_LIGHT2D_BOX_POOL_CAPACITY];
+
+static zcsr_light2d_box* box_pool_acquire(void) {
+    size_t i;
+    for (i = 0; i < ZCSR_LIGHT2D_BOX_POOL_CAPACITY; ++i) {
+        if (!g_box_pool_used[i]) {
+            g_box_pool_used[i] = true;
+            return &g_box_pool[i];
+        }
+    }
+    return NULL;
+}
+
+static bool box_pool_contains(const zcsr_light2d_box* box) {
+    size_t i;
+    for (i = 0; i < ZCSR_LIGHT2D_BOX_POOL_CAPACITY; ++i) {
+        if (box == &g_box_pool[i]) return true;
+    }
+    return false;
+}
+
 int zcsr_light2d_box_create(zcsr_light2d_box** out_box) {
+    zcsr_light2d_box* box;
     if (!out_box) return -1;
-    zcsr_light2d_box* box = (zcsr_light2d_box*)calloc(1, sizeof(zcsr_light2d_box));
+    box = box_pool_acquire();
     if (!box) return -2;
+    memset(box, 0, sizeof(*box));
     box->min_x = 0.0f; box->max_x = 2.0f;
     box->min_y = 0.0f; box->max_y = 2.0f;
     box->h = 2.0f;
@@ -30,7 +56,15 @@ int zcsr_light2d_box_create(zcsr_light2d_box** out_box) {
 }
 
 void zcsr_light2d_box_destroy(zcsr_light2d_box* box) {
-    free(box);
+    size_t i;
+    if (!box || !box_pool_contains(box)) return;
+    for (i = 0; i < ZCSR_LIGHT2D_BOX_POOL_CAPACITY; ++i) {
+        if (box == &g_box_pool[i]) {
+            g_box_pool_used[i] = false;
+            memset(box, 0, sizeof(*box));
+            return;
+        }
+    }
 }
 
 int zcsr_light2d_box_set_geometry(zcsr_light2d_box* box,
