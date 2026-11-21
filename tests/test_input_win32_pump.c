@@ -49,7 +49,7 @@ int main(void) {
     zcsr_input* in;
     HWND hwnd;
 
-    surface = zcsr_surface_create_opaque("zcsr-input-win32-pump", bounds);
+    surface = zcsr_surface_create("zcsr-input-win32-pump", bounds);
     if (!surface) {
         printf("SKIP: no Win32 surface (no interactive desktop)\n");
         return 77;
