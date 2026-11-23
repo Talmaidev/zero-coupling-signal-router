@@ -94,6 +94,41 @@ bool zcsr_camera3d_project(const zcsr_camera3d* c,
     return true;
 }
 
+bool zcsr_camera3d_screen_to_ground(const zcsr_camera3d* c,
+                                    float px, float py,
+                                    float* out_x, float* out_y) {
+    float vx, vy, vz, dx, dy, dz, f;
+    float cp, sp, cy, sy, dy_view, z1;
+    float t;
+    if (c == NULL || c->view_w <= 0 || c->view_h <= 0) return false;
+
+    /* Build the view-space ray at unit forward depth. Screen y is down, which
+     * matches the projection used by zcsr_camera3d_project. */
+    f = 1.0f / tanf(deg_to_rad(c->fov_y_deg) * 0.5f);
+    vx = ((px - (float)c->view_w * 0.5f) / ((float)c->view_w * 0.5f)) / f;
+    vy = ((py - (float)c->view_h * 0.5f) / ((float)c->view_h * 0.5f)) / f;
+    vz = -1.0f;
+
+    /* Inverse of world_to_view: pitch then yaw. */
+    cp = cosf(deg_to_rad(c->pitch_deg));
+    sp = sinf(deg_to_rad(c->pitch_deg));
+    cy = cosf(deg_to_rad(c->yaw_deg));
+    sy = sinf(deg_to_rad(c->yaw_deg));
+    dy_view = vy * cp + vz * sp;
+    z1 = -vy * sp + vz * cp;
+    dx = vx * cy + z1 * sy;
+    dy = dy_view;
+    dz = -vx * sy + z1 * cy;
+
+    /* Ray from eye to z=0. A ray pointing up or parallel misses the ground. */
+    if (dz >= -1e-6f) return false;
+    t = -c->eye_z / dz;
+    if (t <= 0.0f) return false;
+    if (out_x) *out_x = c->eye_x + dx * t;
+    if (out_y) *out_y = c->eye_y + dy * t;
+    return true;
+}
+
 bool zcsr_camera3d_billboard(const zcsr_camera3d* c,
                              float x, float y, float z,
                              float world_w, float world_h,

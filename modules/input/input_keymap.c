@@ -3,10 +3,26 @@
 #include "zcsr/input_keymap.h"
 
 static zcsr_keycode from_evdev(uint32_t code) {
-    /* Letters are contiguous in Linux input-event-codes. */
-    if (code >= 16u && code <= 25u) return (zcsr_keycode)(ZCSR_KEY_Q + (code - 16u));
-    if (code >= 30u && code <= 38u) return (zcsr_keycode)(ZCSR_KEY_A + (code - 30u));
-    if (code >= 44u && code <= 50u) return (zcsr_keycode)(ZCSR_KEY_Z + (code - 44u));
+    /* Evdev letter codes are physical QWERTY positions, not alphabetical.
+     * 16..25 = QWERTY top row, 30..38 = home row, 44..50 = bottom row.
+     * Treating them as Q+offset/A+offset/Z+offset silently remaps every Linux
+     * letter (O became Y, S became B), which kills Ctrl+O/S shortcuts and game
+     * input even though the text callback still looks correct. */
+    static const zcsr_keycode top_row[10] = {
+        ZCSR_KEY_Q, ZCSR_KEY_W, ZCSR_KEY_E, ZCSR_KEY_R, ZCSR_KEY_T,
+        ZCSR_KEY_Y, ZCSR_KEY_U, ZCSR_KEY_I, ZCSR_KEY_O, ZCSR_KEY_P
+    };
+    static const zcsr_keycode home_row[9] = {
+        ZCSR_KEY_A, ZCSR_KEY_S, ZCSR_KEY_D, ZCSR_KEY_F, ZCSR_KEY_G,
+        ZCSR_KEY_H, ZCSR_KEY_J, ZCSR_KEY_K, ZCSR_KEY_L
+    };
+    static const zcsr_keycode bottom_row[7] = {
+        ZCSR_KEY_Z, ZCSR_KEY_X, ZCSR_KEY_C, ZCSR_KEY_V,
+        ZCSR_KEY_B, ZCSR_KEY_N, ZCSR_KEY_M
+    };
+    if (code >= 16u && code <= 25u) return top_row[code - 16u];
+    if (code >= 30u && code <= 38u) return home_row[code - 30u];
+    if (code >= 44u && code <= 50u) return bottom_row[code - 44u];
     if (code >= 2u && code <= 11u) {
         uint32_t digit = (code == 11u) ? 0u : (code - 1u);
         return (zcsr_keycode)(ZCSR_KEY_0 + digit);

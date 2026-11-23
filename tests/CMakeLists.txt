@@ -18,6 +18,30 @@ target_link_libraries(color_pipeline_test PRIVATE zcsr_color_pipeline zcsr_core)
 target_include_directories(color_pipeline_test PRIVATE "${PROJECT_SOURCE_DIR}/include")
 add_test(NAME color_pipeline COMMAND color_pipeline_test)
 
+add_executable(light2d_environment_test test_light2d_environment.c)
+target_link_libraries(light2d_environment_test PRIVATE zcsr_light2d_environment)
+add_test(NAME light2d_environment COMMAND light2d_environment_test)
+set_tests_properties(light2d_environment PROPERTIES
+    TIMEOUT 3
+    LABELS "module;light2d;fast")
+
+# Pure CPU shadow/projection math; documents in docs/LIGHT2D_* reference this
+# target, so it must be a real CTest entry rather than an orphan source file.
+add_executable(light2d_math_test test_light2d_math.c)
+target_link_libraries(light2d_math_test PRIVATE zcsr_camera zcsr_core)
+target_include_directories(light2d_math_test PRIVATE "${PROJECT_SOURCE_DIR}/include")
+add_test(NAME light2d_math COMMAND light2d_math_test)
+set_tests_properties(light2d_math PROPERTIES
+    TIMEOUT 3
+    LABELS "module;light2d;fast")
+
+add_executable(scene_submit_test test_scene_submit.c)
+target_link_libraries(scene_submit_test PRIVATE zcsr_scene_submit)
+add_test(NAME scene_submit COMMAND scene_submit_test)
+set_tests_properties(scene_submit PROPERTIES
+    TIMEOUT 3
+    LABELS "module;scene;fast")
+
 add_executable(ui_runtime_test test_ui_runtime.c)
 target_link_libraries(ui_runtime_test PRIVATE zcsr_ui zcsr_core)
 target_include_directories(ui_runtime_test PRIVATE "${PROJECT_SOURCE_DIR}/include")
@@ -53,7 +77,9 @@ if(WIN32)
     target_link_libraries(input_win32_pump_test PRIVATE
         zcsr_input zcsr_platform zcsr_core user32 gdi32)
     add_test(NAME input_win32_pump COMMAND input_win32_pump_test)
-    set_tests_properties(input_win32_pump PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
+    set_tests_properties(input_win32_pump PROPERTIES
+        TIMEOUT 30 SKIP_RETURN_CODE 77
+        RESOURCE_LOCK zcsr_gui_display)
 endif()
 
 add_executable(instance_alpha_sort_test test_instance_alpha_sort.c)
@@ -63,6 +89,7 @@ if(WIN32)
     target_link_libraries(instance_alpha_sort_test PRIVATE user32 gdi32 opengl32)
 endif()
 add_test(NAME instance_alpha_sort COMMAND instance_alpha_sort_test)
+set_tests_properties(instance_alpha_sort PROPERTIES RESOURCE_LOCK zcsr_gui_display)
 
 add_executable(ui_hit_test test_ui_hit.c)
 target_link_libraries(ui_hit_test PRIVATE zcsr_ui zcsr_core)
@@ -76,7 +103,11 @@ endif()
 add_test(NAME music_api COMMAND music_api_test "${CMAKE_CURRENT_SOURCE_DIR}/data")
 # Same rationale as the audiomix test: libpipewire's global allocations outlive
 # pw_deinit() and are reported as <unknown module> leaks. ASan/UBSan stay on.
-set_tests_properties(music_api PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
+set_tests_properties(music_api PROPERTIES
+    ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0"
+    TIMEOUT 3
+    LABELS "module;audio;fast"
+    RESOURCE_LOCK zcsr_audio_device)
 
 # Engine module tests (real module/platform dependencies, not pure-CPU fakes).
 add_subdirectory(engine)

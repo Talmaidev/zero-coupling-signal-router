@@ -168,7 +168,9 @@ void zcsr_scan_gamepads(zcsr_input_ext* in) {
     dir = opendir("/dev/input");
     if (!dir) return;
     while ((entry = readdir(dir)) != NULL) {
-        char path[32];
+        /* d_name is capped below 18 chars above; 512 also proves
+         * non-truncation to GCC, which cannot infer the earlier length check. */
+        char path[512];
         int free_slot = -1;
         int i;
 

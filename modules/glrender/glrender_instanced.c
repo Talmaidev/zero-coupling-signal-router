@@ -2,10 +2,18 @@
  * Uses core's texture table (zcsr_gl_find_tex) and platform hooks (make_current/swap/update_size).
  */
 #include "glrender_internal.h"
+#include "zcsr/diagnostics.h"
 
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
+
+/* glad exposes GL_TEXTURE0 but not the consecutive unit-1 token on every
+ * platform; keep the same local fallback used by glrender_l2d_geo.c. */
+#ifndef GL_TEXTURE1
+#define GL_TEXTURE1 0x84C1
+#endif
 
 /* ===========================================================================================
  * Instanced shader / program
@@ -24,10 +32,22 @@ static unsigned int zcsr_gl_make_inst_program(void) {
         "layout(location=5) in float i_rotation;\n"
         "layout(location=6) in float i_amount;\n"
         "layout(location=7) in float i_mode;\n"
+        "layout(location=8) in vec4 i_recolor;\n"
+        "layout(location=9) in vec4 i_ramp;\n"
+        "layout(location=10) in vec4 i_glow;\n"
+        "layout(location=11) in vec4 i_chroma;\n"
+        "layout(location=12) in vec4 i_emiss;\n"
+        "layout(location=13) in vec4 i_rim;\n"
         "uniform vec2 u_view;\n"
         "out vec2 v_uv;\n"
         "out vec4 v_color;\n"
         "out vec2 v_mod;\n"
+        "out vec4 v_recolor;\n"
+        "out vec4 v_ramp;\n"
+        "out vec4 v_glow;\n"
+        "out vec4 v_chroma;\n"
+        "out vec4 v_emiss;\n"
+        "out vec4 v_rim;\n"
         "void main(){\n"
         "  vec2 halfsize = i_size * 0.5;\n"
         "  float c = cos(i_rotation);\n"
@@ -38,6 +58,8 @@ static unsigned int zcsr_gl_make_inst_program(void) {
         "  vec2 t = a_corner * 0.5 + 0.5;\n"
         "  v_uv = mix(i_uv.xy, i_uv.zw, t);\n"
         "  v_color = i_color; v_mod = vec2(i_mode, i_amount);\n"
+        "  v_recolor = i_recolor; v_ramp = i_ramp; v_glow = i_glow; v_chroma = i_chroma;\n"
+        "  v_emiss = i_emiss; v_rim = i_rim;\n"
         "}\n";
     static const char* fs =
         ZCSR_GL_GLSL_VERSION
@@ -45,14 +67,154 @@ static unsigned int zcsr_gl_make_inst_program(void) {
         "in vec2 v_uv;\n"
         "in vec4 v_color;\n"
         "in vec2 v_mod;\n"
+        "in vec4 v_recolor;\n"
+        "in vec4 v_ramp;\n"
+        "in vec4 v_glow;\n"
+        "in vec4 v_chroma;\n"
+        "in vec4 v_emiss;\n"
+        "in vec4 v_rim;\n"
         "uniform sampler2D u_tex;\n"
+        "uniform sampler2D u_ramp;\n"
         "out vec4 o_color;\n"
+        "vec3 display_to_linear(vec3 c){\n"
+        "  c = clamp(c, 0.0, 1.0);\n"
+        "  vec3 lo = c / 12.92;\n"
+        "  vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));\n"
+        "  return mix(lo, hi, step(vec3(0.04045), c));\n"
+        "}\n"
+        "vec3 rgb_to_hsv(vec3 c){\n"
+        "  c = clamp(c, 0.0, 1.0);\n"
+        "  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);\n"
+        "  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));\n"
+        "  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));\n"
+        "  float d = q.x - min(q.w, q.y);\n"
+        "  float e = 1.0e-10;\n"
+        "  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);\n"
+        "}\n"
+        "vec3 hsv_to_rgb(vec3 c){\n"
+        "  vec3 p = abs(fract(c.xxx + vec3(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);\n"
+        "  return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);\n"
+        "}\n"
+        "vec3 rgb_to_oklab(vec3 c){\n"
+        "  c = clamp(c, 0.0, 1.0);\n"
+        "  float l = 0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b;\n"
+        "  float m = 0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b;\n"
+        "  float s = 0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b;\n"
+        "  vec3 lms = sign(vec3(l, m, s)) * pow(abs(vec3(l, m, s)), vec3(1.0 / 3.0));\n"
+        "  return vec3(0.2104542553 * lms.x + 0.7936177850 * lms.y - 0.0040720468 * lms.z,\n"
+        "              1.9779984951 * lms.x - 2.4285922050 * lms.y + 0.4505937099 * lms.z,\n"
+        "              0.0259040371 * lms.x + 0.7827717662 * lms.y - 0.8086757660 * lms.z);\n"
+        "}\n"
+        "vec3 oklab_to_rgb(vec3 lab){\n"
+        "  float l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;\n"
+        "  float m_ = lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z;\n"
+        "  float s_ = lab.x - 0.0894841775 * lab.y - 1.2914855480 * lab.z;\n"
+        "  vec3 lms = vec3(l_, m_, s_);\n"
+        "  lms = lms * lms * lms;\n"
+        "  return clamp(vec3(\n"
+        "      4.0767416621 * lms.x - 3.3077115913 * lms.y + 0.2309699292 * lms.z,\n"
+        "     -1.2684380046 * lms.x + 2.6097574011 * lms.y - 0.3413193965 * lms.z,\n"
+        "     -0.0041960863 * lms.x - 0.7034186147 * lms.y + 1.7076147010 * lms.z), 0.0, 1.0);\n"
+        "}\n"
+        "vec3 apply_recolor(vec3 rgb, vec4 h, vec4 r, vec4 sv){\n"
+        "  float family_w = 1.0;\n"
+        "  if (h.w > 0.0) {\n"
+        "    vec3 hsv = rgb_to_hsv(rgb);\n"
+        "    if (hsv.y > 0.02) {\n"
+        "      float hue = hsv.x * 360.0;\n"
+        "      float dist = abs(mod(hue - h.x + 540.0, 360.0) - 180.0);\n"
+        "      float edge = max(h.z, 0.5);\n"
+        "      float w = 1.0 - smoothstep(edge, edge * 1.5, dist);\n"
+        "      family_w = w;\n"
+        "      /* Compress the source-family hue spread into a tight target\n"
+        "       * family; a fixed angular shift would send green-yellow pixels\n"
+        "       * to magenta when green is mapped to red. */\n"
+        "      float rel = (hue - h.x + 540.0);\n"
+        "      rel = mod(rel, 360.0) - 180.0;\n"
+        "      float spread = min(h.z * 0.15, 10.0);\n"
+        "      float nh = mod(h.y + (rel / edge) * spread + 360.0, 360.0) / 360.0;\n"
+        "      hsv.x = mix(hsv.x, nh, clamp(w * h.w, 0.0, 1.0));\n"
+        "      rgb = hsv_to_rgb(hsv);\n"
+        "    } else {\n"
+        "      family_w = 0.0;\n"
+        "    }\n"
+        "  }\n"
+        "  if (r.y > 0.0) {\n"
+        "    float luma = dot(clamp(rgb, 0.0, 1.0), vec3(0.2126, 0.7152, 0.0722));\n"
+        "    float rows = max(float(textureSize(u_ramp, 0).y), 1.0);\n"
+        "    vec3 ramp = texture(u_ramp, vec2(clamp(luma, 0.0, 1.0), (r.x + 0.5) / rows)).rgb;\n"
+        "    float ramp_a = clamp(r.y * family_w, 0.0, 1.0);\n"
+        "    if (r.z > 0.5) {\n"
+        "      /* Material-masked chroma gradient: replace a/b in OKLab, keep the\n"
+        "       * source L (and optionally blend toward ramp L). A full RGB ramp\n"
+        "       * overwrites every layer's luminance and is exactly what flattened\n"
+        "       * the authored shadows/highlights. */\n"
+        "      vec3 src_lab = rgb_to_oklab(rgb);\n"
+        "      vec3 ramp_lab = rgb_to_oklab(ramp);\n"
+        "      vec3 dst_lab = vec3(mix(src_lab.x, ramp_lab.x, clamp(r.w, 0.0, 1.0)),\n"
+        "                          ramp_lab.yz);\n"
+        "      rgb = oklab_to_rgb(mix(src_lab, dst_lab, ramp_a));\n"
+        "    } else {\n"
+        "      rgb = mix(rgb, clamp(ramp, 0.0, 1.0), ramp_a);\n"
+        "    }\n"
+        "  }\n"
+        "  /* Chroma/value conditioning runs after the ramp: a stylized gradient\n"
+        "   * can desaturate a low-chroma source, so the target S/V must be the\n"
+        "   * final authored state, not an intermediate one. */\n"
+        "  if (sv.x > 0.0 || sv.y > 0.0 || abs(sv.z) > 0.0 || abs(sv.w) > 0.0) {\n"
+        "    vec3 hsv = rgb_to_hsv(rgb);\n"
+        "    if (hsv.y > 0.02) {\n"
+        "      float sv_w = (h.w > 0.0) ? family_w : 1.0;\n"
+        "      float s = hsv.y;\n"
+        "      float s_target = s;\n"
+        "      if (sv.x > 0.0) s_target = s_target + (1.0 - s_target) * clamp(sv.x, 0.0, 1.0);\n"
+        "      if (sv.y > 0.0) s_target = max(s_target, clamp(sv.y, 0.0, 1.0));\n"
+        "      s = mix(s, s_target, clamp(sv_w, 0.0, 1.0));\n"
+        "      float v = hsv.z;\n"
+        "      float v_target = v;\n"
+        "      if (abs(sv.w) > 0.0) v_target = (v_target - 0.5) * (1.0 + sv.w) + 0.5;\n"
+        "      if (abs(sv.z) > 0.0) v_target = v_target * (1.0 + sv.z);\n"
+        "      v = mix(v, v_target, clamp(sv_w, 0.0, 1.0));\n"
+        "      hsv.y = clamp(s, 0.0, 1.0);\n"
+        "      hsv.z = clamp(v, 0.0, 1.0);\n"
+        "      rgb = hsv_to_rgb(hsv);\n"
+        "    }\n"
+        "  }\n"
+        "  return rgb;\n"
+        "}\n"
         "void main(){\n"
         "  vec4 texel = texture(u_tex, v_uv);\n"
+        "  vec4 tint = vec4(display_to_linear(v_color.rgb), v_color.a);\n"
         "  float amount = clamp(v_mod.y, 0.0, 1.0);\n"
-        "  if (v_mod.x < 0.5) o_color = texel * v_color;\n"
-        "  else if (v_mod.x < 1.5) o_color = mix(texel, v_color, amount);\n"
-        "  else o_color = clamp(texel + v_color * amount, 0.0, 1.0);\n"
+        "  if (v_mod.x < 0.5) o_color = texel * tint;\n"
+        "  else if (v_mod.x < 1.5) o_color = mix(texel, tint, amount);\n"
+        "  else o_color = clamp(texel + tint * amount, 0.0, 1.0);\n"
+        "  o_color.rgb = apply_recolor(o_color.rgb, v_recolor, v_ramp, v_chroma);\n"
+        "  if (v_glow.w > 0.0) {\n"
+        "    vec3 glow = display_to_linear(clamp(v_glow.rgb, 0.0, 1.0));\n"
+        "    o_color.rgb += glow * (clamp(v_glow.w, 0.0, 1.0) * clamp(o_color.a, 0.0, 1.0));\n"
+        "  }\n"
+        "  if (v_emiss.w > 0.0) {\n"
+        "    /* HDR core: only the bright source pixels emit, and the unclamped\n"
+        "     * add is resolved once by the frame tonemap. */\n"
+        "    float src_luma = dot(clamp(texel.rgb, 0.0, 1.0), vec3(0.2126, 0.7152, 0.0722));\n"
+        "    float core = smoothstep(0.45, 0.95, src_luma);\n"
+        "    core = core * core;\n"
+        "    o_color.rgb += display_to_linear(clamp(v_emiss.rgb, 0.0, 1.0)) *\n"
+        "                   (v_emiss.w * core * clamp(o_color.a, 0.0, 1.0));\n"
+        "  }\n"
+        "  if (v_rim.w > 0.0) {\n"
+        "    /* Alpha silhouette band: this is a separate frost/energy shell, not\n"
+        "     * a whole-sprite tint. */\n"
+        "    vec2 px = 1.0 / max(vec2(textureSize(u_tex, 0)), vec2(1.0));\n"
+        "    float n = max(max(texture(u_tex, v_uv + vec2(px.x, 0.0)).a,\n"
+        "                      texture(u_tex, v_uv - vec2(px.x, 0.0)).a),\n"
+        "                  max(texture(u_tex, v_uv + vec2(0.0, px.y)).a,\n"
+        "                      texture(u_tex, v_uv - vec2(0.0, px.y)).a));\n"
+        "    float edge = clamp(o_color.a - n, 0.0, 1.0);\n"
+        "    o_color.rgb += display_to_linear(clamp(v_rim.rgb, 0.0, 1.0)) *\n"
+        "                   (v_rim.w * edge);\n"
+        "  }\n"
         "}\n";
     unsigned int v = zcsr_gl_compile(GL_VERTEX_SHADER, vs);
     unsigned int f = zcsr_gl_compile(GL_FRAGMENT_SHADER, fs);
@@ -111,9 +273,16 @@ static unsigned int zcsr_gl_make_inst_program_mul(void) {
         "in vec4 v_color;\n"
         "uniform sampler2D u_tex;\n"
         "out vec4 o_color;\n"
+        "vec3 display_to_linear(vec3 c){\n"
+        "  c = clamp(c, 0.0, 1.0);\n"
+        "  vec3 lo = c / 12.92;\n"
+        "  vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));\n"
+        "  return mix(lo, hi, step(vec3(0.04045), c));\n"
+        "}\n"
         "void main(){\n"
         "  vec4 texel = texture(u_tex, v_uv);\n"
-        "  o_color = texel * v_color;\n"
+        "  vec4 tint = vec4(display_to_linear(v_color.rgb), v_color.a);\n"
+        "  o_color = texel * tint;\n"
         "}\n";
     unsigned int v = zcsr_gl_compile(GL_VERTEX_SHADER, vs);
     unsigned int f = zcsr_gl_compile(GL_FRAGMENT_SHADER, fs);
@@ -148,10 +317,13 @@ bool zcsr_gl_instanced_init(zcsr_gl_renderer* r) {
     static const unsigned short indices[6] = { 0, 1, 2, 0, 2, 3 };
     const size_t stride = sizeof(zcsr_gl_instance);
 
+    r->color_ramp_tex = 0;
+    r->color_ramp_rows = 0;
     r->inst_program = zcsr_gl_make_inst_program();
     if (!r->inst_program) return false;
     r->inst_uniform_view = glGetUniformLocation(r->inst_program, "u_view");
     r->inst_uniform_tex  = glGetUniformLocation(r->inst_program, "u_tex");
+    r->inst_uniform_ramp = glGetUniformLocation(r->inst_program, "u_ramp");
     r->inst_program_mul = zcsr_gl_make_inst_program_mul();
     if (r->inst_program_mul) {
         r->inst_uniform_view_mul = glGetUniformLocation(r->inst_program_mul, "u_view");
@@ -199,6 +371,30 @@ bool zcsr_gl_instanced_init(zcsr_gl_renderer* r) {
     glEnableVertexAttribArray(7);
     glVertexAttribPointer(7, 1, GL_FLOAT, GL_FALSE, (GLsizei)stride, (void*)offsetof(zcsr_gl_instance, mode));
     glVertexAttribDivisor(7, 1);
+    glEnableVertexAttribArray(8);
+    glVertexAttribPointer(8, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                          (void*)offsetof(zcsr_gl_instance, recolor));
+    glVertexAttribDivisor(8, 1);
+    glEnableVertexAttribArray(9);
+    glVertexAttribPointer(9, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                          (void*)(offsetof(zcsr_gl_instance, recolor) + 4 * sizeof(float)));
+    glVertexAttribDivisor(9, 1);
+    glEnableVertexAttribArray(10);
+    glVertexAttribPointer(10, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                          (void*)offsetof(zcsr_gl_instance, recolor.glow_r));
+    glVertexAttribDivisor(10, 1);
+    glEnableVertexAttribArray(11);
+    glVertexAttribPointer(11, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                          (void*)offsetof(zcsr_gl_instance, recolor.sat_boost));
+    glVertexAttribDivisor(11, 1);
+    glEnableVertexAttribArray(12);
+    glVertexAttribPointer(12, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                          (void*)offsetof(zcsr_gl_instance, recolor.emiss_r));
+    glVertexAttribDivisor(12, 1);
+    glEnableVertexAttribArray(13);
+    glVertexAttribPointer(13, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                          (void*)offsetof(zcsr_gl_instance, recolor.rim_r));
+    glVertexAttribDivisor(13, 1);
 
     /* Separate VAO for the multiply-only program: it never reads amount/mode,
      * and keeping those arrays enabled makes some drivers fetch per-instance
@@ -284,6 +480,30 @@ static void zcsr_gl_inst_bind_slot_attribs(zcsr_gl_renderer* r) {
         glVertexAttribPointer(7, 1, GL_FLOAT, GL_FALSE, (GLsizei)stride,
                               (void*)(base + offsetof(zcsr_gl_instance, mode)));
         glVertexAttribDivisor(7, 1);
+        glEnableVertexAttribArray(8);
+        glVertexAttribPointer(8, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                              (void*)(base + offsetof(zcsr_gl_instance, recolor)));
+        glVertexAttribDivisor(8, 1);
+        glEnableVertexAttribArray(9);
+        glVertexAttribPointer(9, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                              (void*)(base + offsetof(zcsr_gl_instance, recolor) + 4 * sizeof(float)));
+        glVertexAttribDivisor(9, 1);
+        glEnableVertexAttribArray(10);
+        glVertexAttribPointer(10, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                              (void*)(base + offsetof(zcsr_gl_instance, recolor.glow_r)));
+        glVertexAttribDivisor(10, 1);
+        glEnableVertexAttribArray(11);
+        glVertexAttribPointer(11, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                              (void*)(base + offsetof(zcsr_gl_instance, recolor.sat_boost)));
+        glVertexAttribDivisor(11, 1);
+        glEnableVertexAttribArray(12);
+        glVertexAttribPointer(12, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                              (void*)(base + offsetof(zcsr_gl_instance, recolor.emiss_r)));
+        glVertexAttribDivisor(12, 1);
+        glEnableVertexAttribArray(13);
+        glVertexAttribPointer(13, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride,
+                              (void*)(base + offsetof(zcsr_gl_instance, recolor.rim_r)));
+        glVertexAttribDivisor(13, 1);
     }
 }
 
@@ -324,14 +544,7 @@ static bool zcsr_gl_instanced_begin_state(zcsr_gl_renderer* r, bool multiply_onl
     int uniform_view, uniform_tex;
     if (!r) return false;
     if (!zcsr_gl_make_current(r)) return false;
-    if (r->target == 0) {
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        zcsr_gl_update_size(r);
-    } else {
-        glBindFramebuffer(GL_FRAMEBUFFER, r->fbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                               r->target, 0);
-    }
+    if (!zcsr_gl_bind_active_target(r)) return false;
     glViewport(0, 0, r->width, r->height);
     if (multiply_only && r->inst_program_mul) {
         program = r->inst_program_mul;
@@ -345,6 +558,10 @@ static bool zcsr_gl_instanced_begin_state(zcsr_gl_renderer* r, bool multiply_onl
     glUseProgram(program);
     glUniform2f(uniform_view, (float)r->width, (float)r->height);
     glUniform1i(uniform_tex, 0);
+    if (r->inst_uniform_ramp >= 0) glUniform1i(r->inst_uniform_ramp, 1);
+    glActiveTexture(GL_TEXTURE0 + 1);
+    glBindTexture(GL_TEXTURE_2D, r->color_ramp_tex);
+    glActiveTexture(GL_TEXTURE0);
     r->inst_current_mul = (program == r->inst_program_mul);
     return true;
 }
@@ -353,14 +570,65 @@ static void zcsr_gl_instanced_end_state(void) {
     glBindVertexArray(0);
 }
 
+static bool zcsr_gl_instance_valid(const zcsr_gl_instance* in) {
+    if (!in) return false;
+    if (!isfinite(in->cx) || !isfinite(in->cy) || !isfinite(in->w) || !isfinite(in->h) ||
+        !isfinite(in->u0) || !isfinite(in->v0) || !isfinite(in->u1) || !isfinite(in->v1) ||
+        !isfinite(in->r) || !isfinite(in->g) || !isfinite(in->b) || !isfinite(in->a) ||
+        !isfinite(in->rotation) || !isfinite(in->amount) || !isfinite(in->mode) ||
+        !isfinite(in->recolor.hue_source) || !isfinite(in->recolor.hue_target) ||
+        !isfinite(in->recolor.hue_width) || !isfinite(in->recolor.hue_amount) ||
+        !isfinite(in->recolor.ramp_row) || !isfinite(in->recolor.ramp_amount) ||
+        !isfinite(in->recolor.ramp_mode) || !isfinite(in->recolor.ramp_luma) ||
+        !isfinite(in->recolor.glow_r) || !isfinite(in->recolor.glow_g) ||
+        !isfinite(in->recolor.glow_b) || !isfinite(in->recolor.glow_amount) ||
+        !isfinite(in->recolor.sat_boost) || !isfinite(in->recolor.sat_floor) ||
+        !isfinite(in->recolor.value_gain) || !isfinite(in->recolor.value_contrast) ||
+        !isfinite(in->recolor.emiss_r) || !isfinite(in->recolor.emiss_g) ||
+        !isfinite(in->recolor.emiss_b) || !isfinite(in->recolor.emiss_amount) ||
+        !isfinite(in->recolor.rim_r) || !isfinite(in->recolor.rim_g) ||
+        !isfinite(in->recolor.rim_b) || !isfinite(in->recolor.rim_amount) ||
+        !isfinite(in->z)) return false;
+    if (in->recolor.hue_amount < 0.0f || in->recolor.hue_amount > 1.0f ||
+        in->recolor.ramp_amount < 0.0f || in->recolor.ramp_amount > 1.0f ||
+        in->recolor.ramp_mode < 0.0f || in->recolor.ramp_mode > 1.0f ||
+        in->recolor.ramp_luma < 0.0f || in->recolor.ramp_luma > 1.0f ||
+        in->recolor.glow_amount < 0.0f || in->recolor.glow_amount > 1.0f ||
+        in->recolor.sat_boost < 0.0f || in->recolor.sat_boost > 1.0f ||
+        in->recolor.sat_floor < 0.0f || in->recolor.sat_floor > 1.0f ||
+        in->recolor.value_gain < -1.0f || in->recolor.value_gain > 1.0f ||
+        in->recolor.value_contrast < -1.0f || in->recolor.value_contrast > 1.0f ||
+        in->recolor.emiss_amount < 0.0f || in->recolor.emiss_amount > 4.0f ||
+        in->recolor.rim_amount < 0.0f || in->recolor.rim_amount > 2.0f) return false;
+    if (in->recolor.hue_amount > 0.0f && in->recolor.hue_width < 0.0f) return false;
+    if (in->recolor.ramp_amount > 0.0f && in->recolor.ramp_row < 0.0f) return false;
+    if (in->recolor.glow_r < 0.0f || in->recolor.glow_r > 1.0f ||
+        in->recolor.glow_g < 0.0f || in->recolor.glow_g > 1.0f ||
+        in->recolor.glow_b < 0.0f || in->recolor.glow_b > 1.0f) return false;
+    if (in->recolor.emiss_r < 0.0f || in->recolor.emiss_r > 1.0f ||
+        in->recolor.emiss_g < 0.0f || in->recolor.emiss_g > 1.0f ||
+        in->recolor.emiss_b < 0.0f || in->recolor.emiss_b > 1.0f) return false;
+    if (in->recolor.rim_r < 0.0f || in->recolor.rim_r > 1.0f ||
+        in->recolor.rim_g < 0.0f || in->recolor.rim_g > 1.0f ||
+        in->recolor.rim_b < 0.0f || in->recolor.rim_b > 1.0f) return false;
+    return in->w > 0.0f && in->h > 0.0f;
+}
+
 /* Draw one texture run, splitting it into upload-cap-sized chunks. Shared state
  * (framebuffer/program/VAO) is already set by the caller. Returns submitted count. */
 static size_t zcsr_gl_draw_run_batched(zcsr_gl_renderer* r, zcsr_gl_texture texture,
                                        const zcsr_gl_instance* instances, size_t count) {
-    size_t remaining;
+    size_t remaining, i;
     const zcsr_gl_instance* batch;
     if (!r || !instances || count == 0 || texture == 0) return 0;
-    if (!zcsr_gl_find_tex(r, texture)) return 0;
+    if (!zcsr_gl_tex_path_a_compatible(r, texture)) return 0;
+    for (i = 0; i < count; ++i) {
+        if (!zcsr_gl_instance_valid(&instances[i])) return 0;
+        if (instances[i].recolor.ramp_amount > 0.0f && r->color_ramp_tex == 0) {
+            ZCSR_LOG_ERROR("glrender", "draw_instances: ramp_row requested with no ramp atlas bound");
+            return 0;
+        }
+    }
     remaining = count;
     batch = instances;
     while (remaining > 0u) {
@@ -380,7 +648,19 @@ size_t zcsr_gl_draw_instances(zcsr_gl_renderer* r, zcsr_gl_texture texture,
     bool multiply_only = true;
     if (!r || !instances || count == 0 || texture == 0) return 0;
     for (i = 0; i < count; ++i) {
-        if (instances[i].mode != (float)ZCSR_MOD_MULTIPLY) { multiply_only = false; break; }
+        if (instances[i].mode != (float)ZCSR_MOD_MULTIPLY ||
+            instances[i].recolor.hue_amount > 0.0f ||
+            instances[i].recolor.ramp_amount > 0.0f ||
+            instances[i].recolor.glow_amount > 0.0f ||
+            instances[i].recolor.sat_boost > 0.0f ||
+            instances[i].recolor.sat_floor > 0.0f ||
+            fabsf(instances[i].recolor.value_gain) > 0.0f ||
+            fabsf(instances[i].recolor.value_contrast) > 0.0f ||
+            instances[i].recolor.emiss_amount > 0.0f ||
+            instances[i].recolor.rim_amount > 0.0f) {
+            multiply_only = false;
+            break;
+        }
     }
     if (!zcsr_gl_instanced_begin_state(r, multiply_only)) return 0;
     submitted = zcsr_gl_draw_run_batched(r, texture, instances, count);
@@ -394,6 +674,30 @@ void zcsr_gl_set_instance_upload(zcsr_gl_renderer* r, bool enabled) {
 
 void zcsr_gl_set_instance_orphan(zcsr_gl_renderer* r, bool enabled) {
     if (r) r->inst_orphan = enabled;
+}
+
+void zcsr_gl_set_color_ramp(zcsr_gl_renderer* r, zcsr_gl_texture texture, int rows) {
+    zcsr_gl_tex_entry* e;
+    if (!r) return;
+    if (texture == 0) {
+        r->color_ramp_tex = 0;
+        r->color_ramp_rows = 0;
+        return;
+    }
+    if (rows < 1 || !zcsr_gl_tex_path_a_compatible(r, texture)) {
+        ZCSR_LOG_ERROR("glrender", "set_color_ramp: invalid ramp texture=%u rows=%d",
+                       (unsigned)texture, rows);
+        return;
+    }
+    e = zcsr_gl_find_tex(r, texture);
+    if (!e || e->h < rows) {
+        ZCSR_LOG_ERROR("glrender",
+                       "set_color_ramp: ramp must be at least `rows` high (tex=%u h=%d rows=%d)",
+                       (unsigned)texture, e ? e->h : 0, rows);
+        return;
+    }
+    r->color_ramp_tex = texture;
+    r->color_ramp_rows = rows;
 }
 
 /* ===========================================================================================

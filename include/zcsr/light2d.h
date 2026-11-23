@@ -59,6 +59,69 @@ typedef struct zcsr_light {
     float a;
 } zcsr_light;
 
+/* ---- Scene environment: ambient + sun (first-class parallel light) ----------
+ * The sun is NOT another local point light. It is one scene-wide parallel
+ * light owned by the environment, has no position/radius/decay, and is
+ * submitted before local lights. dir_* is the normalized direction of travel
+ * (sunlight travels DOWN: dir_z < 0). RGB is linear-light color, `intensity`
+ * scales it (0 = disabled). cast_shadow enables the parallel shadow mask;
+ * shadow_length_scale multiplies the geometric shadow length derived from
+ * dir_z (1 = physically consistent, 0.5 = half length).
+ *
+ * ambient_* is linear ambient radiance. exposure is a positive linear scaling
+ * applied before the x/(x+1) tonemap. ambient_occlusion is a global [0,1]
+ * multiplier on ambient only (1 = no occlusion); it never darkens direct
+ * light. A per-pixel AO mask is not part of this contract yet.
+ *
+ * QUALITY: HIGH/ULTRA consume the sun. LOW/MEDIUM are the forward path and
+ * ignore the sun (explicitly, not silently): the forward shader has no
+ * direction term. */
+typedef struct zcsr_light2d_sun {
+    bool enabled;
+    bool cast_shadow;
+    float dir_x, dir_y, dir_z;
+    float r, g, b;
+    float intensity;
+    float shadow_length_scale;
+} zcsr_light2d_sun;
+
+typedef struct zcsr_light2d_environment {
+    float ambient_r, ambient_g, ambient_b;
+    float exposure;
+    float ambient_occlusion;
+    zcsr_light2d_sun sun;
+} zcsr_light2d_environment;
+
+/* Fill *out with the historical defaults: ambient 0.03, exposure 1, AO off,
+ * sun disabled (travel direction (0,0.5,-1) normalized by the validator). */
+void zcsr_light2d_environment_default(zcsr_light2d_environment* out);
+
+/* Validate every field (finite, non-negative, normalized direction, ranges).
+ * Does not mutate. Returns false on any invalid field. */
+bool zcsr_light2d_environment_is_valid(const zcsr_light2d_environment* env);
+
+/* Convert an enabled sun to the parallel-light record consumed by the
+ * pipeline. Returns false for a disabled or invalid sun. The output `a`
+ * carries intensity, type is ZCSR_LIGHT_PARALLEL, and x/y/height/radius/decay
+ * are zero. */
+bool zcsr_light2d_sun_to_light(const zcsr_light2d_sun* sun, zcsr_light* out);
+
+/* Geometric ground-shadow length for a parallel light, in pixels:
+ *
+ *   height * |dir_xy| / |dir_z| * shadow_length_scale * ppu
+ *
+ * dir_xy is (dir_x, dir_y); the direction may be non-normalized. Returns 0
+ * for a non-positive height/scale/ppu, and 100000 px when |dir_z| is within
+ * 1e-6 of zero (the light is horizontal and the band is unbounded). This is
+ * pure math shared by the light2d occluder emitter and unit tests; it does
+ * not clamp to the scene. */
+float zcsr_light2d_parallel_shadow_length_px(float occluder_height,
+                                              float dir_x,
+                                              float dir_y,
+                                              float dir_z,
+                                              float shadow_length_scale,
+                                              float ppu);
+
 /* ---- Camera (world-unit orthographic, SHARED) -----------------------------------------
  * The light2d pipeline projects through the caller's zcsr_camera (camera.h):
  * set_camera stores the POINTER (not a copy), so pan/zoom changes apply the
@@ -126,6 +189,16 @@ bool zcsr_light2d_begin_geometry(zcsr_light2d_ctx* ctx);
 bool zcsr_light2d_begin_lighting(zcsr_light2d_ctx* ctx);
 bool zcsr_light2d_add_light(zcsr_light2d_ctx* ctx, const zcsr_light* light);
 bool zcsr_light2d_end_lighting(zcsr_light2d_ctx* ctx);
+
+/* Replace the scene environment. Valid between frames only. Invalid values
+ * (non-finite, negative RGB/intensity, non-normalized sun direction, exposure
+ * <= 0, ambient_occlusion outside [0,1]) are rejected and leave the previous
+ * environment intact. HIGH/ULTRA use every field; LOW/MEDIUM ignore the sun.
+ * Defaults are zcsr_light2d_environment_default(). */
+bool zcsr_light2d_set_environment(zcsr_light2d_ctx* ctx,
+                                  const zcsr_light2d_environment* environment);
+void zcsr_light2d_get_environment(const zcsr_light2d_ctx* ctx,
+                                  zcsr_light2d_environment* out);
 
 /* Optional explicit clear while the context is between frames. begin_geometry
  * also clears the list automatically. */

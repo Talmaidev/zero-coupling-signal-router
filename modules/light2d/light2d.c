@@ -1,5 +1,6 @@
 #include "zcsr/light2d.h"
 #include "zcsr/gl_render_light2d_ext.h"
+#include "zcsr/diagnostics.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -22,10 +23,11 @@ typedef union zcsr_l2d_align_probe {
 } zcsr_l2d_align_probe;
 #define ZCSR_L2D_MAX_ALIGN _Alignof(zcsr_l2d_align_probe)
 
-/* Public contract order: Albedo, Position, Normal, Emissive (HDR). */
-/* G0 Albedo uses hardware sRGB decode: GPU samples return linear RGB. */
+/* Public contract order: Albedo, Position, Normal, Emissive (HDR).
+ * G0 is linear RGBA16F: the geometry pass writes linear albedo directly and
+ * the composite samples it without an implicit sRGB decode. */
 static const zcsr_gl_l2d_format zcsr_l2d_gbuffer_formats[4] = {
-    ZCSR_GL_L2D_FORMAT_SRGB8_ALPHA8,
+    ZCSR_GL_L2D_FORMAT_RGBA16F,
     ZCSR_GL_L2D_FORMAT_RGBA16F,
     ZCSR_GL_L2D_FORMAT_RGBA8,
     ZCSR_GL_L2D_FORMAT_RGBA16F
@@ -66,6 +68,7 @@ struct zcsr_light2d_ctx {
     zcsr_light2d_phase phase;
     bool state_saved;
     zcsr_light2d_options options;
+    zcsr_light2d_environment environment;
     const zcsr_camera* camera; /* caller's LIVE camera; NULL = built-in default */
     size_t occluder_count;
     uint8_t* occluder_verts; /* [ZCSR_LIGHT2D_MAX_OCCLUDERS]: vertex counts */
@@ -292,6 +295,7 @@ zcsr_light2d_ctx* zcsr_light2d_create(zcsr_gl_renderer* renderer,
     ctx->options.light_scale_pct = 50;
     ctx->options.bloom = false;
     ctx->options.ray_shadows = false;
+    zcsr_light2d_environment_default(&ctx->environment);
     /* ULTRA 起始档：默认全分辨率光/影缓冲 + bloom（与 set_quality 的切档默认一致） */
     if (initial_quality == ZCSR_LIGHT_QUALITY_ULTRA) {
         ctx->options.light_scale_pct = 100;
@@ -306,6 +310,24 @@ zcsr_light2d_ctx* zcsr_light2d_create(zcsr_gl_renderer* renderer,
         (aligned_buffer + occluder_attrs_offset);
 
     if (max_quality >= ZCSR_LIGHT_QUALITY_HIGH) {
+        zcsr_gl_capabilities caps;
+        if (!zcsr_gl_query_capabilities(renderer, &caps)) {
+            ZCSR_LOG_ERROR("light2d", "capability query unavailable; deferred path rejected");
+            memset(ctx, 0, sizeof(*ctx));
+            return NULL;
+        }
+        if (!(caps.core_33 || caps.gles3) || !caps.float_color_buffer || !caps.mrt4) {
+            ZCSR_LOG_ERROR("light2d",
+                           "deferred path requires GL3.3/GLES3 + RGBA16F color + MRT4 "
+                           "(core33=%s gles3=%s float_color=%s mrt4=%s); "
+                           "use LOW/MEDIUM path A instead",
+                           caps.core_33 ? "yes" : "no",
+                           caps.gles3 ? "yes" : "no",
+                           caps.float_color_buffer ? "yes" : "no",
+                           caps.mrt4 ? "yes" : "no");
+            memset(ctx, 0, sizeof(*ctx));
+            return NULL;
+        }
         if (!zcsr_gl_l2d_target_create(renderer, width, height,
                                        zcsr_l2d_gbuffer_formats, 4u,
                                        &ctx->gbuffer) ||
@@ -432,6 +454,27 @@ bool zcsr_light2d_clear_lights(zcsr_light2d_ctx* ctx)
     if (ctx->phase != ZCSR_L2D_PHASE_IDLE && ctx->phase != ZCSR_L2D_PHASE_DONE) return false;
     ctx->light_count = 0u;
     return true;
+}
+
+bool zcsr_light2d_set_environment(zcsr_light2d_ctx* ctx,
+                                  const zcsr_light2d_environment* environment)
+{
+    if (ctx == NULL || environment == NULL) return false;
+    if (ctx->phase != ZCSR_L2D_PHASE_IDLE && ctx->phase != ZCSR_L2D_PHASE_DONE) return false;
+    if (!zcsr_light2d_environment_is_valid(environment)) return false;
+    ctx->environment = *environment;
+    return true;
+}
+
+void zcsr_light2d_get_environment(const zcsr_light2d_ctx* ctx,
+                                  zcsr_light2d_environment* out)
+{
+    if (out == NULL) return;
+    if (ctx == NULL) {
+        zcsr_light2d_environment_default(out);
+        return;
+    }
+    *out = ctx->environment;
 }
 
 bool zcsr_light2d_set_options(zcsr_light2d_ctx* ctx, const zcsr_light2d_options* options)
@@ -567,7 +610,9 @@ static bool zcsr_l2d_draw_low(zcsr_light2d_ctx* ctx)
 static void zcsr_l2d_emit_occluders(zcsr_light2d_ctx* ctx,
                                     const zcsr_light* light,
                                     float lx_px, float ly_px,
-                                    float dir_x, float dir_y)
+                                    float dir_x, float dir_y,
+                                    float dir3_z,
+                                    float shadow_length_scale)
 {
     const zcsr_camera* cam = zcsr_l2d_effective_camera(ctx);
     const float ppu = cam->px_per_unit;
@@ -583,9 +628,21 @@ static void zcsr_l2d_emit_occluders(zcsr_light2d_ctx* ctx,
         const int reverse = (attr->flags & ZCSR_L2D_OCC_REVERSE) ? 1 : 0;
         float cx = 0.0f;
         float cy = 0.0f;
-        /* distance: world units -> px; <= 0 means the infinite wedge */
-        const float dist_px =
-            (attr->distance > 0.0f) ? (attr->distance * ppu) : 100000.0f;
+        float dist_px;
+        /* distance: world units -> px; <= 0 means the infinite wedge.
+         * Parallel lights derive the ground shadow length from the vertical
+         * component of the travel direction: L = height * |dir_xy| / |dir_z|.
+         * A per-occluder explicit distance still wins (wall-style bands). */
+        if (attr->distance > 0.0f) {
+            dist_px = attr->distance * ppu;
+        } else if (parallel) {
+            dist_px = zcsr_light2d_parallel_shadow_length_px(
+                attr->height, dir_x, dir_y, dir3_z,
+                shadow_length_scale, ppu);
+            if (dist_px <= 0.0f) continue; /* zero-height/scale casts no band */
+        } else {
+            dist_px = 100000.0f;
+        }
 
         /* auto_disable: an occluder at/above the light's height is lit and
          * casts nothing (reference light_is_above_block). */
@@ -641,6 +698,31 @@ static void zcsr_l2d_emit_occluders(zcsr_light2d_ctx* ctx,
             }
         }
     }
+}
+
+static float zcsr_l2d_parallel_shadow_max_px(const zcsr_light2d_ctx* ctx,
+                                             float dir3_z,
+                                             float shadow_length_scale,
+                                             float ppu)
+{
+    const float horizontal =
+        sqrtf(fmaxf(0.0f, 1.0f - dir3_z * dir3_z));
+    float max_px = 1.0f;
+    size_t i;
+    if (fabsf(dir3_z) <= 1e-6f) return 100000.0f;
+    for (i = 0u; i < ctx->occluder_count; ++i) {
+        const zcsr_l2d_occluder_attr* attr = &ctx->occluder_attrs[i];
+        float candidate;
+        if (attr->distance > 0.0f) {
+            candidate = attr->distance * ppu;
+        } else {
+            candidate = zcsr_light2d_parallel_shadow_length_px(
+                attr->height, horizontal, 0.0f, dir3_z,
+                shadow_length_scale, ppu);
+        }
+        if (candidate > max_px) max_px = candidate;
+    }
+    return max_px;
 }
 
 static bool zcsr_l2d_draw_high(zcsr_light2d_ctx* ctx)
@@ -715,90 +797,105 @@ static bool zcsr_l2d_draw_high(zcsr_light2d_ctx* ctx)
         return false;
     }
 
-    for (i = 0u; i < ctx->light_count; ++i) {
-        const zcsr_light* light = &ctx->lights[i];
-        const int parallel = (light->type == ZCSR_LIGHT_PARALLEL) ? 1 : 0;
-        const int spot = (light->type == ZCSR_LIGHT_SPOT) ? 1 : 0;
-        const float px = (light->x - cam->center_x) * ppu + half_w;
-        const float py = (light->y - cam->center_y) * ppu + half_h;
-        float dir_x = 0.0f;
-        float dir_y = 0.0f;
-        float dir3_x = 0.0f;
-        float dir3_y = 0.0f;
-        float dir3_z = 1.0f;
-        zcsr_gl_l2d_light_draw draw;
-        int use_shadow = (ctx->options.shadows && ctx->options.ray_shadows &&
-                          ctx->occluder_count > 0u && !parallel) ? 1 : 0;
+    {
+        zcsr_light sun_light;
+        const bool has_sun = zcsr_light2d_sun_to_light(&ctx->environment.sun,
+                                                       &sun_light);
+        const size_t total = ctx->light_count + (has_sun ? 1u : 0u);
+        for (i = 0u; i < total; ++i) {
+            const bool from_environment = (i >= ctx->light_count);
+            const zcsr_light* light = from_environment
+                ? &sun_light : &ctx->lights[i];
+            const float shadow_scale = from_environment
+                ? ctx->environment.sun.shadow_length_scale : 1.0f;
+            const bool cast_shadow = from_environment
+                ? ctx->environment.sun.cast_shadow : true;
+            const int parallel = (light->type == ZCSR_LIGHT_PARALLEL) ? 1 : 0;
+            const int spot = (light->type == ZCSR_LIGHT_SPOT) ? 1 : 0;
+            const float px = (light->x - cam->center_x) * ppu + half_w;
+            const float py = (light->y - cam->center_y) * ppu + half_h;
+            float dir_x = 0.0f;
+            float dir_y = 0.0f;
+            float dir3_x = 0.0f;
+            float dir3_y = 0.0f;
+            float dir3_z = 1.0f;
+            float max_shadow_px = 100000.0f;
+            zcsr_gl_l2d_light_draw draw;
+            int use_shadow = 0;
 
-        if (parallel) {
-            const float len3 = sqrtf(light->dir_x * light->dir_x +
-                                     light->dir_y * light->dir_y +
-                                     light->dir_z * light->dir_z);
-            dir3_x = light->dir_x / len3;
-            dir3_y = light->dir_y / len3;
-            dir3_z = light->dir_z / len3;
-            /* shadow extrusion follows the in-plane projection */
-            dir_x = dir3_x;
-            dir_y = dir3_y;
-            {
-                const float len2 = sqrtf(dir_x * dir_x + dir_y * dir_y);
-                if (len2 > 1e-6f) {
-                    dir_x /= len2;
-                    dir_y /= len2;
-                } else {
-                    dir_x = 0.0f;
-                    dir_y = 0.0f;
-                }
-            }
-        } else if (spot) {
-            /* Normalize the cone aim direction; point falloff still applies. */
-            const float len3 = sqrtf(light->dir_x * light->dir_x +
-                                     light->dir_y * light->dir_y +
-                                     light->dir_z * light->dir_z);
-            if (len3 > 1e-6f) {
+            if (parallel) {
+                const float len3 = sqrtf(light->dir_x * light->dir_x +
+                                         light->dir_y * light->dir_y +
+                                         light->dir_z * light->dir_z);
                 dir3_x = light->dir_x / len3;
                 dir3_y = light->dir_y / len3;
                 dir3_z = light->dir_z / len3;
+                /* shadow extrusion follows the in-plane projection */
+                dir_x = dir3_x;
+                dir_y = dir3_y;
+                {
+                    const float len2 = sqrtf(dir_x * dir_x + dir_y * dir_y);
+                    if (len2 > 1e-6f) {
+                        dir_x /= len2;
+                        dir_y /= len2;
+                    } else {
+                        dir_x = 0.0f;
+                        dir_y = 0.0f;
+                    }
+                }
+                max_shadow_px = zcsr_l2d_parallel_shadow_max_px(
+                    ctx, dir3_z, shadow_scale, ppu);
+            } else if (spot) {
+                /* Normalize the cone aim direction; point falloff still applies. */
+                const float len3 = sqrtf(light->dir_x * light->dir_x +
+                                         light->dir_y * light->dir_y +
+                                         light->dir_z * light->dir_z);
+                if (len3 > 1e-6f) {
+                    dir3_x = light->dir_x / len3;
+                    dir3_y = light->dir_y / len3;
+                    dir3_z = light->dir_z / len3;
+                }
             }
-        }
 
-        if (ctx->options.shadows && ctx->occluder_count > 0u &&
-            !(ctx->options.ray_shadows && !parallel)) {
-            use_shadow = 1;
-            if (!zcsr_gl_l2d_shadow_begin(ctx->renderer, buf_w, buf_h,
-                                          ctx->width, ctx->height,
-                                          px, py, dir_x, dir_y,
-                                          100000.0f, parallel)) {
-                return false;
+            if (ctx->options.shadows && ctx->occluder_count > 0u && cast_shadow &&
+                !(ctx->options.ray_shadows && !parallel)) {
+                use_shadow = 1;
+                if (!zcsr_gl_l2d_shadow_begin(ctx->renderer, buf_w, buf_h,
+                                              ctx->width, ctx->height,
+                                              px, py, dir_x, dir_y,
+                                              max_shadow_px, parallel)) {
+                    return false;
+                }
+                zcsr_l2d_emit_occluders(ctx, light, px, py, dir_x, dir_y,
+                                        dir3_z, shadow_scale);
+                if (!zcsr_gl_l2d_shadow_end(ctx->renderer)) {
+                    return false;
+                }
             }
-            zcsr_l2d_emit_occluders(ctx, light, px, py, dir_x, dir_y);
-            if (!zcsr_gl_l2d_shadow_end(ctx->renderer)) {
-                return false;
-            }
-        }
 
-        draw.quad_x = px;
-        draw.quad_y = py;
-        draw.wx = light->x;
-        draw.wy = light->y;
-        draw.height = light->height;
-        draw.radius = light->radius;
-        draw.decay = light->decay;
-        draw.dir_x = dir3_x;
-        draw.dir_y = dir3_y;
-        draw.dir_z = dir3_z;
-        draw.inner_angle = light->inner_angle;
-        draw.outer_angle = light->outer_angle;
-        draw.parallel = parallel;
-        draw.spot = spot;
-        /* per-light intensity: color rgb x a, like the reference engine's
-         * light_color.w x gain */
-        draw.cr = light->r * light->a;
-        draw.cg = light->g * light->a;
-        draw.cb = light->b * light->a;
-        draw.use_shadow = use_shadow;
-        ok = zcsr_gl_l2d_light_emit(ctx->renderer, &draw);
-        if (!ok) return false;
+            draw.quad_x = px;
+            draw.quad_y = py;
+            draw.wx = light->x;
+            draw.wy = light->y;
+            draw.height = light->height;
+            draw.radius = light->radius;
+            draw.decay = light->decay;
+            draw.dir_x = dir3_x;
+            draw.dir_y = dir3_y;
+            draw.dir_z = dir3_z;
+            draw.inner_angle = light->inner_angle;
+            draw.outer_angle = light->outer_angle;
+            draw.parallel = parallel;
+            draw.spot = spot;
+            /* per-light intensity: color rgb x a, like the reference engine's
+             * light_color.w x gain */
+            draw.cr = light->r * light->a;
+            draw.cg = light->g * light->a;
+            draw.cb = light->b * light->a;
+            draw.use_shadow = use_shadow;
+            ok = zcsr_gl_l2d_light_emit(ctx->renderer, &draw);
+            if (!ok) return false;
+        }
     }
 
     if (!zcsr_gl_l2d_lightbuf_end(ctx->renderer)) return false;
@@ -820,7 +917,14 @@ static bool zcsr_l2d_draw_high(zcsr_light2d_ctx* ctx)
     ok = zcsr_gl_l2d_uniform_1i(ctx->renderer, "u_Albedo", ZCSR_L2D_FIRST_TEXTURE_UNIT + 0) && ok;
     ok = zcsr_gl_l2d_uniform_1i(ctx->renderer, "u_Emissive", ZCSR_L2D_FIRST_TEXTURE_UNIT + 3) && ok;
     ok = zcsr_gl_l2d_uniform_1i(ctx->renderer, "u_Light", ZCSR_L2D_FIRST_TEXTURE_UNIT + 4) && ok;
-    ok = zcsr_gl_l2d_uniform_3f(ctx->renderer, "u_Ambient", 0.03f, 0.03f, 0.03f) && ok;
+    ok = zcsr_gl_l2d_uniform_3f(ctx->renderer, "u_Ambient",
+                                ctx->environment.ambient_r,
+                                ctx->environment.ambient_g,
+                                ctx->environment.ambient_b) && ok;
+    ok = zcsr_gl_l2d_uniform_1f(ctx->renderer, "u_Exposure",
+                                ctx->environment.exposure) && ok;
+    ok = zcsr_gl_l2d_uniform_1f(ctx->renderer, "u_AmbientScale",
+                                1.0f - ctx->environment.ambient_occlusion) && ok;
     ok = zcsr_gl_l2d_bind_light_texture(ctx->renderer, ZCSR_L2D_FIRST_TEXTURE_UNIT + 4) && ok;
     if (ok) ok = zcsr_gl_l2d_draw_fullscreen_quad(ctx->renderer);
     if (ok) ok = zcsr_gl_l2d_finalize_composite(ctx->renderer,

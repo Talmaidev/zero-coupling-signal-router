@@ -20,12 +20,12 @@ Light2D 是零耦合的 2.5D 延迟光照管线，跑在 glrender 之上：
 zcsr_light2d_begin_geometry()        ← G-buffer MRT 绑定（引擎内部管理）
   ├── zcsr_gl_l2d_geo_begin/face/tex_face/end   ← 宿主提交几何（公开 API）
   ▼
-zcsr_light2d_begin_lighting()        ← 绑回默认目标 + G-buffer 纹理上单元
+zcsr_light2d_begin_lighting()        ← 绑回 RGBA16F 线性帧 + G-buffer 纹理上单元
   ├── zcsr_light2d_add_light() × N   ← 世界坐标 3D 点光
   ▼
-zcsr_light2d_end_lighting()          ← 逐像素射线阴影 + N·L + 合成回窗口
+zcsr_light2d_end_lighting()          ← 逐像素射线阴影 + N·L + 合成到线性帧（不 encode）
   ▼
-宿主照常画 HUD（默认目标已在绑）
+宿主照常画 HUD（同一个线性帧；present/read_rgba 统一 encode 一次）
 ```
 
 数学核心（Geometry Proof v1，数值用例固化在 testmain 启动时打印）：
@@ -49,7 +49,7 @@ zcsr_gl_l2d_geo_face(r, corners_xyz, albedo_rgba, normal_xyz, emissive_rgba);
 zcsr_gl_l2d_geo_end(r);
 zcsr_light2d_begin_lighting(ctx);
 zcsr_light2d_add_light(ctx, &light);   /* x,y,世界单位；height=离地高 */
-zcsr_light2d_end_lighting(ctx);        /* 合成自动回窗口 */
+zcsr_light2d_end_lighting(ctx);        /* 合成写统一线性帧；present 统一 encode */
 ```
 
 ### 2.2 纹理几何（Q4）
@@ -108,19 +108,20 @@ zcsr_gl_l2d_geo_tex_face(r, tex, corners_xyz, uv_st, tint_rgba,
 - **UV**：`(u0,v0)` = 子矩形**图像左上**，v 向图像底增长（与 sprite 管线
   一致；运行时证据：v=0.25 采样到夹具顶行象限=红色，翻转假设会被证伪）。
   角点 0 对应 (u0,v0)。
-- **颜色空间**：纹理以普通 GL_RGBA 上传（无 per-texture GL sRGB 内部格式），
-  携带显示域 texel；G0 是 `GL_SRGB8_ALPHA8`，**合成采样 G0 时由硬件完成
-  全链路唯一一次 sRGB→线性解码**。texel×tint 直写 attachment 0，与平色路径
-  同一编码——**禁止在纹理路径再解一次 sRGB**。
-- **tint / albedo 乘法空间（v1.1 契约裁决）**：tint 与平色 albedo_rgba
-  实际在**显示域（gamma）**与纹理想素逐通道相乘，乘积直写 G0，
-  合成采样时由 G0 的 SRGB8 格式整体线性化。**这不是线性空间乘法**。
-  旧版头文件曾把该路径描述为 "linear" 或 "pow(2.2)"，均已纠正；
-  需要真正线性 tint 的调用者不能把当前路径当作已支持。
-  RGBA8 会把 >1 的 tint/albedo 截断到 1.0——G0 路径不能承载 HDR；
-  HDR >1 仅在 RGBA16F 附件（Emissive、光缓冲）上保留。
+- **颜色空间**：默认源纹理以 `GL_SRGB8_ALPHA8` 上传（`ZCSR_COLOR_SPACE_DISPLAY`），
+  采样器自动解码；需要线性数据时必须用 `zcsr_gl_texture_create_ex(...,
+  ZCSR_COLOR_SPACE_LINEAR, ...)` 上传为 `GL_RGBA8`。G0 固定是 `GL_RGBA16F`
+  线性 albedo，DISPLAY tint/flat 常量在 shader/CPU 解码，SRGB 由采样器解码，
+  LINEAR 直通。合成 FS 只输出线性 tonemap，最终与 Path A 一起由
+  `present/read_rgba` 的 LUT 一次 encode。
+- **tint / albedo 乘法空间**：tint 域由入口选择；DISPLAY tint 解码到线性，
+  LINEAR tint 直通，纹理按自身色彩空间解码，二者在线性域逐通道相乘。
+  `ZCSR_L2D_TINT_LINEAR` 配 SRGB/LINEAR 源纹理是真正的线性 tint；
+  默认入口是 DISPLAY tint，但仍在线性域落 G0。
+  G0 的 16F 可保存 >1 的线性 albedo/矩阵输出；DISPLAY 输入解码后 clamp 到 1。
 - **Alpha-cutout v1（精确规则，源码 glrender_l2d_geo.c:92）**：
-  `if (rgba.a < 0.5) discard;` 其中 `rgba = texel × tint`。
+  `if (rgba.a < 0.5) discard;` 其中 alpha 为 `texel.a × tint.a`；
+  RGB 已按上述规则解码到线性。
   阈值 0.5、比较符 `<`、作用于乘后 alpha。被 discard 的片元**不写任何
   attachment**，先提交的下层表面完整保留；通过阈值的片元按表面数据写入
   （albedo alpha = texel.a × tint.a）。无混合、无排序。
@@ -230,7 +231,7 @@ CTests**——CTest 全绿不覆盖纹理视觉路径。
 - R1 修复：geo 惰性初始化要求平色+纹理两 program 齐备，纹理侧创建失败
   整组回滚重试；`tex_face` 增加零程序守卫——杜绝"部分初始化后静默无渲染"
   （u_ppu=0 同类教训的第二个实例）。
-- D3 部分交付：`tests/test_light2d_math.c`（ctest `light2d_math`，24 断言：
+- D3 部分交付：`tests/test_light2d_math.c`（ctest `light2d_math`，实际运行 29 项检查：
   投影往返/已知高度往返/k-shift 定律/view_rect/zoom 钳位/排序键/射线 slab
   用例含边界与退化段）。视觉路径仍需 §8 探针流程，不被 ctest 覆盖。
 - 走查澄清：parallel+ray_shadows 组合正确（平行光走 2D 掩码并保留全部
@@ -246,7 +247,8 @@ CTests**——CTest 全绿不覆盖纹理视觉路径。
 - 世界坐标 / PPU / height-shear 投影数学
 - 平色与纹理四边形进入 G-buffer
 - UV 方向与 alpha-cutout 规则
-- Albedo 显示域 → G0（SRGB8_ALPHA8）采样硬件解码；合成输出经 color LUT
+- Albedo 线性域 → G0（RGBA16F），提交边界唯一解码；合成输出经 color LUT
+- 环境光/曝光/AO/太阳（sun 一等环境光）接入合成与阴影
 - 点光源距离衰减公式
 - 逐像素射线阴影（两点间接证据，非同像素因果验证）
 - 29 项 CPU 数学断言 CTest 通过
@@ -254,7 +256,7 @@ CTests**——CTest 全绿不覆盖纹理视觉路径。
 
 **源码契约已确认（有代码审计，缺独立 GPU 验证）**
 - Emissive RGBA16F HDR，受 Albedo 调制（非独立加性）
-- tint 显示域乘法（非线性乘子）
+- tint 域由入口选择，线性域乘法；默认 DISPLAY tint 解码后进线性 G0
 - 遮挡棱柱（footprint × height）契约
 - painter's order 排序规则
 - GL 状态保存/恢复（geo begin/end 期间）

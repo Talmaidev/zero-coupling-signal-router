@@ -2,9 +2,15 @@
 #define ZCSR_SPRITE_H
 /* sprite 绘制契约。
  *
- * 本文件只剩 GL 路径（zcsr_sprite_asset / zcsr_sprite_instance / zcsr_sprite_draw*）。
- * 软件渲染的 zcsr_sprite_batch_init/begin/submit/flush 已随 modules/render 一并移除：
- * 那个模块整体删除，且这四个 API 从未有跨平台实现、调用方为零。 */
+ * 本文件只定义 2D screen-space / 2D camera sprite 路径（zcsr_sprite_asset /
+ * zcsr_sprite_instance / zcsr_sprite_draw*）。它不是 2.5D scene sprite 路径；
+ * scene sprite 需要 pivot、ground sort、layer 和四角投影，另行定义。
+ *
+ * Runtime rendering is GPU-only. modules/render and the software batch APIs
+ * (zcsr_sprite_batch_init/begin/submit/flush) were removed; the legacy
+ * zcsr_sprite struct below is retained only as a source-compatible CPU image
+ * descriptor and is not consumed by any renderer. New code must use
+ * zcsr_sprite_instance / zcsr_gl_sprite. */
 #include "texture.h"
 #include "platform.h"  /* zcsr_rectf */
 #include <stddef.h>
@@ -46,13 +52,23 @@ typedef struct {
 
 /* Enqueue one sprite into the renderer's current batch: world size and center
  * project through the camera, rotation comes from the transform. Enqueue-only
- * — the caller owns begin/flush. Rotation is applied on the whole-texture
- * path; atlas sub-rects enqueue without rotation (the atlas queue has no
- * rotation channel). */
+ * — the caller owns begin/flush. Whole textures and atlas sub-rects both carry
+ * rotation; negative scale becomes UV mirroring (flip), never negative GL
+ * geometry. */
 void zcsr_sprite_draw(zcsr_gl_renderer* r,
                       const zcsr_camera* cam,
                       const zcsr_transform* tr,
                       const zcsr_sprite_instance* sp);
+
+/* Same display-path draw, but with an explicit world height for the camera's
+ * height_shear term. zcsr_sprite_draw is this function with ground_z = 0, so
+ * the unlit and lit paths use one named height convention instead of two
+ * implicit ones. */
+void zcsr_sprite_draw_at_height(zcsr_gl_renderer* r,
+                                const zcsr_camera* cam,
+                                const zcsr_transform* tr,
+                                const zcsr_sprite_instance* sp,
+                                float ground_z);
 
 /* Lit sprite (Light2D path B): submit a transform + sprite_instance as a
  * world-space textured quad into the G-buffer. Caller must already be inside

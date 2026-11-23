@@ -3,12 +3,17 @@
 /* Thin C-ABI shim over the Cocoa (NSWindow) backend. Implemented in platform_cocoa.m.
  * Pure C signatures so platform.c stays C and no Objective-C leaks across the boundary.
  * Same-module header (no cross-module/relative include) — zero-coupling preserved. */
+#include "zcsr/platform.h"
+#include <stdbool.h>
 
 /* Create an NSWindow；返回 retained NSWindow* 作为 void*，失败返回 NULL。
  * 初始样式是 borderless + 透明 + 置顶（overlay 语义，与 Win32 的 BORDERLESS 默认一致）。
  * 要变成正常应用窗口，调用方必须再调 zcsr_cocoa_window_set_mode(WINDOWED)。 */
 void* zcsr_cocoa_window_create(const char* title, int x, int y, int w, int h);
 void  zcsr_cocoa_window_destroy(void* ns_window);
+/* Take + clear the NSWindowDelegate close request recorded by
+ * windowShouldClose: / applicationShouldTerminate:. */
+bool  zcsr_platform_cocoa_take_close(zcsr_surface* s);
 /* Drain pending Cocoa events for the app (non-blocking). */
 void  zcsr_cocoa_window_pump(void* ns_window);
 
@@ -22,7 +27,8 @@ int   zcsr_cocoa_window_set_mode(void* ns_window, int mode);
 /* 设置客户区尺寸（point）。在 FULLSCREEN 下返回 false。 */
 int   zcsr_cocoa_window_set_content_size(void* ns_window, int w, int h);
 
-/* 读客户区尺寸（point）与 Retina backing scale。窗口无效时 *w/*h 不写。 */
+/* 读客户区尺寸（client pixel，已按 backingScaleFactor 换算）与 Retina backing scale。
+ * 窗口无效时 *w/*h 不写。 */
 void  zcsr_cocoa_window_get_content_size(void* ns_window, int* w, int* h);
 float zcsr_cocoa_window_backing_scale(void* ns_window);
 

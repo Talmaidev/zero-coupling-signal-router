@@ -1,10 +1,11 @@
 /* glrender_l2d_geo.c — public G-buffer geometry submission (gl_render_l2d_geo.h).
  * One shared MRT program; renderer-owned resources, lazily initialized on the
- * first geo_begin and released from zcsr_gl_core_destroy. Never touches FBOs
- * or MRT draw buffers: callers must be inside an open light2d geometry phase
- * (zcsr_light2d_begin_geometry has bound the G-buffer). */
+ * first geo_begin and released from zcsr_gl_core_destroy. Never binds or
+ * changes FBO/draw-buffer state; geo_begin only queries that the current
+ * framebuffer is this renderer's exact four-attachment Light2D G-buffer. */
 #include "glrender_internal.h"
 #include "zcsr/gl_render_l2d_geo.h"
+#include "zcsr/gl_render_light2d_ext.h"
 #include "zcsr/diagnostics.h"
 
 #include <math.h>
@@ -15,6 +16,23 @@
 #ifndef GL_TEXTURE1
 #define GL_TEXTURE1 0x84C1
 #endif
+
+/* The flat API still accepts display-domain albedo; the G-buffer is linear,
+ * so convert at the submission boundary through the shared color pipeline
+ * instead of duplicating a second sRGB transfer curve here. */
+
+/* The same sRGB transfer is needed by both textured shaders; keep one GLSL
+ * source fragment so the two programs cannot drift. */
+#define ZCSR_L2D_GLSL_SRGB_FUNCS \
+    "float srgb_to_linear_component(float c){\n" \
+    "  c = clamp(c, 0.0, 1.0);\n" \
+    "  return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);\n" \
+    "}\n" \
+    "vec3 srgb_to_linear(vec3 c){\n" \
+    "  return vec3(srgb_to_linear_component(c.r),\n" \
+    "              srgb_to_linear_component(c.g),\n" \
+    "              srgb_to_linear_component(c.b));\n" \
+    "}\n"
 
 /* VS applies the shared game-shear projection; the ORIGINAL world position
  * and normal pass through as varyings — the G-buffer stores world data, the
@@ -56,11 +74,13 @@ static const char* geo_fs =
     "}\n";
 
 /* Textured variant: same shear VS plus a UV channel; FS samples the host
- * texture on unit 0. Plain GL_RGBA textures carry display-encoded texels;
- * they are written into G0 (GL_SRGB8_ALPHA8), whose hardware decode is the
- * single sRGB->linear step when the composite samples it. Cutout rule:
- * alpha < 0.5 discards so transparent pixels never overwrite the G-buffer
- * surface beneath (painter order supplies that surface). */
+ * texture on unit 0. The legacy geo_tex_face entry expects a DISPLAY texture
+ * (plain GL_RGBA8) and a display tint; the shader decodes the combined
+ * texel×tint to linear exactly once and writes linear G0 (RGBA16F). A
+ * sampler of an SRGB texture decodes automatically; the _ex
+ * entry can take an explicit SRGB/LINEAR source with a linear tint. Cutout
+ * rule: alpha < 0.5 discards so transparent pixels never overwrite the
+ * G-buffer surface beneath (painter order supplies that surface). */
 static const char* geo_tex_vs =
     "#version 330 core\n"
     "layout(location=0) in vec3 a_pos;\n"
@@ -89,13 +109,34 @@ static const char* geo_tex_fs =
     "in vec2 v_uv;\n"
     "uniform sampler2D u_tex;   /* unit 0, host-owned handle */\n"
     "uniform vec4 u_tint;\n"
+    "uniform int u_tex_display;\n"
+    "uniform int u_tint_display;\n"
+    "uniform vec3 u_color_matrix0;\n"
+    "uniform vec3 u_color_matrix1;\n"
+    "uniform vec3 u_color_matrix2;\n"
     "uniform vec4 u_emissive;\n"
     "layout(location=0) out vec4 o_albedo;\n"
     "layout(location=1) out vec4 o_position;\n"
     "layout(location=2) out vec4 o_normal;\n"
     "layout(location=3) out vec4 o_emissive;\n"
+    ZCSR_L2D_GLSL_SRGB_FUNCS
     "void main(){\n"
-    "  vec4 rgba = texture(u_tex, v_uv) * u_tint;\n"
+    "  vec4 texel = texture(u_tex, v_uv);\n"
+    "  vec3 texel_rgb = texel.rgb;\n"
+    "  vec3 tint_rgb = u_tint.rgb;\n"
+    "  vec3 base;\n"
+    "  if (u_tex_display != 0 && u_tint_display != 0) {\n"
+    "    /* Legacy path: display texel * display tint, then one decode. */\n"
+    "    base = srgb_to_linear(texel_rgb * tint_rgb);\n"
+    "  } else {\n"
+    "    if (u_tex_display != 0) texel_rgb = srgb_to_linear(texel_rgb);\n"
+    "    if (u_tint_display != 0) tint_rgb = srgb_to_linear(tint_rgb);\n"
+    "    base = texel_rgb * tint_rgb;\n"
+    "  }\n"
+    "  vec3 rgb = vec3(dot(u_color_matrix0, base),\n"
+    "                  dot(u_color_matrix1, base),\n"
+    "                  dot(u_color_matrix2, base));\n"
+    "  vec4 rgba = vec4(rgb, texel.a * u_tint.a);\n"
     "  if (rgba.a < 0.5) discard;\n"
     "  o_albedo = rgba;\n"
     "  o_position = vec4(v_world, 1.0);\n"
@@ -140,13 +181,27 @@ static const char* geo_nmap_fs =
     "uniform sampler2D u_tex;    /* unit 0, albedo */\n"
     "uniform sampler2D u_nmap;   /* unit 1, tangent-space normal */\n"
     "uniform vec4 u_tint;\n"
+    "uniform int u_tex_display;\n"
+    "uniform int u_tint_display;\n"
     "uniform vec4 u_emissive;\n"
     "layout(location=0) out vec4 o_albedo;\n"
     "layout(location=1) out vec4 o_position;\n"
     "layout(location=2) out vec4 o_normal;\n"
     "layout(location=3) out vec4 o_emissive;\n"
+    ZCSR_L2D_GLSL_SRGB_FUNCS
     "void main(){\n"
-    "  vec4 rgba = texture(u_tex, v_uv) * u_tint;\n"
+    "  vec4 texel = texture(u_tex, v_uv);\n"
+    "  vec3 texel_rgb = texel.rgb;\n"
+    "  vec3 tint_rgb = u_tint.rgb;\n"
+    "  vec3 base;\n"
+    "  if (u_tex_display != 0 && u_tint_display != 0) {\n"
+    "    base = srgb_to_linear(texel_rgb * tint_rgb);\n"
+    "  } else {\n"
+    "    if (u_tex_display != 0) texel_rgb = srgb_to_linear(texel_rgb);\n"
+    "    if (u_tint_display != 0) tint_rgb = srgb_to_linear(tint_rgb);\n"
+    "    base = texel_rgb * tint_rgb;\n"
+    "  }\n"
+    "  vec4 rgba = vec4(base, texel.a * u_tint.a);\n"
     "  if (rgba.a < 0.5) discard;\n"
     "  vec3 n = normalize(v_norm);\n"
     "  vec3 t = normalize(v_tan);\n"
@@ -161,6 +216,12 @@ static const char* geo_nmap_fs =
     "  o_normal = vec4(world_n * 0.5 + 0.5, 1.0);\n"
     "  o_emissive = u_emissive;\n"
     "}\n";
+
+static const float geo_identity3[9] = {
+    1.0f, 0.0f, 0.0f,
+    0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 1.0f
+};
 
 static unsigned int geo_compile(unsigned int type, const char* src) {
     unsigned int shader = glCreateShader(type);
@@ -287,8 +348,13 @@ static bool geo_ensure(zcsr_gl_renderer* r) {
     r->l2d_geo_tex_loc_k = glGetUniformLocation(p, "u_k");
     r->l2d_geo_tex_loc_view = glGetUniformLocation(p, "u_view");
     r->l2d_geo_tex_loc_tint = glGetUniformLocation(p, "u_tint");
+    r->l2d_geo_tex_loc_tex_display = glGetUniformLocation(p, "u_tex_display");
+    r->l2d_geo_tex_loc_tint_display = glGetUniformLocation(p, "u_tint_display");
     r->l2d_geo_tex_loc_emissive = glGetUniformLocation(p, "u_emissive");
     r->l2d_geo_tex_loc_sampler = glGetUniformLocation(p, "u_tex");
+    r->l2d_geo_tex_loc_matrix0 = glGetUniformLocation(p, "u_color_matrix0");
+    r->l2d_geo_tex_loc_matrix1 = glGetUniformLocation(p, "u_color_matrix1");
+    r->l2d_geo_tex_loc_matrix2 = glGetUniformLocation(p, "u_color_matrix2");
     glGenVertexArrays(1, &r->l2d_geo_tex_vao);
     glGenBuffers(1, &r->l2d_geo_tex_vbo);
     if (!r->l2d_geo_tex_vao || !r->l2d_geo_tex_vbo) return false;
@@ -350,6 +416,8 @@ static bool geo_ensure(zcsr_gl_renderer* r) {
     r->l2d_geo_nmap_loc_k = glGetUniformLocation(p, "u_k");
     r->l2d_geo_nmap_loc_view = glGetUniformLocation(p, "u_view");
     r->l2d_geo_nmap_loc_tint = glGetUniformLocation(p, "u_tint");
+    r->l2d_geo_nmap_loc_tex_display = glGetUniformLocation(p, "u_tex_display");
+    r->l2d_geo_nmap_loc_tint_display = glGetUniformLocation(p, "u_tint_display");
     r->l2d_geo_nmap_loc_emissive = glGetUniformLocation(p, "u_emissive");
     r->l2d_geo_nmap_loc_albedo = glGetUniformLocation(p, "u_tex");
     r->l2d_geo_nmap_loc_nmap = glGetUniformLocation(p, "u_nmap");
@@ -416,6 +484,10 @@ bool zcsr_gl_l2d_geo_begin(zcsr_gl_renderer* renderer,
     }
     if (renderer->l2d_geo_active) return false; /* nested begin */
     if (!zcsr_gl_make_current(renderer)) return false;
+    /* LIT is a G-buffer pass, not a default-framebuffer painter. Reject the
+     * call if the caller skipped zcsr_light2d_begin_geometry instead of
+     * silently drawing faces into whatever target happens to be bound. */
+    if (!zcsr_gl_l2d_gbuffer_is_bound(renderer)) return false;
     if (!geo_ensure(renderer)) return false;
 
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &renderer->l2d_geo_saved_vao);
@@ -462,6 +534,14 @@ bool zcsr_gl_l2d_geo_begin(zcsr_gl_renderer* renderer,
     }
     if (renderer->l2d_geo_tex_loc_k >= 0) {
         glUniform1f(renderer->l2d_geo_tex_loc_k, camera->height_shear);
+    }
+    if (renderer->l2d_geo_tex_loc_matrix0 >= 0) {
+        glUniform3f(renderer->l2d_geo_tex_loc_matrix0,
+                    geo_identity3[0], geo_identity3[1], geo_identity3[2]);
+        glUniform3f(renderer->l2d_geo_tex_loc_matrix1,
+                    geo_identity3[3], geo_identity3[4], geo_identity3[5]);
+        glUniform3f(renderer->l2d_geo_tex_loc_matrix2,
+                    geo_identity3[6], geo_identity3[7], geo_identity3[8]);
     }
     /* nmap variant needs the same camera/projection uniforms */
     glUseProgram(renderer->l2d_geo_nmap_prog);
@@ -516,8 +596,15 @@ bool zcsr_gl_l2d_geo_face(zcsr_gl_renderer* renderer,
     }
     glUseProgram(renderer->l2d_geo_prog);
     if (renderer->l2d_geo_loc_albedo >= 0) {
+        float albedo_linear[4];
+        const zcsr_color_pipeline_desc* pipeline = zcsr_color_pipeline_default();
+        albedo_linear[0] = zcsr_color_pipeline_to_linear(pipeline, albedo_rgba[0]);
+        albedo_linear[1] = zcsr_color_pipeline_to_linear(pipeline, albedo_rgba[1]);
+        albedo_linear[2] = zcsr_color_pipeline_to_linear(pipeline, albedo_rgba[2]);
+        albedo_linear[3] = albedo_rgba[3];
         glUniform4f(renderer->l2d_geo_loc_albedo,
-                    albedo_rgba[0], albedo_rgba[1], albedo_rgba[2], albedo_rgba[3]);
+                    albedo_linear[0], albedo_linear[1],
+                    albedo_linear[2], albedo_linear[3]);
     }
     if (renderer->l2d_geo_loc_emissive >= 0) {
         glUniform4f(renderer->l2d_geo_loc_emissive,
@@ -531,11 +618,13 @@ bool zcsr_gl_l2d_geo_face(zcsr_gl_renderer* renderer,
     return true;
 }
 
-bool zcsr_gl_l2d_geo_tex_face(zcsr_gl_renderer* renderer,
+static bool geo_tex_face_impl(zcsr_gl_renderer* renderer,
                               zcsr_gl_texture texture,
                               const float corners_xyz[12],
                               const float uv_st[8],
                               const float tint_rgba[4],
+                              zcsr_l2d_tint_space tint_space,
+                              const float color_matrix_row_major[9],
                               const float normal_xyz[3],
                               const float emissive_rgba[4]) {
     float verts[6 * 8];
@@ -544,6 +633,8 @@ bool zcsr_gl_l2d_geo_tex_face(zcsr_gl_renderer* renderer,
     zcsr_gl_tex_entry* e;
 
     if (renderer == NULL || !renderer->l2d_geo_active) return false;
+    if (tint_space != ZCSR_L2D_TINT_DISPLAY &&
+        tint_space != ZCSR_L2D_TINT_LINEAR) return false;
     if (renderer->l2d_geo_tex_prog == 0u) return false; /* partial init guard */
     if (corners_xyz == NULL || uv_st == NULL || tint_rgba == NULL ||
         normal_xyz == NULL || emissive_rgba == NULL) return false;
@@ -577,10 +668,30 @@ bool zcsr_gl_l2d_geo_tex_face(zcsr_gl_renderer* renderer,
         glUniform4f(renderer->l2d_geo_tex_loc_tint,
                     tint_rgba[0], tint_rgba[1], tint_rgba[2], tint_rgba[3]);
     }
+    if (renderer->l2d_geo_tex_loc_tex_display >= 0) {
+        /* DISPLAY/SRGB textures are stored in sRGB8 and decoded by the sampler.
+         * LINEAR stays raw. The shader must not decode a second time. */
+        glUniform1i(renderer->l2d_geo_tex_loc_tex_display, 0);
+    }
+    if (renderer->l2d_geo_tex_loc_tint_display >= 0) {
+        glUniform1i(renderer->l2d_geo_tex_loc_tint_display,
+                    tint_space == ZCSR_L2D_TINT_DISPLAY ? 1 : 0);
+    }
     if (renderer->l2d_geo_tex_loc_emissive >= 0) {
         glUniform4f(renderer->l2d_geo_tex_loc_emissive,
                     emissive_rgba[0], emissive_rgba[1],
                     emissive_rgba[2], emissive_rgba[3]);
+    }
+    if (renderer->l2d_geo_tex_loc_matrix0 >= 0) {
+        const float* m = color_matrix_row_major ? color_matrix_row_major : geo_identity3;
+        if (color_matrix_row_major) {
+            for (int mi = 0; mi < 9; ++mi) {
+                if (!isfinite(m[mi])) return false;
+            }
+        }
+        glUniform3f(renderer->l2d_geo_tex_loc_matrix0, m[0], m[1], m[2]);
+        glUniform3f(renderer->l2d_geo_tex_loc_matrix1, m[3], m[4], m[5]);
+        glUniform3f(renderer->l2d_geo_tex_loc_matrix2, m[6], m[7], m[8]);
     }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, e->id);
@@ -591,6 +702,30 @@ bool zcsr_gl_l2d_geo_tex_face(zcsr_gl_renderer* renderer,
     return true;
 }
 
+bool zcsr_gl_l2d_geo_tex_face(zcsr_gl_renderer* renderer,
+                              zcsr_gl_texture texture,
+                              const float corners_xyz[12],
+                              const float uv_st[8],
+                              const float tint_rgba[4],
+                              const float normal_xyz[3],
+                              const float emissive_rgba[4]) {
+    return geo_tex_face_impl(renderer, texture, corners_xyz, uv_st, tint_rgba,
+                             ZCSR_L2D_TINT_DISPLAY, NULL, normal_xyz, emissive_rgba);
+}
+
+bool zcsr_gl_l2d_geo_tex_face_ex(zcsr_gl_renderer* renderer,
+                                 zcsr_gl_texture texture,
+                                 const float corners_xyz[12],
+                                 const float uv_st[8],
+                                 const float tint_rgba[4],
+                                 zcsr_l2d_tint_space tint_space,
+                                 const float color_matrix_row_major[9],
+                                 const float normal_xyz[3],
+                                 const float emissive_rgba[4]) {
+    return geo_tex_face_impl(renderer, texture, corners_xyz, uv_st, tint_rgba,
+                             tint_space, color_matrix_row_major,
+                             normal_xyz, emissive_rgba);
+}
 /* NORMAL-MAPPED textured face: albedo texture plus a tangent-space normal
  * texture. The caller supplies the face normal AND the tangent direction
  * (unit world vectors); the FS builds TBN and writes the perturbed world
@@ -648,6 +783,12 @@ bool zcsr_gl_l2d_geo_nmap_face(zcsr_gl_renderer* renderer,
     if (renderer->l2d_geo_nmap_loc_tint >= 0)
         glUniform4f(renderer->l2d_geo_nmap_loc_tint,
                     tint_rgba[0], tint_rgba[1], tint_rgba[2], tint_rgba[3]);
+    if (renderer->l2d_geo_nmap_loc_tex_display >= 0)
+        glUniform1i(renderer->l2d_geo_nmap_loc_tex_display, 0);
+    if (renderer->l2d_geo_nmap_loc_tint_display >= 0)
+        /* The legacy nmap entry has no tint_space parameter; its tint is
+         * display-domain by contract. */
+        glUniform1i(renderer->l2d_geo_nmap_loc_tint_display, 1);
     if (renderer->l2d_geo_nmap_loc_emissive >= 0)
         glUniform4f(renderer->l2d_geo_nmap_loc_emissive,
                     emissive_rgba[0], emissive_rgba[1],

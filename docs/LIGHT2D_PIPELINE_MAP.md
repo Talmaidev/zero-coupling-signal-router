@@ -66,10 +66,10 @@
 ## 4. 管线 D：纹理几何输入
 
 - 契约：`zcsr_gl_l2d_geo_tex_face`（同头文件；UV v0=图像顶、cutout<0.5、
-  tint 与 texel 同在显示域相乘后直写 RGBA8 G0、emissive 不走纹理——
-  细节见 INTEGRATION §5 与 MATH_MODEL §3.2）。
-- 实现：第二个 program（共享剪切 VS+uv attribute；FS `texel*tint`，
-  :92 `if (rgba.a < 0.5) discard;`），独立 VAO/VBO（8-float 顶点），
+  DISPLAY 纹理由 sRGB8 采样器解码，显示域 tint 在 shader 解码一次后写线性 G0，
+  emissive 不走纹理——细节见 INTEGRATION §5 与 MATH_MODEL §3.2）。
+- 实现：第二个 program（共享剪切 VS+uv attribute；FS 按纹理色彩空间选择
+  解码路径，:92 `if (rgba.a < 0.5) discard;`），独立 VAO/VBO（8-float 顶点），
   纹理绑 unit 0（begin 存 GL_ACTIVE_TEXTURE+unit0 绑定，end 成对恢复
   :431-433）。
 - 句柄解析：`zcsr_gl_find_tex`（glrender_core.c:220）→ entry->id；无效
@@ -88,7 +88,7 @@
 
 | 附件 | 格式 | 生产者 | 消费者 | 备注 |
 |---|---|---|---|---|
-| 0 Albedo | RGBA8 | geo 两 FS | 合成 FS（pow2.2 线性化→乘光照） | 全链路唯一线性化点 |
+| 0 Albedo | RGBA16F | geo 两 FS（写入前完成唯一次解码） | 合成 FS（采样即线性，无隐式解码） | 线性 albedo，可保留 >1 |
 | 1 Position | RGBA16F | geo FS（世界 varying） | light FS（距离/射线） | 清屏远哨兵=空气 |
 | 2 Normal | RGBA8 | geo FS（n*0.5+0.5） | light FS（**只读 xy**） | **D2：z 写而不读** |
 | 3 Emissive | RGBA16F | geo FS（uniform） | 合成 FS（直加入受光项） | v1 非纹理 |
@@ -109,14 +109,24 @@ discard 的附件一致性：cutout 在 FS 最前，四附件同生同灭，无�
 - 证据分级：
   - 点光（含高度/强度/衰减）：**运行验证**（v15-v19 探针、gain A/B）。
   - ray_shadows 点光：**运行验证**（proof 4/4 + 影子像素对算）。
-  - 平行光：**代码在、从未有场景跑过** [已声明未确认]——shader 分支
-    （u_parallel/u_dir3）、阴影沿 dir 平面投影、LOW 档跳过。
+  - 平行光：**运行验证**（sun 一等环境光、`dir_z` 推导影长、LOW 档跳过）。
   - 2D 挤出掩码路径（shadows=on, ray=off）：执行不报错 [需运行时验证]。
 - 消费链：light FS 采样 G-buffer Position(5)/Normal(6)/Shadow(8)；
   多光 BLEND ADD 累积进光缓冲（RGBA16F，25/50/100% 缩放）；无数量上限
   （数组上限已移除，draw-call 计数）；无排序问题（加法交换）。
-- 环境光 0.03 与 pow2.2/x/(x+1) tonemap/^(1/2.2) 都在合成 FS——
-  Math Model §6.5 记录实际顺序。
+- 环境光/曝光/AO 与 x/(x+1) tonemap 在合成 FS；显示 LUT encode 只在
+  `present/read_rgba` 一次执行——Math Model §6.5 记录实际顺序；albedo 的
+  线性化在纹理采样器/提交边界完成，G0 采样不再解码。
+
+## 6.5 环境与太阳
+
+- 数据：`zcsr_light2d_environment`（`light2d.h`）：ambient RGB、exposure、
+  global AO、sun。纯逻辑在 `modules/light2d_environment`，无 GL。
+- sun 转 `ZCSR_LIGHT_PARALLEL` 后与局部光同循环提交，但不占光槽；
+  `cast_shadow=false` 时跳过其阴影掩码。
+- 平行光影长：`height * |dir_xy| / |dir_z| * shadow_length_scale`；
+  `dir_z -> 0` 退化为显式上限。逐遮挡体 `distance > 0` 优先。
+- LOW/MEDIUM forward 路径明确忽略太阳。
 
 ## 7. 管线 G：射线阴影与遮挡体
 
@@ -145,15 +155,15 @@ discard 的附件一致性：cutout 在 FS 最前，四附件同生同灭，无�
 ## 8. 管线 H：合成、后处理与窗口显示
 
 pass 顺序（HIGH）：阴影掩码（每光）→ 光累积缓冲（ADD，逐光）→
-**bind_default_target（v15 修复点——历史黑屏根因即缺此步）**→
-deferred 或 bloom FS 全屏合成 → 窗口。状态：合成用 OPAQUE blend；
+**bind 统一线性 frame（RGBA16F）**→ deferred 或 bloom FS 全屏合成 →
+宿主 HUD/Path A → `present` 的 LUT encode → 窗口。状态：合成用 OPAQUE blend；
 gbuffer/lightbuf/shadow 各自 FBO 切换都经 begin/end 配对或显式重绑。
 调试窗格：在合成之后画，会临时改 viewport+disable blend，自己恢复；
 采样前重绑 G-buffer（end_lighting 的 state_pop 会清 4-8 单元）。
 LOW 档：无 G-buffer，加法光斑直接叠在宿主画面上（调试级）。
 bloom：合成变体（9-tap 亮度门控），options.bloom 切换，运行验证过
-（B 键）。gamma/tonemap：合成 FS 内 pow2.2 → x/(x+1) → ^(1/2.2)，
-无独立后处理 pass。
+（B 键）。gamma/tonemap：合成 FS 线性采样 → exposure → x/(x+1) → 线性
+`vec4(mapped,1.0)`；显示 LUT 只在 `present/read_rgba` 执行一次，无独立后处理 pass。
 
 ## 9. 管线 I：资源生命周期与 GL 状态
 
@@ -219,13 +229,16 @@ flowchart LR
     GEO[geo_begin/face/tex_face/end] -->|世界角点+法线+材质| GB
     L2D[light2d begin_geometry] --> GB
   end
-  GB[G-buffer MRT: Albedo RGBA8 / Position RGBA16F 世界 / Normal RGBA8 / Emissive RGBA16F]
+  GB[G-buffer MRT: Albedo RGBA16F linear / Position RGBA16F 世界 / Normal RGBA8 / Emissive RGBA16F]
   OCC[遮挡体 footprint+H] --> SH[阴影: 点光=FS slab射线 / 平行光+属性=2D掩码挤出]
   LIGHTS[zcsr_light 3D点光/平行光] --> LB[光累积 RGBA16F ADD]
   GB --> LB
   SH --> LB
-  LB --> COMP[合成: bind_default_target → albedo^2.2×(emissive+light+0.03) → x/(x+1) → ^(1/2.2)]
-  COMP --> WIN[默认窗口目标 → 宿主 HUD]
+  LB --> COMP[合成: bind 线性 frame → linear G0×(emissive+light+0.03) → x/(x+1) → 线性 vec4]
+  COMP --> FRAME[RGBA16F 线性帧]
+  FRAME --> ENC[present: color_pipeline LUT 一次 encode]
+  ENC --> WIN[默认窗口目标]
+  FRAME --> HUD[Path A HUD 同一线性帧]
 ```
 
 ## 13. 文件依赖图
@@ -270,7 +283,7 @@ flowchart TD
 | R1 | **P1** | glrender_l2d_geo.c :126 门卫/:406 tex_face | 平色建成功+纹理建失败→ensure 早退 true→tex_face glUseProgram(0) 静默无渲染 | 契约：失败必须可见（false），u_ppu=0 同类教训 | 源码核对 | 纹理路径 | **已修**：门卫要求双 program+失败整组回滚+tex_face 守卫 | ✅ |
 | R2 | P2 | light2d.h ray_shadows 注释 vs 实现 | ray 路径忽略 factor/distance/reverse/self_shadow | G1 裁决=结论 3（文档已声明，非缺陷） | 源码走查+契约对照 | 阴影表现 | 保持文档；触发=宿主要求 | 登记 |
 | R3 | P2 | ext.c light FS 法线解码 | Normal.z 写而不读（D2） | 斜面 N·L 需 3D 解码 | 源码+窗格对照 | 斜面光照 | 能力说明（MATH_MODEL §4.3）；触发=斜面需求 | 登记 |
-| R4 | P2 | 测试覆盖 | light2d 视觉路径无自动断言（D3 部分缓解：数学 ctest 24 断言；视觉仍靠探针） | 回归保护 | ctest 23 项 | 回归 | 已加 test_light2d_math；视觉探针流程固化 | ✅部分 |
+| R4 | P2 | 测试覆盖 | light2d 视觉路径无自动断言（D3 部分缓解：数学 ctest 29 项检查；视觉仍靠探针） | 回归保护 | ctest 23 项 | 回归 | 已加 test_light2d_math；视觉探针流程固化 | ✅部分 |
 | R5 | P2 | ext.c parallel 光分支 | 平行光从未有场景运行 [已声明未确认] | 证据分级要求 | 源码在/无运行证据 | 平行光用户 | 等真实需求+场景 | 登记 |
 | R6 | P2 | light2d.c LOW 档 | LOW=加法色斑/调试色块，非完整光照 | 契约注明"调试级" | 源码 | LOW 用户 | 维持；宿主用 HIGH | 登记 |
 | R7 | P3 | testmain project() | LOW 镜像投影与 camera.c 公式重复实现 | 单一权威原则 | test_light2d_math 断言两侧一致 | 维护成本 | 相机无 lib 前维持；建 lib 时收敛 | 登记 |

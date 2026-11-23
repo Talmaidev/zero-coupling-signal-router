@@ -40,17 +40,22 @@ static void zcsr_cocoa_update_mouse_position(zcsr_input_ext* in, NSEvent* event)
     NSWindow* win;
     NSView* view;
     NSPoint p;
+    NSPoint backing_p;
     NSRect bounds;
+    NSRect backing_bounds;
     if (!in || !event) return;
     win = (NSWindow*)in->ns_window;
     if (!win) return;
     view = [win contentView];
     if (!view) return;
-    p = [event locationInWindow];
     bounds = [view bounds];
-    in->mouse.x = zcsr_cocoa_clamp((int)p.x, 0, (int)bounds.size.width - 1);
-    in->mouse.y = zcsr_cocoa_clamp((int)(bounds.size.height - p.y), 0,
-                                   (int)bounds.size.height - 1);
+    backing_bounds = [view convertRectToBacking:bounds];
+    p = [view convertPoint:[event locationInWindow] fromView:nil];
+    backing_p = [view convertPointToBacking:p];
+    in->mouse.x = zcsr_cocoa_clamp((int)backing_p.x, 0,
+                                   (int)backing_bounds.size.width - 1);
+    in->mouse.y = zcsr_cocoa_clamp((int)(backing_bounds.size.height - backing_p.y), 0,
+                                   (int)backing_bounds.size.height - 1);
     in->mouse_have_pos = true;
 }
 

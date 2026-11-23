@@ -5,6 +5,9 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING
 
 project(zcsr VERSION 1.0.0 LANGUAGES C)
 
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
 set(CMAKE_C_STANDARD 11)          # C11/C17 — no C++
 set(CMAKE_C_STANDARD_REQUIRED ON)
 # Warning flags differ by toolchain: GCC/Clang use -Wall -Wextra -Wpedantic; MSVC uses /W4.
@@ -59,7 +62,9 @@ endif()
 
 # --- Shared interface contracts: the ONLY include surface modules may use ---
 add_library(zcsr_contracts INTERFACE)
-target_include_directories(zcsr_contracts INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(zcsr_contracts INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 # --- Each module compiles independently, seeing ONLY the contracts (zero-coupling) ---
 function(zcsr_module name)
@@ -70,6 +75,7 @@ function(zcsr_module name)
   endif()
   add_library(zcsr_${name} STATIC ${SRC})
   target_link_libraries(zcsr_${name} PUBLIC zcsr_contracts)
+  set_property(GLOBAL APPEND PROPERTY ZCSR_INSTALL_TARGETS zcsr_${name})
   # 每个模块都可能通过 ZCSR_LOG_* / zcsr_log_write 打日志，而 log 实现在 core。
   # 之前没有声明这条依赖，Windows(link.exe) 靠重扫静态库掩盖了问题；GNU ld 单遍
   # 扫描时，libzcsr_ui.a / libzcsr_file_service.a / libzcsr_viewport.a 里的
@@ -118,8 +124,13 @@ if(WIN32 OR APPLE OR ANDROID)
       ${CMAKE_CURRENT_SOURCE_DIR}/modules/inputext/inputext_linux_gamepad.c
       PROPERTIES HEADER_FILE_ONLY TRUE)
 endif()
+zcsr_module(light2d_environment) # pure environment/sun/ambient contract (no GL calls)
+if(UNIX AND NOT APPLE)
+  # sqrtf in sun normalization/shadow length; MSVC links it via the CRT.
+  target_link_libraries(zcsr_light2d_environment PUBLIC m)
+endif()
 zcsr_module(light2d)   # Light2D additive lighting (no GL calls; drives glrender via gl_render_light2d_ext.h)
-target_link_libraries(zcsr_light2d PUBLIC zcsr_glrender)
+target_link_libraries(zcsr_light2d PUBLIC zcsr_glrender zcsr_light2d_environment)
 target_include_directories(zcsr_light2d PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/glad/include)
 zcsr_module(image)
 zcsr_module(assets)   # 开发者自带资源导入（相对路径 -> 纹理/字体/WAV）
@@ -141,6 +152,21 @@ if(UNIX AND NOT APPLE)
   target_link_libraries(zcsr_camera PUBLIC m) # camera pitch uses cosf/sinf/atan2f
 endif()
 zcsr_module(camera3d)  # software perspective camera (3D -> screen px)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(zcsr_camera3d PUBLIC m) # camera3d uses cosf/sinf/tanf/atan2f/sqrtf
+endif()
+zcsr_module(scene_camera) # 2.5D scene camera: yaw/pitch/roll/ortho + screen->ground
+if(UNIX AND NOT APPLE)
+  target_link_libraries(zcsr_scene_camera PUBLIC m)
+endif()
+zcsr_module(scene)        # fixed-capacity 2.5D scene entity list + stable order
+target_link_libraries(zcsr_scene PUBLIC zcsr_scene_camera)
+zcsr_module(scene_io)     # versioned .uiscene text IO shared by editor/player
+target_link_libraries(zcsr_scene_io PUBLIC zcsr_scene)
+zcsr_module(scene_render) # scene entities -> ordered rectangle instances
+target_link_libraries(zcsr_scene_render PUBLIC zcsr_scene zcsr_glrender)
+zcsr_module(scene_submit) # unified scene -> path A display / path B Light2D bridge
+target_link_libraries(zcsr_scene_submit PUBLIC zcsr_scene zcsr_scene_render zcsr_glrender)
 zcsr_module(sprite)     # Lit sprite renderer (uses G-buffer from light2d)
 zcsr_module(viewport)  # Engine-owned viewport fit + coordinate transform
 zcsr_module(file_service) # Unified File Service + VFS/Mount + Win32(file_win32.c) / POSIX(file_posix.c) backends
@@ -201,6 +227,9 @@ if(UNIX AND NOT APPLE)
   find_file(XDG_SHELL_XML NAMES xdg-shell.xml
       PATHS /usr/share/wayland-protocols/stable/xdg-shell)
   pkg_check_modules(X11 x11)
+  # XRandR is optional: it is only used for display refresh reporting and
+  # exclusive-fullscreen mode switching.  Window creation, input and GLX do
+  # not require its headers, so a missing libxrandr-dev must not disable X11.
   pkg_check_modules(XRANDR xrandr)
   find_package(OpenGL)          # X11/GLX 需要 libGL（GLVND 的 OpenGL::OpenGL）
 
@@ -209,7 +238,7 @@ if(UNIX AND NOT APPLE)
     set(ZCSR_LINUX_HAS_WAYLAND TRUE)
   endif()
   set(ZCSR_LINUX_HAS_X11 FALSE)
-  if(X11_FOUND AND OpenGL_FOUND AND XRANDR_FOUND)
+  if(X11_FOUND AND OpenGL_FOUND)
     set(ZCSR_LINUX_HAS_X11 TRUE)
   endif()
 
@@ -222,7 +251,7 @@ if(UNIX AND NOT APPLE)
   set(ZCSR_LINUX_BACKEND "none")
   if(ZCSR_LINUX_WINDOW_BACKEND STREQUAL "x11")
     if(NOT ZCSR_LINUX_HAS_X11)
-      message(FATAL_ERROR "ZCSR_LINUX_WINDOW_BACKEND=x11 但缺 X11/GL 开发包（libx11-dev + libgl1-mesa-dev）")
+      message(FATAL_ERROR "ZCSR_LINUX_WINDOW_BACKEND=x11 但缺 X11/GL 开发包（libx11-dev + libgl1-mesa-dev；XRandR 可选，装 libxrandr-dev 才启用刷新率/独占全屏模式切换）")
     endif()
     set(ZCSR_LINUX_BACKEND "x11")
   elseif(ZCSR_LINUX_WINDOW_BACKEND STREQUAL "wayland")
@@ -255,8 +284,12 @@ if(UNIX AND NOT APPLE)
   if(ZCSR_LINUX_BACKEND STREQUAL "x11")
     target_sources(zcsr_platform PRIVATE modules/platform/platform_x11.c)
     target_compile_definitions(zcsr_platform PRIVATE ZCSR_LINUX_BACKEND_X11)
-    target_include_directories(zcsr_platform PRIVATE ${XRANDR_INCLUDE_DIRS})
-    target_link_libraries(zcsr_platform PUBLIC ${X11_LIBRARIES} ${XRANDR_LIBRARIES} m)
+    target_link_libraries(zcsr_platform PUBLIC ${X11_LIBRARIES} m)
+    if(XRANDR_FOUND)
+      target_compile_definitions(zcsr_platform PRIVATE ZCSR_HAVE_XRANDR)
+      target_include_directories(zcsr_platform PRIVATE ${XRANDR_INCLUDE_DIRS})
+      target_link_libraries(zcsr_platform PUBLIC ${XRANDR_LIBRARIES})
+    endif()
 
     target_compile_definitions(zcsr_input PRIVATE ZCSR_LINUX_BACKEND_X11)
     target_compile_definitions(zcsr_inputext PRIVATE ZCSR_LINUX_BACKEND_X11)
@@ -440,6 +473,34 @@ add_custom_target(check_coupling
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_no_cross_includes.sh
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   COMMENT "Verifying no cross-module includes")
+
+# --- Install / export package -------------------------------------------------
+# A consumer must be able to `find_package(zcsr CONFIG REQUIRED)` and link
+# `zcsr::zcsr_scene`, `zcsr::zcsr_platform`, ... without sibling source paths.
+get_property(ZCSR_ALL_MODULES GLOBAL PROPERTY ZCSR_INSTALL_TARGETS)
+install(TARGETS zcsr_contracts ${ZCSR_ALL_MODULES}
+  EXPORT zcsrTargets
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(EXPORT zcsrTargets
+  FILE zcsrTargets.cmake
+  NAMESPACE zcsr::
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/zcsr)
+configure_package_config_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/cmake/zcsrConfig.cmake.in
+  ${CMAKE_CURRENT_BINARY_DIR}/zcsrConfig.cmake
+  INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/zcsr)
+write_basic_package_version_file(
+  ${CMAKE_CURRENT_BINARY_DIR}/zcsrConfigVersion.cmake
+  VERSION ${PROJECT_VERSION}
+  COMPATIBILITY SameMajorVersion)
+install(FILES
+  ${CMAKE_CURRENT_BINARY_DIR}/zcsrConfig.cmake
+  ${CMAKE_CURRENT_BINARY_DIR}/zcsrConfigVersion.cmake
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/zcsr)
 
 # --- Repository-native contract tests ---
 # Only when this repository is the top-level project. When it is consumed via

@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+
+if(NOT WIN32 AND NOT APPLE)
+  find_package(OpenGL QUIET)
+  find_package(ALSA QUIET)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/zcsrTargets.cmake")
+check_required_components(zcsr)

@@ -26,6 +26,58 @@ static id g_cocoa_focus_observer_key;
 static id g_cocoa_focus_observer_resign;
 static void* g_cocoa_focus_window;
 static zcsr_surface* g_cocoa_focus_surface;
+static id g_cocoa_app_delegate;
+
+/* NSWindow close is a request, not a command.  The delegate records the
+ * request and returns NO; the runtime shell then asks the active module's
+ * close_request callback (Save/Discard/Cancel).  Programmatic teardown sets
+ * forceClose first, otherwise zcsr_cocoa_window_destroy's [window close]
+ * would be vetoed by this same delegate. */
+@interface ZCSRWindowDelegate : NSObject <NSWindowDelegate>
+@property(nonatomic, assign) zcsr_surface* surface;
+@property(nonatomic, assign) BOOL forceClose;
+@end
+
+@implementation ZCSRWindowDelegate
+- (BOOL)windowShouldClose:(NSWindow*)sender {
+    (void)sender;
+    if (self.forceClose) return YES;
+    if (self.surface) self.surface->close_requested = true;
+    return NO;
+}
+@end
+
+/* Minimal standard App menu.  Editor File/Edit commands stay in the editor
+ * (ImGui / editor_host_cocoa) so the engine platform never learns editor
+ * commands.  Cmd+Q requests the same close flag as the red close button. */
+@interface ZCSRAppDelegate : NSObject <NSApplicationDelegate>
+@end
+
+@implementation ZCSRAppDelegate
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
+    (void)sender;
+    if (g_cocoa_focus_surface) {
+        g_cocoa_focus_surface->close_requested = true;
+        return NSTerminateCancel;
+    }
+    return NSTerminateNow;
+}
+@end
+
+static void zcsr_cocoa_install_app_menu(void) {
+    NSString* name = [[NSProcessInfo processInfo] processName];
+    NSMenu* main_menu = [[NSMenu alloc] initWithTitle:@"ZCSR"];
+    NSMenuItem* app_item = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+    NSMenu* app_menu = [[NSMenu alloc] initWithTitle:name ? name : @"ZCSR"];
+    NSMenuItem* quit_item = [[NSMenuItem alloc]
+        initWithTitle:[NSString stringWithFormat:@"Quit %@", name ? name : @"ZCSR"]
+                 action:@selector(terminate:)
+          keyEquivalent:@"q"];
+    [app_menu addItem:quit_item];
+    [app_item setSubmenu:app_menu];
+    [main_menu addItem:app_item];
+    [NSApp setMainMenu:main_menu];
+}
 
 static void zcsr_cocoa_remove_focus_observer(void);
 
@@ -75,9 +127,12 @@ static void zcsr_cocoa_ensure_app(void) {
     if (initialized) return;
     initialized = YES;
     [NSApplication sharedApplication];
+    g_cocoa_app_delegate = [[ZCSRAppDelegate alloc] init];
+    [NSApp setDelegate:g_cocoa_app_delegate];
     /* Accessory: shows windows without a Dock icon / menu bar takeover — fits an overlay.
      * set_mode(WINDOWED) 会切到 Regular。 */
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    zcsr_cocoa_install_app_menu();
     [NSApp finishLaunching];
 }
 
@@ -85,15 +140,30 @@ void* zcsr_cocoa_window_create(const char* title, int x, int y, int w, int h) {
     @autoreleasepool {
         NSWindow* window;
         NSRect frame;
+        CGFloat scale;
         zcsr_cocoa_ensure_app();
 
-        frame = NSMakeRect((CGFloat)x, (CGFloat)y, (CGFloat)w, (CGFloat)h);
+        /* Public surface sizes are client pixels on every backend. AppKit's
+         * content rect is in points, so convert on Retina displays. */
+        scale = [[NSScreen mainScreen] backingScaleFactor];
+        if (!(scale > 0.0)) scale = 1.0;
+        frame = NSMakeRect((CGFloat)x, (CGFloat)y,
+                           (CGFloat)w / scale, (CGFloat)h / scale);
         window = [[NSWindow alloc]
             initWithContentRect:frame
                       styleMask:NSWindowStyleMaskBorderless
                         backing:NSBackingStoreBuffered
                           defer:NO];
         if (!window) return NULL;
+        {
+            /* The window may land on a display with a different scale than
+             * mainScreen (mixed-DPI setups). Re-fit so client pixels stay exact. */
+            CGFloat actual_scale = [window backingScaleFactor];
+            if (actual_scale > 0.0 && actual_scale != scale) {
+                [window setContentSize:NSMakeSize((CGFloat)w / actual_scale,
+                                                  (CGFloat)h / actual_scale)];
+            }
+        }
 
         [window setTitle:[NSString stringWithUTF8String:(title ? title : "zcsr")]];
         [window setOpaque:NO];
@@ -115,7 +185,13 @@ void zcsr_cocoa_window_destroy(void* ns_window) {
     if (!ns_window) return;
     @autoreleasepool {
         NSWindow* window = (NSWindow*)CFBridgingRelease(ns_window);
-        [window orderOut:nil];
+        id delegate = [window delegate];
+        if ([delegate isKindOfClass:[ZCSRWindowDelegate class]]) {
+            ZCSRWindowDelegate* d = (ZCSRWindowDelegate*)delegate;
+            d.forceClose = YES;
+            d.surface = NULL;
+            [window setDelegate:nil];
+        }
         [window close];
     }
 }
@@ -189,10 +265,13 @@ void zcsr_cocoa_window_get_content_size(void* ns_window, int* w, int* h) {
     if (!ns_window) return;
     @autoreleasepool {
         NSWindow* window = (__bridge NSWindow*)ns_window;
-        /* contentRectForFrameRect 扣掉标题栏/边框，得到真正的客户区 */
+        /* contentRectForFrameRect 扣掉标题栏/边框；返回值按 client pixel 契约
+         * 乘 backingScaleFactor，而不是 AppKit 的 point。 */
         NSRect content = [window contentRectForFrameRect:[window frame]];
-        if (w) *w = (int)llround(content.size.width);
-        if (h) *h = (int)llround(content.size.height);
+        CGFloat scale = [window backingScaleFactor];
+        if (!(scale > 0.0)) scale = 1.0;
+        if (w) *w = (int)llround(content.size.width * scale);
+        if (h) *h = (int)llround(content.size.height * scale);
     }
 }
 
@@ -300,6 +379,15 @@ zcsr_surface* zcsr_surface_create(const char* title, zcsr_rect bounds) {
     surface->mode = ZCSR_WINDOW_BORDERLESS;   /* 与 Win32 create 的默认一致 */
     surface->width = bounds.w;
     surface->height = bounds.h;
+    surface->close_requested = false;
+    {
+        ZCSRWindowDelegate* delegate = [[ZCSRWindowDelegate alloc] init];
+        delegate.surface = surface;
+        delegate.forceClose = NO;
+        [((__bridge NSWindow*)window) setDelegate:delegate];
+        /* NSWindow.delegate is weak; the surface owns one strong reference. */
+        surface->ns_delegate = (void*)CFBridgingRetain(delegate);
+    }
 
     surface->dpi_scale = zcsr_cocoa_window_backing_scale(window);
     if (!isfinite(surface->dpi_scale) || surface->dpi_scale <= 0.0f) {
@@ -322,7 +410,29 @@ void zcsr_surface_destroy(zcsr_surface* s) {
     if (!s || !s->in_use) return;
     zcsr_cocoa_remove_focus_observer();
     if (s->ns_window) zcsr_cocoa_window_destroy(s->ns_window);
+    s->ns_window = NULL;
+    if (s->ns_delegate) {
+        CFBridgingRelease(s->ns_delegate);
+        s->ns_delegate = NULL;
+    }
     zcsr_surface_release(s);
+}
+
+/* Take + clear the close request recorded by the NSWindowDelegate, mirroring
+ * zcsr_platform_win32_take_close.  Identity-check before touching any field:
+ * zcsr_window_close_requested() is public and callers may pass a foreign or
+ * stale surface. */
+bool zcsr_platform_cocoa_take_close(zcsr_surface* s) {
+    bool requested;
+    size_t i;
+    if (!s) return false;
+    for (i = 0; i < ZCSR_SURFACE_POOL; ++i) {
+        if (s == &zcsr_surfaces[i]) break;
+    }
+    if (i == ZCSR_SURFACE_POOL || !s->in_use) return false;
+    requested = s->close_requested;
+    s->close_requested = false;
+    return requested;
 }
 
 void* zcsr_surface_native_handle(const zcsr_surface* s) {
@@ -394,7 +504,13 @@ bool zcsr_surface_set_mode(zcsr_surface* s, zcsr_window_mode mode) {
 bool zcsr_surface_set_client_size(zcsr_surface* s, int w, int h) {
     if (!s || !s->in_use || !s->ns_window || w <= 0 || h <= 0) return false;
     if (s->mode == ZCSR_WINDOW_FULLSCREEN) return false;
-    if (!zcsr_cocoa_window_set_content_size(s->ns_window, w, h)) return false;
+    {
+        CGFloat scale = zcsr_cocoa_window_backing_scale(s->ns_window);
+        if (!(scale > 0.0)) scale = 1.0;
+        if (!zcsr_cocoa_window_set_content_size(s->ns_window,
+                (int)llround((CGFloat)w / scale),
+                (int)llround((CGFloat)h / scale))) return false;
+    }
     s->width = w;
     s->height = h;
     return true;
@@ -439,12 +555,18 @@ void zcsr_surface_apply_size_limits(zcsr_surface* s) {
     NSWindow* window;
     NSSize min_size;
     NSSize max_size;
+    CGFloat scale;
     if (!s || !s->in_use || !s->ns_window) return;
     window = (__bridge NSWindow*)s->ns_window;
-    min_size = NSMakeSize(s->min_w > 0 ? (CGFloat)s->min_w : 0.0,
-                          s->min_h > 0 ? (CGFloat)s->min_h : 0.0);
-    max_size = NSMakeSize(s->max_w > 0 ? (CGFloat)s->max_w : CGFLOAT_MAX,
-                          s->max_h > 0 ? (CGFloat)s->max_h : CGFLOAT_MAX);
+    /* min_w/min_h/max_w/max_h are client PIXELS (platform.h); AppKit's
+     * content size is POINTS. Convert through the window's backing scale so a
+     * 1280x720 pixel limit does not become 2560x1440 pixels on Retina. */
+    scale = zcsr_cocoa_window_backing_scale(s->ns_window);
+    if (scale <= 0.0) scale = 1.0;
+    min_size = NSMakeSize(s->min_w > 0 ? (CGFloat)s->min_w / scale : 0.0,
+                          s->min_h > 0 ? (CGFloat)s->min_h / scale : 0.0);
+    max_size = NSMakeSize(s->max_w > 0 ? (CGFloat)s->max_w / scale : CGFLOAT_MAX,
+                          s->max_h > 0 ? (CGFloat)s->max_h / scale : CGFLOAT_MAX);
     [window setContentMinSize:min_size];
     [window setContentMaxSize:max_size];
 }

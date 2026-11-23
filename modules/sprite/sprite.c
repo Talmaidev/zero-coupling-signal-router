@@ -6,25 +6,30 @@
 #include "zcsr/gl_render_l2d_geo.h"
 #include <math.h>
 
-void zcsr_sprite_draw(zcsr_gl_renderer* r,
-                      const zcsr_camera* cam,
-                      const zcsr_transform* tr,
-                      const zcsr_sprite_instance* sp)
+void zcsr_sprite_draw_at_height(zcsr_gl_renderer* r,
+                                const zcsr_camera* cam,
+                                const zcsr_transform* tr,
+                                const zcsr_sprite_instance* sp,
+                                float ground_z)
 {
     const zcsr_sprite_asset* asset;
     float px;
     float py;
     float pw;
     float ph;
+    bool flip_x;
+    bool flip_y;
     zcsr_gl_sprite s;
 
     if (r == NULL || cam == NULL || tr == NULL || sp == NULL) return;
     asset = sp->asset;
     if (asset == NULL || asset->tex == 0u) return;
 
-    zcsr_camera_world_to_px(cam, tr->x, tr->y, 0.0f, &px, &py);
-    pw = asset->w * tr->scale_x * cam->px_per_unit;
-    ph = asset->h * tr->scale_y * cam->px_per_unit;
+    zcsr_camera_world_to_px(cam, tr->x, tr->y, ground_z, &px, &py);
+    flip_x = tr->scale_x < 0.0f;
+    flip_y = tr->scale_y < 0.0f;
+    pw = asset->w * fabsf(tr->scale_x) * cam->px_per_unit;
+    ph = asset->h * fabsf(tr->scale_y) * cam->px_per_unit;
 
     if (asset->u0 == 0.0f && asset->v0 == 0.0f && asset->u1 == 1.0f && asset->v1 == 1.0f) {
         /* whole texture: the sprite path carries rotation about the center */
@@ -40,14 +45,25 @@ void zcsr_sprite_draw(zcsr_gl_renderer* r,
         s.a = sp->a;
         s.mode = (zcsr_color_mode)0; /* MULTIPLY — the legacy tint behavior */
         s.amount = 0.0f;
+        s.flip_x = flip_x;
+        s.flip_y = flip_y;
         zcsr_gl_submit(r, &s);
     } else {
-        /* atlas sub-rect: the atlas queue has no rotation channel */
-        zcsr_gl_queue_atlas_sprite(r, asset->tex,
-                                   px - pw * 0.5f, py - ph * 0.5f, pw, ph,
-                                   asset->u0, asset->v0, asset->u1, asset->v1,
-                                   sp->r, sp->g, sp->b, sp->a);
+        /* atlas sub-rect: same rotation/flip channel as the whole-texture path */
+        zcsr_gl_queue_atlas_sprite_rot(r, asset->tex,
+                                       px - pw * 0.5f, py - ph * 0.5f, pw, ph,
+                                       tr->rotation,
+                                       asset->u0, asset->v0, asset->u1, asset->v1,
+                                       sp->r, sp->g, sp->b, sp->a,
+                                       flip_x, flip_y);
     }
+}
+
+void zcsr_sprite_draw(zcsr_gl_renderer* r,
+                      const zcsr_camera* cam,
+                      const zcsr_transform* tr,
+                      const zcsr_sprite_instance* sp) {
+    zcsr_sprite_draw_at_height(r, cam, tr, sp, 0.0f);
 }
 
 /* Lit sprite: convert a transform + sprite_instance into a world-space textured
@@ -56,10 +72,10 @@ void zcsr_sprite_draw(zcsr_gl_renderer* r,
  *
  * Contract (RENDER2D_CONTRACT §14.4):
  *   pivot = center (tr->x/tr->y is the sprite center, no pivot enum)
- *   size  = asset.w/h * scale_x/y (world units, NOT texels)
+ *   size  = asset.w/h * |scale_x/y| (world units, NOT texels; negative scale mirrors UV)
  *   corners: local rect (-hw,-hh),(hw,-hh),(hw,hh),(-hw,hh) rotated about center,
  *            then translated to (tr->x, tr->y, ground_z)
- *   uv    : per-corner (u0,v0),(u1,v0),(u1,v1),(u0,v1), passthrough, no flip
+ *   uv    : per-corner sub-rect, mirrored when scale_x/scale_y is negative
  *   normal: (0,0,1) for horizontal ground sprites (v1 limit)
  *   tint  : instance r,g,b,a (display-domain multiply)
  *   emissive: (0,0,0,0) v1 (per-sprite emissive is a future extension slot)
@@ -76,6 +92,7 @@ void zcsr_sprite_draw_lit(zcsr_gl_renderer* r,
     float corners[12];
     float uv[8];
     float tint[4];
+    bool flip_x, flip_y;
     const float normal[3] = { 0.0f, 0.0f, 1.0f };
     const float emissive[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
@@ -83,8 +100,10 @@ void zcsr_sprite_draw_lit(zcsr_gl_renderer* r,
     asset = sp->asset;
     if (asset == NULL || asset->tex == 0u) return;
 
-    hw = asset->w * tr->scale_x * 0.5f;
-    hh = asset->h * tr->scale_y * 0.5f;
+    flip_x = tr->scale_x < 0.0f;
+    flip_y = tr->scale_y < 0.0f;
+    hw = asset->w * fabsf(tr->scale_x) * 0.5f;
+    hh = asset->h * fabsf(tr->scale_y) * 0.5f;
 
     c = cosf(tr->rotation);
     s = sinf(tr->rotation);
@@ -111,10 +130,14 @@ void zcsr_sprite_draw_lit(zcsr_gl_renderer* r,
     corners[10] = lx3 * s + ly3 * c + tr->y;
     corners[11] = ground_z;
 
-    uv[0] = asset->u0; uv[1] = asset->v0;
-    uv[2] = asset->u1; uv[3] = asset->v0;
-    uv[4] = asset->u1; uv[5] = asset->v1;
-    uv[6] = asset->u0; uv[7] = asset->v1;
+    uv[0] = flip_x ? asset->u1 : asset->u0;
+    uv[1] = flip_y ? asset->v1 : asset->v0;
+    uv[2] = flip_x ? asset->u0 : asset->u1;
+    uv[3] = flip_y ? asset->v1 : asset->v0;
+    uv[4] = flip_x ? asset->u0 : asset->u1;
+    uv[5] = flip_y ? asset->v0 : asset->v1;
+    uv[6] = flip_x ? asset->u1 : asset->u0;
+    uv[7] = flip_y ? asset->v0 : asset->v1;
 
     tint[0] = sp->r; tint[1] = sp->g; tint[2] = sp->b; tint[3] = sp->a;
 

@@ -48,6 +48,7 @@ typedef struct {
     int last_cw, last_ch;
     int frame_index;
     int autoquit;
+    int failures;            /* host-side assertions / GPU shadow probe */
     int mouse_seen;
     int last_mouse_x, last_mouse_y;
     float light_z;
@@ -113,6 +114,7 @@ static void proof_check(void)
         printf("[proof] %s: %s\n", cases[i].name,
                got == cases[i].want ? "PASS" : "FAIL");
         if (got != cases[i].want) ok = 0;
+        if (got != cases[i].want) ++g_light.failures;
     }
     printf("[proof] tip(L_z=3)=x9 tip(L_z=5)=x5 (%s)\n",
            ok ? "all PASS" : "MISMATCH");
@@ -404,12 +406,34 @@ static bool light_module_init(zcsr_gl_renderer* r, int cw, int ch, void* user)
     light_state* s = (light_state*)user;
     zcsr_light2d_options opt;
     zcsr_light2d_occluder occ;
+    zcsr_light2d_environment env;
+    zcsr_light2d_environment env_back;
     const float footprint[8] = {
         BOX_MIN_X, BOX_MIN_Y, BOX_MAX_X, BOX_MIN_Y,
         BOX_MAX_X, BOX_MAX_Y, BOX_MIN_X, BOX_MAX_Y
     };
 
     proof_check();
+
+    {
+        zcsr_gl_capabilities caps;
+        if (!zcsr_gl_query_capabilities(r, &caps)) {
+            fprintf(stderr, "FAIL: capability query unavailable\n");
+            return false;
+        }
+        printf("[caps] gl33=%s gles3=%s float_color=%s srgb8=%s mrt4=%s "
+               "attachments=%d draw_buffers=%d\n",
+               caps.core_33 ? "yes" : "no",
+               caps.gles3 ? "yes" : "no",
+               caps.float_color_buffer ? "yes" : "no",
+               caps.srgb8_color_buffer ? "yes" : "no",
+               caps.mrt4 ? "yes" : "no",
+               caps.max_color_attachments, caps.max_draw_buffers);
+        if (!caps.float_color_buffer || !caps.mrt4) {
+            fprintf(stderr, "FAIL: deferred slice needs RGBA16F + MRT4\n");
+            return false;
+        }
+    }
 
     s->ctx = zcsr_light2d_create(r,
                                  ZCSR_LIGHT_QUALITY_HIGH,
@@ -443,6 +467,32 @@ static bool light_module_init(zcsr_gl_renderer* r, int cw, int ch, void* user)
     opt.ray_shadows = true; /* Geometry Proof semantics */
     if (!zcsr_light2d_set_options(s->ctx, &opt)) {
         fprintf(stderr, "FAIL: options rejected\n");
+        return false;
+    }
+
+    /* Scene environment: a real sun through the first-class environment path,
+     * plus the historical ambient. This exercises the deferred sun branch,
+     * dir_z-derived shadow length and the composite exposure/AO uniforms. */
+    zcsr_light2d_environment_default(&env);
+    env.sun.enabled = true;
+    env.sun.cast_shadow = true;
+    env.sun.dir_x = 0.0f;
+    env.sun.dir_y = 0.0f;
+    env.sun.dir_z = -1.0f;
+    env.sun.r = 1.0f;
+    env.sun.g = 0.96f;
+    env.sun.b = 0.88f;
+    env.sun.intensity = 0.6f;
+    env.exposure = 1.0f;
+    env.ambient_occlusion = 0.0f;
+    if (!zcsr_light2d_set_environment(s->ctx, &env)) {
+        fprintf(stderr, "FAIL: environment rejected\n");
+        return false;
+    }
+    zcsr_light2d_get_environment(s->ctx, &env_back);
+    if (!env_back.sun.enabled || env_back.sun.dir_z != -1.0f ||
+        env_back.sun.intensity != 0.6f || env_back.exposure != 1.0f) {
+        fprintf(stderr, "FAIL: environment roundtrip mismatch\n");
         return false;
     }
 
@@ -599,6 +649,7 @@ static void light_module_frame(zcsr_gl_renderer* r, int cw, int ch, void* user)
 
     if (!zcsr_light2d_begin_geometry(s->ctx)) {
         fprintf(stderr, "FAIL: begin_geometry\n");
+        ++s->failures;
         return;
     }
     draw_scene(s, r, cw, ch,
@@ -609,6 +660,7 @@ static void light_module_frame(zcsr_gl_renderer* r, int cw, int ch, void* user)
         !zcsr_light2d_add_light(s->ctx, &light) ||
         !zcsr_light2d_end_lighting(s->ctx)) {
         fprintf(stderr, "FAIL: lighting pass\n");
+        ++s->failures;
         return;
     }
 
@@ -655,6 +707,7 @@ static void light_module_frame(zcsr_gl_renderer* r, int cw, int ch, void* user)
         } else {
             printf("[gpu_shadow] FAIL: shadow point not dimmer enough (sha=%.1f lit=%.1f)\n",
                    sha_sum, lit_sum);
+            ++s->failures;
         }
     }
 
@@ -727,5 +780,12 @@ int main(int argc, char** argv)
     g_light.light_z = LIGHT_Z_DEFAULT;
     zcsr_camera_init(&g_light.cam, 0, 0, 4.0f, 0.0f, PPU_DEFAULT, SHEAR_DEFAULT);
     g_light.autoquit = (argc > 1 && argv[1] != NULL && strcmp(argv[1], "autoquit") == 0);
-    return zcsr_window_game_run(modules, 1, argc, argv);
+    {
+        int rc = zcsr_window_game_run(modules, 1, argc, argv);
+        if (g_light.failures != 0) {
+            fprintf(stderr, "light2d slice: %d failure(s)\n", g_light.failures);
+            return 1;
+        }
+        return rc;
+    }
 }

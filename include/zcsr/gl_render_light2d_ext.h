@@ -39,16 +39,33 @@ typedef enum zcsr_gl_l2d_blend_mode {
     ZCSR_GL_L2D_BLEND_ADDITIVE = 1
 } zcsr_gl_l2d_blend_mode;
 
+/* Unified frame display-transfer control. This regenerates the LUT applied
+ * once by zcsr_gl_present/read_rgba after both Path A and Path B have written
+ * linear values into the RGBA16F frame. Input decode is a closed contract:
+ * DISPLAY textures are stored as sRGB8 and hardware-decoded; SRGB uses the
+ * sRGB sampler; LINEAR is verbatim; DISPLAY tints/flat colors use the built-in
+ * sRGB decoder. A custom descriptor's to_linear half MUST match the built-in
+ * sRGB decoder. The setter validates this and rejects a mismatched pipeline.
+ * Only the output curve (to_display) is replaceable. Use the legacy
+ * zcsr_gl_set_color_pipeline only for compatibility with old code; its name
+ * overstates its scope. The descriptor is borrowed, not copied: it must remain
+ * valid until the renderer is destroyed. */
+bool zcsr_gl_l2d_set_color_pipeline(zcsr_gl_renderer* renderer,
+                                    const zcsr_color_pipeline_desc* pipeline);
+const zcsr_color_pipeline_desc* zcsr_gl_l2d_get_color_pipeline(
+    const zcsr_gl_renderer* renderer);
+
 /* Post-process hook: called after the composite shader has written the
- * tonemapped sRGB result to the engine-owned composite FBO. The callback
+ * tonemapped LINEAR result to the engine-owned composite FBO. The callback
  * receives the composite texture (already bound to texture unit 9), the
  * frame dimensions, and the game userdata. The callback must bind its own
- * shader and draw a fullscreen quad; the engine blits the result to the
- * default framebuffer after the callback returns. GL state (program, VAO,
- * blend, active texture) is restored by the engine after the callback.
- * The composite texture must not be deleted or re-bound by the callback.
- * Returns true on success; false aborts the frame and blits the raw
- * composite texture instead. Not called from any thread other than the
+ * shader and draw a fullscreen quad into the linear frame target; it must not
+ * display-encode. The engine blits the result into the linear frame after the
+ * callback returns; zcsr_gl_present/read_rgba performs the single encode.
+ * GL state (program, VAO, blend, active texture) is restored by the engine
+ * after the callback. The composite texture must not be deleted or re-bound
+ * by the callback. Returns true on success; false aborts the frame and blits
+ * the raw composite texture instead. Not called from any thread other than the
  * render thread. */
 typedef struct zcsr_gl_renderer zcsr_gl_renderer;
 typedef bool (*zcsr_l2d_post_process_fn)(zcsr_gl_renderer* renderer,
@@ -71,7 +88,12 @@ bool zcsr_gl_l2d_state_push(zcsr_gl_renderer* renderer);
 bool zcsr_gl_l2d_state_pop(zcsr_gl_renderer* renderer);
 
 /* Create/destroy/resize an MRT target. Resize must be transactional. The
- * requested attachments are ordered: Albedo, Position, Normal, Emissive. */
+ * attachments are a closed contract, not a caller-defined menu:
+ *   formats[0..3] must be exactly
+ *   RGBA16F, RGBA16F, RGBA8, RGBA16F
+ *   (Albedo, Position, Normal, Emissive) and attachment_count must be 4.
+ * Any other count/format is rejected before GL allocation so the composite
+ * can never sample a mismatched G0. */
 bool zcsr_gl_l2d_target_create(zcsr_gl_renderer* renderer,
                                int width,
                                int height,
@@ -89,7 +111,9 @@ void zcsr_gl_l2d_target_destroy(zcsr_gl_renderer* renderer,
  * emissive as zero, position as a FAR sentinel (air receives no light — the
  * reference engine clears its view-space position channel to zfar), and the
  * 2D neutral normal as (0.5,0.5).
- * Geometry output layout: location 0 Albedo RGBA8; location 1 Position RGBA16F
+ * Geometry output layout: location 0 Albedo RGBA16F (linear-light values
+ * written verbatim; the composite samples them without an implicit decode);
+ * location 1 Position RGBA16F
  * with xyz in WORLD 3D coordinates (x,y ground plane, z elevation; painter
  * converts its pixel-space geometry through the camera); location 2 Normal
  * RGBA8 with xy encoded from [-1,+1] to [0,1] ((0,0) decodes to the UP
@@ -98,21 +122,31 @@ bool zcsr_gl_l2d_gbuffer_begin(zcsr_gl_renderer* renderer,
                                zcsr_gl_l2d_target target,
                                int width,
                                int height);
+/* True only when the current GL framebuffer is one of this renderer's
+ * Light2D targets and that target has the exact four-attachment contract:
+ * Albedo RGBA16F, Position RGBA16F, Normal RGBA8, Emissive RGBA16F. Used by
+ * zcsr_gl_l2d_geo_begin to reject LIT submission into the default framebuffer
+ * instead of silently drawing geometry into the wrong target. */
+bool zcsr_gl_l2d_gbuffer_is_bound(zcsr_gl_renderer* renderer);
+/* Bind the unified linear frame target as the composite output. The name is
+ * historical: there is no direct-to-default Light2D output anymore. The
+ * composite writes linear values; zcsr_gl_present/read_rgba encodes once. */
 bool zcsr_gl_l2d_bind_default_target(zcsr_gl_renderer* renderer,
                                     int width,
                                     int height);
 
 /* Bind the engine-owned composite FBO as the render target. The composite
- * shader must draw its sRGB-encoded result here; the FBO does not re-encode.
- * Used internally by modules/light2d before the deferred/bloom draw. */
+ * shader writes LINEAR tonemapped values here; the FBO is RGBA16F. Used
+ * internally by modules/light2d before the deferred/bloom draw. */
 bool zcsr_gl_l2d_bind_composite_target(zcsr_gl_renderer* renderer,
                                        int width,
                                        int height);
 
 /* After the composite shader has drawn to the composite FBO, run the
- * registered post-process hook (if any) and then present the result to
- * the default framebuffer. Without a hook the composite FBO is blitted
- * directly. Called by modules/light2d at the end of a HIGH frame. */
+ * registered post-process hook (if any) and write the result into the
+ * unified linear frame target. Without a hook the composite FBO is blitted
+ * directly. Display encoding happens later, once, in present/read_rgba.
+ * Called by modules/light2d at the end of a HIGH frame. */
 bool zcsr_gl_l2d_finalize_composite(zcsr_gl_renderer* renderer,
                                     int width,
                                     int height);

@@ -1,10 +1,12 @@
-/* light2d_box.h — Light2D 长方体模块接口
+/* light2d_box.h — Light2D 长方体几何模块接口
  *
- * 可复用的长方体最小单元，参数可由编辑器自由调整：
+ * 这是 Light2D 的光照几何原语，不是 scene entity、不是可拖拽建筑、不是碰撞体：
  *   - 位置：min_x / max_x / min_y / max_y
  *   - 高度：h
  *   - 颜色：tint
- */
+ *
+ * 它只负责把一个长方体的面提交给 Light2D G-buffer；没有贴图、材质、碰撞、
+ * 文档序列化或编辑器选择语义。scene box 必须另行定义，并可复用这里的几何。 */
 
 #ifndef ZCSR_LIGHT2D_BOX_H
 #define ZCSR_LIGHT2D_BOX_H

@@ -19,9 +19,17 @@ Keeping them apart means the correctness suite stays fast, deterministic and CI-
 ## tests/ — unit & contract suite (`ctest`)
 
 The engine repository now has its own CTest entry points via the top-level
-`enable_testing()` and `tests/CMakeLists.txt`. The current suite has 21 tests,
-covering core, signal, hsm, platform, glrender, light2d, audio, music, input,
-collision, save, ui and viewport, plus the cross-module checks.
+`enable_testing()` and `tests/CMakeLists.txt`. The current Windows Release suite
+has 37 tests, covering core, signal, hsm, platform, glrender, light2d, audio,
+music, input, collision, save, ui, viewport, color_pipeline, scene_camera,
+scene, scene_render and scene_submit, plus the cross-module checks. The extra
+`light2d_math` entry is the pure-CPU shadow/projection contract (29 checks).
+
+`glrender` includes a real-backbuffer assertion for the unified linear frame:
+source texture round-trip and 50% black-over-white linear blending. On Windows
+(Intel Arc B580/WGL) and Linux (Mesa llvmpipe/GLX) it prints
+`PASS: unified linear frame round-trip and linear blending`. A surface-less
+environment still passes the CPU sort/contract checks but skips the GL probe.
 
 `game_test` is retired. The consumer builds in `zcsr_runtime` and `zcsr_editor`
 register their own UIM page/settings tests; they are not part of this engine
@@ -29,32 +37,78 @@ suite.
 
 ## Build & run
 
-### Windows (MSVC + Ninja)
+### Windows (MSVC + VS 2026 generator)
 
-```sh
-# From a Visual Studio Developer Command Prompt:
-cmake -S . -B build -G Ninja -DZCSR_ENABLE_BOX2D=OFF
-cmake --build build
-ctest --test-dir build                     # run the whole unit/contract suite
-ctest --test-dir build -V                  # verbose (see each assertion)
-ctest --test-dir build -R glrender         # one module by name
-ctest --test-dir build -R state            # state sort
+```powershell
+cmake -S . -B build -G "Visual Studio 18 2026" -A x64
+cmake --build build --config Release
+
+# Targeted: only the module/contract touched by the change, 8 at a time.
+ctest --test-dir build -C Release -R glrender -j 8
+ctest --test-dir build -C Release -R state -j 8
+
+# Deliberate full gate, not a default after every edit.
+ctest --test-dir build -C Release -j 8 --output-on-failure
+ctest --test-dir build -C Release -V       # verbose (see each assertion)
 ```
 
-### Linux (Wayland + PipeWire, default)
+High-concurrency runs are not for the physical host. Move to the Doubao
+virtual desktop first, then use the repo-level runner and name only the suites
+the change actually touched:
+
+```powershell
+..\run_tests.ps1 -Suite PVZ -Jobs 8 -VirtualDesktop
+..\run_tests.ps1 -Suite Engine,Editor -Jobs 8 -VirtualDesktop
+..\run_tests.ps1 -Suite Engine -BuildOnly      # compile check only, no test run
+```
+
+The runner refuses to run tests without `-Suite` and `-VirtualDesktop`, so a
+one-file edit does not silently launch all six suites (including audio). Use
+`-BuildOnly` when the change is compile-only; reserve the test path for the
+single end-of-work verification.
+
+
+### Linux (X11/GLX default; Wayland/EGL optional)
 
 ```sh
 cmake -S . -B build -G Ninja -DZCSR_ENABLE_BOX2D=OFF
 cmake --build build
 
 # Headless-safe tests run without a compositor:
-ctest --test-dir build
+ctest --test-dir build -j 8
 
-# platform_api test needs a Wayland compositor (weston/cage):
-WAYLAND_DISPLAY=wayland-0 ctest --test-dir build
+# platform/inputext window tests need a display:
+xvfb-run -a -s '-screen 0 1280x720x24 +extension RANDR' ctest --test-dir build -j 8
+# or, for the native Wayland backend:
+WAYLAND_DISPLAY=wayland-0 ctest --test-dir build -j 8
 ```
 
-Linux defaults to Wayland windowing + PipeWire audio. X11/ALSA/GLX backends were removed in v1.0 — there is no `ZCSR_LINUX_BACKEND` or `ZCSR_AUDIO_BACKEND` option anymore.
+Linux window backends are still built and selectable. X11/GLX is the default when both X11 and Wayland development packages are present; Wayland/EGL is used only when selected (or when X11 is unavailable). Audio auto-selects PipeWire, then ALSA, then the silent backend. The CMake switches are `ZCSR_LINUX_WINDOW_BACKEND=auto|x11|wayland|none` and `ZCSR_AUDIO_BACKEND=auto|pipewire|alsa|none`.
+
+Linux 1.0 验证口径（可回链细节见 `docs/LINUX_VERIFICATION.md`）：
+
+- Ubuntu 22.04 + GCC 11 + Mesa llvmpipe，X11/GLX + Xvfb：**35/35**，含 `inputext_x11`。
+- Ubuntu 22.04 + Weston 9 headless，原生 Wayland/EGL：**34/34**，`glrender_test` 输出 `backend=egl-wayland` 并真实回读三条 PASS。
+- Ubuntu 22.04 + PipeWire 0.3.48 + null sink：**35/35**，流真实连到 null sink；物理扬声器未验证。
+- Ubuntu 20.04 chroot + GCC 10 + glibc 2.31，X11/GLX：**35/35**；产物最高 `GLIBC_2.29` 符号。Xvfb 没有真实刷新率，XRandR 正路径另在 Xorg dummy/VNC 的 60Hz 模式上验证全屏返回 true、窗口模式返回 false。
+- Kali 物理机（真 X11 + 真 WM）此前 **35/35**；本次没有严重改动，按用户口径沿用该结果，不重跑全量。
+- 云主机只作补充：无 `/dev/dri`、无物理声卡，缺 GPU/声卡/显示模式不作为发布阻塞；Linux AMD/NVIDIA 驱动、Steam Deck/Gamescope 仍未单独验证。
+- 按用户口径，Linux 环境不再作为 1.0 门；物理机结果沿用，不为云副本差异重跑。若只改可编译代码，只做编译检查；需要验证时按改动套件选择，不默认全套。
+
+### macOS
+
+macOS uses Cocoa/NSOpenGL and requires Xcode Command Line Tools. The dedicated
+gate is:
+
+```sh
+./tools/verify_macos_linear.sh
+```
+
+It must print both `PASS: unified linear frame round-trip and linear blending`
+and `PASS: GL renderer smoke` on a real GUI session. See
+`docs/MACOS_VERIFICATION.md`; a headless Mac runner may skip the GL surface and
+is not sufficient for a real Mac check. **按用户 2026-11-23 决定，macOS 真机验收
+已 pass、不作为 1.0 发布门；没有真实 Mac 时不重跑此项。**
 
 ### Android
 
@@ -73,4 +127,7 @@ Verifies that no module includes another module's source or a relative path — 
 - `tests/data/sample.mp3` — 44100Hz stereo MP3 (generated by ffmpeg, vendored)
 - `tests/data/sample.ogg` — 44100Hz stereo OGG (generated by ffmpeg, vendored)
 
-These are used by `test_music_codec` and must remain in the repo (zero-network test policy).
+These are consumed by the standalone `tests/test_music_codec.c` harness. That
+harness is **not registered in CTest** (it is a manual direct-decoder check, and
+it SKIPs when the samples are absent), so the audio gate is `audio` / `audiomix`.
+Keep the samples for that manual harness (zero-network test policy).

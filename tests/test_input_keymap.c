@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdio.h>
+#include <stddef.h>
 #include "zcsr/input_keymap.h"
 
 static zcsr_keycode win32(uint32_t code) {
@@ -49,6 +50,28 @@ int main(void) {
     assert(evdev(30) == ZCSR_KEY_A);
     assert(android(29) == ZCSR_KEY_A);
     assert(cocoa(0) == ZCSR_KEY_A);
+
+    /* Every Linux letter position, not just A. Evdev codes are QWERTY
+     * physical positions; a Q+offset/A+offset shortcut remaps the whole row. */
+    {
+        static const uint32_t evdev_letters[26] = {
+            16u, 17u, 18u, 19u, 20u, 21u, 22u, 23u, 24u, 25u,
+            30u, 31u, 32u, 33u, 34u, 35u, 36u, 37u, 38u,
+            44u, 45u, 46u, 47u, 48u, 49u, 50u
+        };
+        static const zcsr_keycode letters[26] = {
+            ZCSR_KEY_Q, ZCSR_KEY_W, ZCSR_KEY_E, ZCSR_KEY_R, ZCSR_KEY_T,
+            ZCSR_KEY_Y, ZCSR_KEY_U, ZCSR_KEY_I, ZCSR_KEY_O, ZCSR_KEY_P,
+            ZCSR_KEY_A, ZCSR_KEY_S, ZCSR_KEY_D, ZCSR_KEY_F, ZCSR_KEY_G,
+            ZCSR_KEY_H, ZCSR_KEY_J, ZCSR_KEY_K, ZCSR_KEY_L,
+            ZCSR_KEY_Z, ZCSR_KEY_X, ZCSR_KEY_C, ZCSR_KEY_V,
+            ZCSR_KEY_B, ZCSR_KEY_N, ZCSR_KEY_M
+        };
+        for (size_t i = 0; i < 26u; ++i) {
+            assert(evdev(evdev_letters[i]) == letters[i]);
+            assert(x11(evdev_letters[i] + 8u) == letters[i]);
+        }
+    }
 
     assert(win32(0x30) == ZCSR_KEY_0);
     assert(x11(19) == ZCSR_KEY_0);

@@ -67,13 +67,26 @@ void zcsr_gl_update_size(zcsr_gl_renderer* r) {
     NSWindow* win;
     NSView* view;
     NSRect bounds;
+    NSRect backing;
+    int old_w;
+    int old_h;
     if (!r || !r->surface) return;
     win = (__bridge NSWindow*)zcsr_surface_native_handle(r->surface);
     view = [win contentView];
     if (!view) return;
     bounds = [view bounds];
-    r->width = bounds.size.width > 0 ? (int)bounds.size.width : 1;
-    r->height = bounds.size.height > 0 ? (int)bounds.size.height : 1;
+    /* OpenGL drawables are in backing pixels, not points. On a Retina display
+     * using bounds directly would render at half resolution and make
+     * glReadPixels disagree with the viewport. */
+    backing = [view convertRectToBacking:bounds];
+    old_w = r->width;
+    old_h = r->height;
+    r->width = backing.size.width > 0 ? (int)backing.size.width : 1;
+    r->height = backing.size.height > 0 ? (int)backing.size.height : 1;
+    if (r->width != old_w || r->height != old_h) {
+        NSOpenGLContext* ctx = zcsr_gl_ctx(r);
+        if (ctx) [ctx update];
+    }
 }
 
 void zcsr_gl_swap(zcsr_gl_renderer* r) {

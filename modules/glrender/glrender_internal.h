@@ -27,7 +27,7 @@
 #  include "glad/glad.h"
 #  if defined(ZCSR_LINUX_BACKEND_X11)
 #    include <GL/glx.h>          /* X11/GLX：直接用 libGL 的 GLX 入口 */
-#  else
+#  elif defined(ZCSR_LINUX_BACKEND_WAYLAND)
 #    include <EGL/egl.h>
 #    include <EGL/eglext.h>
 #    include <wayland-egl.h>
@@ -86,7 +86,7 @@ typedef enum {
 enum {
     ZCSR_GL_MAX_SPRITES = 10000,
     ZCSR_GL_MAX_VERTICES = ZCSR_GL_MAX_SPRITES * 6,
-    ZCSR_GL_MAX_TEXTURES = 128
+    ZCSR_GL_MAX_TEXTURES = 256
 };
 
 /* Interleaved vertex: pos(2) + uv(2) + color(4) + mode(1) + amount(1) = 10 floats. */
@@ -101,6 +101,8 @@ typedef struct {
     unsigned int id;
     int w, h;
     bool in_use;
+    zcsr_texture_color_space color_space;
+    bool has_alpha;
 } zcsr_gl_tex_entry;
 
 /* One contiguous run of vertices sharing one texture = one glDrawArrays call. */
@@ -161,15 +163,23 @@ struct zcsr_gl_renderer {
     char gpu_vendor_string[64];
     char gpu_renderer_string[160];
     char gpu_version_string[64];
+    /* Runtime GL capability gate, filled once next to the GPU identity. */
+    bool caps_probed;
+    bool cap_core_33;
+    bool cap_gles3;
+    bool cap_float_color;
+    bool cap_srgb8_color;
+    int  cap_max_color_attachments;
+    int  cap_max_draw_buffers;
     zcsr_gl_vertex vertices[ZCSR_GL_MAX_VERTICES];
     size_t vertex_count;
     zcsr_gl_draw draws[ZCSR_GL_MAX_SPRITES];
     size_t draw_count;
     zcsr_gl_tex_entry textures[ZCSR_GL_MAX_TEXTURES];
     /* O5: direct lookup table for texture handle -> textures[] slot.
-     * 256 slots (2x pool size, <50% load), open addressing. key=0 means empty. */
-    uint32_t tex_index_key[256];
-    uint8_t  tex_index_val[256];
+     * 512 slots (2x pool size, <50% load), open addressing. key=0 means empty. */
+    uint32_t tex_index_key[512];
+    uint8_t  tex_index_val[512];
     unsigned int program;
     unsigned int vao;
     unsigned int vbo;
@@ -185,11 +195,27 @@ struct zcsr_gl_renderer {
     int uniform_view;
     int uniform_tex;
 
+    /* ---- Unified linear frame target ----------------------------------------
+     * Path A and Path B both render into this RGBA16F linear target. It is
+     * resolved to the window exactly once by zcsr_gl_present / read_rgba
+     * through the color pipeline LUT. No path writes display-encoded pixels
+     * directly to the default framebuffer anymore. */
+    unsigned int frame_fbo;
+    unsigned int frame_tex;
+    int frame_w;
+    int frame_h;
+    unsigned int frame_prog;
+    unsigned int frame_vao;
+    int frame_loc_tex;
+    int frame_loc_lut;
+
     /* ---- instanced rendering resources (unit quad + per-instance VBO) ---- */
     unsigned int inst_program;
     unsigned int inst_program_mul;
     unsigned int inst_vao;
     unsigned int inst_vao_mul;
+    unsigned int color_ramp_tex;
+    int color_ramp_rows;
     unsigned int inst_corner_vbo;
     unsigned int inst_ebo;
     unsigned int inst_vbo;
@@ -199,6 +225,7 @@ struct zcsr_gl_renderer {
     bool inst_current_mul;      /* current run uses the multiply-only program/VAO */
     int inst_uniform_view;
     int inst_uniform_tex;
+    int inst_uniform_ramp;
     int inst_uniform_view_mul;
     int inst_uniform_tex_mul;
 
@@ -238,11 +265,9 @@ struct zcsr_gl_renderer {
     int l2d_deferred_loc_lightcount;
     int l2d_deferred_loc_lightdata;
     int l2d_deferred_loc_lightcolor;
-    /* Display-transfer LUT: the final composite samples this instead of
-     * embedding the transfer formula in the shader. */
+    /* Display-transfer LUT: the unified linear frame pass samples this once at
+     * present/readback; deferred and bloom composites stay linear. */
     unsigned int l2d_color_lut_tex;
-    int l2d_deferred_loc_color_lut;
-    int l2d_bloom_loc_color_lut;
     const zcsr_color_pipeline_desc* color_pipeline;
     /* Light2d v2 (JoyECS-style): shadow-mask pass + light accumulation buffer. */
     unsigned int l2d_prog_shadow;
@@ -313,6 +338,8 @@ struct zcsr_gl_renderer {
     unsigned int l2d_geo_tex_vbo;
     int l2d_geo_tex_loc_cam, l2d_geo_tex_loc_ppu, l2d_geo_tex_loc_k, l2d_geo_tex_loc_view;
     int l2d_geo_tex_loc_tint, l2d_geo_tex_loc_emissive, l2d_geo_tex_loc_sampler;
+    int l2d_geo_tex_loc_tex_display, l2d_geo_tex_loc_tint_display;
+    int l2d_geo_tex_loc_matrix0, l2d_geo_tex_loc_matrix1, l2d_geo_tex_loc_matrix2;
     /* normal-mapped variant: albedo + tangent-space normal map, TBN in FS */
     unsigned int l2d_geo_nmap_prog;
     unsigned int l2d_geo_nmap_vao;
@@ -321,6 +348,7 @@ struct zcsr_gl_renderer {
         l2d_geo_nmap_loc_view;
     int l2d_geo_nmap_loc_tint, l2d_geo_nmap_loc_emissive,
         l2d_geo_nmap_loc_albedo, l2d_geo_nmap_loc_nmap;
+    int l2d_geo_nmap_loc_tex_display, l2d_geo_nmap_loc_tint_display;
     bool l2d_geo_active;
     GLint l2d_geo_saved_prog, l2d_geo_saved_vao, l2d_geo_saved_vbo;
     GLint l2d_geo_saved_blend, l2d_geo_saved_depth, l2d_geo_saved_cull;
@@ -341,7 +369,7 @@ struct zcsr_gl_renderer {
     GLXContext    glx_context;
     GLXFBConfig   glx_fbconfig;
     int           glx_swap_interval_set;
-#  else
+#  elif defined(ZCSR_LINUX_BACKEND_WAYLAND)
     EGLDisplay egl_display;
     EGLSurface egl_surface;
     EGLContext egl_context;
@@ -378,6 +406,7 @@ void zcsr_gl_platform_set_vsync(zcsr_gl_renderer* r, bool on);
  * fails the renderer: an unknown or software driver stays on the generic path
  * and is only reported in the startup diagnostic. */
 void zcsr_gl_detect_gpu(zcsr_gl_renderer* r);
+void zcsr_gl_detect_capabilities(zcsr_gl_renderer* r);
 
 /* ---- Core (shader/program/VAO/VBO/FBO/white-tex/texture CRUD/clear/set_target) -------------- */
 /* Shared shader helpers (used by both core sprite-program and instanced program). */
@@ -386,11 +415,24 @@ unsigned int zcsr_gl_compile(unsigned int type, const char* src);
 
 bool zcsr_gl_core_init(zcsr_gl_renderer* r);
 void zcsr_gl_core_destroy(zcsr_gl_renderer* r);
+/* Unified linear frame: created after l2d init (the LUT lives there), resized
+ * on demand, encoded once at present/readback. */
+bool zcsr_gl_frame_init(zcsr_gl_renderer* r);
+void zcsr_gl_frame_destroy(zcsr_gl_renderer* r);
+bool zcsr_gl_frame_bind(zcsr_gl_renderer* r);
+bool zcsr_gl_frame_encode(zcsr_gl_renderer* r);
+/* Bind the active target: target==0 means the linear frame, otherwise the
+ * host RTT texture. Applies the matching GL_FRAMEBUFFER_SRGB state. */
+bool zcsr_gl_bind_active_target(zcsr_gl_renderer* r);
 /* glrender_l2d_geo.c: releases the lazily-created geometry program/VAO/VBO
  * (GL context must be current — core destroy runs inside one). */
 void zcsr_gl_l2d_geo_cleanup(zcsr_gl_renderer* r);
 zcsr_gl_tex_entry* zcsr_gl_find_tex(zcsr_gl_renderer* r, zcsr_gl_texture t);
 zcsr_gl_tex_entry* zcsr_gl_free_tex(zcsr_gl_renderer* r);
+/* Path A now renders into the linear frame target, so it accepts only
+ * DISPLAY-encoded textures (sRGB storage, hardware-decoded on sample) and the
+ * renderer's internal white/font textures. */
+bool zcsr_gl_tex_path_a_compatible(const zcsr_gl_renderer* r, zcsr_gl_texture t);
 
 /* ---- Sprite (vertex queue / quad push / draw recording / flush / batch) ------------------- */
 void zcsr_gl_push_vertex(zcsr_gl_renderer* r, float x, float y, float u, float v,
@@ -403,6 +445,11 @@ void zcsr_gl_push_quad_uv(zcsr_gl_renderer* r, zcsr_rectf dst, float rot,
                           float u0, float v0, float u1, float v1,
                           float cr, float cg, float cb, float ca,
                           zcsr_color_mode mode, float amount);
+void zcsr_gl_push_quad_uv_flip(zcsr_gl_renderer* r, zcsr_rectf dst, float rot,
+                               float u0, float v0, float u1, float v1,
+                               float cr, float cg, float cb, float ca,
+                               zcsr_color_mode mode, float amount,
+                               bool flip_x, bool flip_y);
 void zcsr_gl_record_draw(zcsr_gl_renderer* r, unsigned int texture, size_t first, size_t count);
 
 /* ---- Instanced (program/init/destroy/draw/radix sort/state sort) --------------------------- */

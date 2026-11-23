@@ -1,11 +1,22 @@
 #ifndef ZCSR_GL_RENDER_H
 #define ZCSR_GL_RENDER_H
-/* GPU rendering.
+/* GPU rendering — the only runtime 2D renderer.
  * Desktop: OpenGL 3.3 Core. Android: OpenGL ES 3.x.
- * OPTIONAL renderer, beside the existing
- * software/overlay path (which stays unchanged). Implementer: modules/glrender (vendors glad;
- * glad used ONLY inside that module). Includes only shared contracts. No runtime heap: renderer
- * state lives in a caller buffer; GPU memory is the driver's. */
+ *
+ * There is no CPU/software runtime fallback and modules/render no longer
+ * exists. If zcsr_gl_create fails, the caller has no renderer; use the offline
+ * image module for baking, not as a fallback. Implementer: modules/glrender
+ * (vendors glad; glad used ONLY inside that module). Includes only shared
+ * contracts. No runtime heap: renderer state lives in a caller buffer; GPU
+ * memory is the driver's.
+ *
+ * Two paths share this one backend and one linear working space:
+ *   A. screen-space sprites/instances/UI — decoded to linear, painter order.
+ *   B. Light2D G-buffer (RGBA16F linear albedo) + deferred composite — linear
+ *      light, linear composite.
+ * Both write into one RGBA16F linear frame target; zcsr_gl_present/read_rgba
+ * applies the color-pipeline LUT exactly once and writes display-encoded RGBA8.
+ * There is no per-path display encode. See docs/RENDER2D_CONTRACT.md. */
 #include "platform.h"       /* zcsr_surface */
 #include "sprite.h"         /* zcsr_rectf */
 #include "color.h"          /* zcsr_color_mode */
@@ -26,6 +37,20 @@ typedef uint32_t zcsr_gl_texture;                 /* GPU texture handle; 0 = inv
  * never heap-allocated; an oversized static/arena buffer is the intended usage. */
 zcsr_gl_renderer* zcsr_gl_create(zcsr_surface* surface, void* buffer, size_t bytes);
 void              zcsr_gl_destroy(zcsr_gl_renderer*);
+
+/* Renderer backend selection. Only GPU is a usable runtime in 1.0; CPU is a
+ * reserved backend interface, not a second software rasterizer. A caller may
+ * ask for CPU and get NULL with a diagnostic, but it must not silently replace
+ * GPU output with a different-looking LDR path. Both backends, when they
+ * exist, own the same RGBA16F linear frame and the same final LUT encode. */
+typedef enum {
+    ZCSR_RENDER_BACKEND_GPU = 1,
+    ZCSR_RENDER_BACKEND_CPU = 2
+} zcsr_render_backend;
+
+bool zcsr_render_backend_available(zcsr_render_backend backend);
+zcsr_gl_renderer* zcsr_gl_create_with_backend(zcsr_surface* surface, void* buffer,
+                                               size_t bytes, zcsr_render_backend backend);
 
 /* Runtime GPU identity. This is diagnostics only: Intel and AMD integrated GPUs
  * both take the same GL 3.3 Core path, and no renderer algorithm branches on
@@ -69,25 +94,76 @@ typedef struct {
 /* Fills *out from the context that already exists. Returns false for a NULL
  * renderer/out or before context creation; never triggers detection itself. */
 bool zcsr_gl_query_gpu_info(const zcsr_gl_renderer* r, zcsr_gl_gpu_info* out);
-/* Replace the display-transfer algorithm used by the final composite. NULL
- * restores zcsr_color_pipeline_default(). The renderer regenerates its encode
- * LUT; no shader source changes and no engine rebuild of the shader is needed.
- * The descriptor must outlive the renderer (use static storage or the default). */
+
+/* Runtime capability gate. Probed once on the live context at create time;
+ * querying is free and never touches GL. `core_33` is desktop GL >= 3.3,
+ * `gles3` is OpenGL ES >= 3.0. `float_color_buffer` is true only when a real
+ * RGBA16F FBO is reportable complete; `srgb8_color_buffer` probes
+ * SRGB8_ALPHA8 the same way. The unified linear frame requires
+ * `(core_33||gles3) && float_color_buffer` for BOTH Path A and Path B;
+ * Light2D additionally needs `mrt4`. DISPLAY offscreen targets need
+ * `srgb8_color_buffer`. */
+typedef struct zcsr_gl_capabilities {
+    bool core_33;
+    bool gles3;
+    bool float_color_buffer;
+    bool srgb8_color_buffer;
+    bool mrt4;
+    int  max_color_attachments;
+    int  max_draw_buffers;
+} zcsr_gl_capabilities;
+bool zcsr_gl_query_capabilities(const zcsr_gl_renderer* r,
+                                zcsr_gl_capabilities* out);
+/* Compatibility aliases for the unified frame display-transfer LUT. The name
+ * is historical: the pipeline now encodes the whole linear frame (Path A and
+ * Path B), not just Light2D. New code should use
+ * zcsr_gl_l2d_set_color_pipeline from gl_render_light2d_ext.h.
+ * NULL restores zcsr_color_pipeline_default(); the descriptor must outlive
+ * the renderer (use static storage or the default). */
 bool              zcsr_gl_set_color_pipeline(zcsr_gl_renderer*,
                                               const zcsr_color_pipeline_desc* pipeline);
 const zcsr_color_pipeline_desc* zcsr_gl_get_color_pipeline(const zcsr_gl_renderer*);
 void              zcsr_gl_set_vsync(zcsr_gl_renderer*, bool on);
-/* Swap front/back buffers (present). Call after draw_instances when targeting the window. */
+/* Encode the unified linear frame through the color-pipeline LUT and swap.
+ * Call after drawing; no path writes display-encoded pixels before this. */
 void              zcsr_gl_present(zcsr_gl_renderer*);
-/* Clear the window back buffer with a solid RGBA color.
- * Selects the window target; call present() afterwards to display it. */
+/* Read the encoded frame as tightly packed RGBA8, top-to-bottom rows.
+ * Intended for deterministic editor/tool screenshots taken before present().
+ * Caller supplies at least width*height*4 bytes; out_w/out_h may be NULL. */
+bool              zcsr_gl_read_rgba(zcsr_gl_renderer*, void* rgba, size_t bytes,
+                                    int* out_w, int* out_h);
+/* Clear the linear frame with a display-domain RGBA color (decoded once).
+ * Selects the frame target; call present() afterwards to display it. */
 void              zcsr_gl_clear(zcsr_gl_renderer*, float r, float g, float b, float a);
+/* Clear the currently selected render target (linear frame or offscreen
+ * texture) without changing the target. DISPLAY/SRGB targets decode the
+ * display color; LINEAR targets take the values as linear. */
+void              zcsr_gl_clear_target(zcsr_gl_renderer*, float r, float g, float b, float a);
 
-/* Upload 8-bit RGBA pixels to a GPU texture. `linear` = linear filter (else nearest). */
+/* Create/upload an 8-bit RGBA GPU texture.
+ *
+ * zcsr_gl_texture_create is the compatibility entry: DISPLAY color space,
+ * alpha-capable (has_alpha=true), so existing callers keep their old sampling
+ * behavior. DISPLAY is stored as GL_SRGB8_ALPHA8 and decoded by the sampler;
+ * the shader never decodes it a second time. New asset code should use
+ * zcsr_gl_texture_create_ex and declare the actual encoding and whether any
+ * texel has alpha < 1.
+ *
+ * Path A accepts DISPLAY textures only (see texture.h). SRGB and LINEAR are
+ * for the Light2D path B; submitting them through zcsr_gl_submit / instance
+ * draw is rejected rather than silently double-decoded. */
 zcsr_gl_texture   zcsr_gl_texture_create(zcsr_gl_renderer*, const uint8_t* rgba, int w, int h);
+zcsr_gl_texture   zcsr_gl_texture_create_ex(zcsr_gl_renderer*, const uint8_t* rgba,
+                                            int w, int h,
+                                            zcsr_texture_color_space color_space,
+                                            bool has_alpha);
 bool              zcsr_gl_texture_upload(zcsr_gl_renderer*, zcsr_gl_texture, const uint8_t* rgba, int w, int h);
 void              zcsr_gl_texture_filter(zcsr_gl_renderer*, zcsr_gl_texture, bool linear);
 void              zcsr_gl_texture_destroy(zcsr_gl_renderer*, zcsr_gl_texture);
+/* Query renderer-owned metadata. Returns false for a null/destroyed handle. */
+bool              zcsr_gl_texture_query_meta(const zcsr_gl_renderer*, zcsr_gl_texture,
+                                             zcsr_texture_color_space* out_color_space,
+                                             bool* out_has_alpha);
 
 /* One drawable sprite for the batch: GPU texture + dest rect (top-left origin) + rotation about
  * the rect center (radians) + RGBA color modulation (0..1).
@@ -104,7 +180,31 @@ typedef struct {
     float           r, g, b, a;
     zcsr_color_mode mode;   /* default 0 = MULTIPLY (legacy) */
     float           amount; /* blend strength 0..1 for MIX/ADD; ignored by MULTIPLY */
+    /* Explicit mirroring. Negative dst.w/dst.h are normalized by the renderer
+     * into these flags instead of passing negative geometry to GL. */
+    bool            flip_x;
+    bool            flip_y;
 } zcsr_gl_sprite;
+
+/* One arbitrary four-corner screen quad for the batch. Corners are in boundary
+ * order and may form a concave polygon; the renderer chooses the valid
+ * diagonal before emitting two triangles. `tex == 0` uses the internal white
+ * texture, so a scene quad can be flat-tinted without an uploaded texture.
+ * This is the scene quad path. zcsr_gl_instance is still rectangle-only. */
+typedef struct {
+    zcsr_gl_texture tex;
+    float x[4], y[4];          /* screen pixels, top-left origin */
+    float u[4], v[4];          /* matching texture coordinates */
+    float r, g, b, a;
+    zcsr_color_mode mode;
+    float amount;
+} zcsr_gl_quad;
+
+/* Append one arbitrary quad to the current batch. Enqueue-only; draw happens
+ * at flush. Returns false for a NULL renderer, non-finite corners, a
+ * degenerate/self-intersecting polygon, or a non-zero texture handle that is
+ * not owned by the renderer. */
+bool zcsr_gl_submit_quad(zcsr_gl_renderer*, const zcsr_gl_quad*);
 
 /* Batched draw. Target throughput: 200..10000 sprites within frame budget.
  * begin() clears the batch; submit() appends one; flush() draws all in one pass.
@@ -188,6 +288,8 @@ typedef struct {
     float r, g, b, a;
     zcsr_color_mode   mode;
     float             amount;
+    bool              flip_x;
+    bool              flip_y;
 } zcsr_gl_atlas_sprite;
 
 /* Batched draw for atlas sprites. Same begin/flush semantics as submit_batch; all sprites that
@@ -196,9 +298,14 @@ void zcsr_gl_submit_atlas_batch(zcsr_gl_renderer*, const zcsr_gl_atlas_sprite* s
 
 /* ---- Instanced rendering ----------------------------------------------------------------------
  * One draw call (glDrawElementsInstanced) expands a single unit quad into N instances. Only the
- * per-instance data is uploaded (60 bytes each), instead of 6 full vertices per sprite (216 bytes),
+ * per-instance data is uploaded (168 bytes each), instead of 6 full vertices per sprite (216 bytes),
  * so both CPU vertex setup and GPU transfer shrink. The rotation/quad expansion moves into the
- * vertex shader. Best for large counts of same-texture sprites. */
+ * vertex shader. Best for large counts of same-texture sprites.
+ *
+ * Contract: each instance is an axis-aligned rectangle plus one rotation about its center. It is
+ * NOT an arbitrary quad and does not carry pivot, layer or ground-sort keys. The separate
+ * zcsr_gl_quad path handles arbitrary and concave four-corner scene quads; do not overload this
+ * struct. */
 typedef struct {
     float cx, cy;          /* center position (pixels) */
     float w, h;            /* size (pixels) */
@@ -207,12 +314,20 @@ typedef struct {
     float rotation;        /* radians, about the center */
     float amount;          /* blend strength for MIX/ADD */
     float mode;            /* zcsr_color_mode as float */
+    zcsr_color_transform recolor; /* material-masked hue/chroma/emissive transform; zero = unchanged */
     uint32_t tex;          /* CPU-only: texture handle, used for sorting into runs */
-    float z;               /* CPU-only: depth/layer; larger = farther, drawn first (painter's) */
+    float z;               /* CPU-only painter order; larger = farther, drawn first.
+                            * This is not a layer id, not a ground-sort key and not
+                            * a depth buffer. A 2.5D scene needs its own layer and
+                            * ground-sort contract. */
     bool has_alpha;        /* CPU-only: texture has non-opaque pixels; sort as translucent.
                             * Do not set this for fully opaque textures: it changes batching. */
     /* 约束：z 值必须为非 NaN 的有限浮点数。若传入 NaN，排序行为未定义。 */
-} zcsr_gl_instance;        /* 15 float attrs + uint32 + float + bool = 72 bytes; tex/z/has_alpha are CPU-only */
+} zcsr_gl_instance;        /* 39 float attrs + uint32 + float + bool = 168 bytes; tex/z/has_alpha are CPU-only */
+
+/* Canonical concept name for the same data. Use this when the point is the
+ * rectangle shape, not a sprite; zcsr_gl_instance remains the legacy name. */
+typedef zcsr_gl_instance zcsr_gl_rectangle_instance;
 
 /* Draw `count` instances sharing one bound texture. Instances are drawn in
  * submission order (no sorting); the implementation splits requests larger than
@@ -224,6 +339,17 @@ typedef struct {
  * zcsr_gl_submit_sorted_runs. */
 size_t zcsr_gl_draw_instances(zcsr_gl_renderer*, zcsr_gl_texture texture,
                               const zcsr_gl_instance* instances, size_t count);
+
+/* Bind the shared 1D ramp atlas used by zcsr_color_transform.ramp_row. The
+ * atlas is a normal Path A DISPLAY texture whose rows are independent
+ * display-domain gradients (row 0 is the first gradient). The sRGB sampler
+ * decodes each row once, so the shader receives linear ramp colors without a
+ * second decode. `rows` must be >= 1 and <= the texture height. Passing
+ * texture=0 clears the binding; instances with ramp_amount > 0 then fail
+ * validation instead of silently sampling an unbound unit. This is renderer
+ * state, not per-instance state: a frame that needs more than one atlas must
+ * split its draws by atlas (or use one shared atlas). */
+void zcsr_gl_set_color_ramp(zcsr_gl_renderer*, zcsr_gl_texture texture, int rows);
 
 /* Diagnostic switch: when disabled, draw_instances skips the per-frame
  * glBufferSubData and reuses the VBO contents already uploaded. Used to
@@ -291,7 +417,13 @@ size_t zcsr_gl_submit_sorted_runs(zcsr_gl_renderer*, const zcsr_gl_sorted_run* r
  * Returns the number of opaque instances. After sorting:
  *   - draw [0, opaque) via texture runs (zcsr_instance_run / zcsr_gl_draw_instances),
  *   - draw [opaque, count) in array order, grouping only adjacent same-texture instances.
- * `temp` is caller scratch (>= count * sizeof instance). */
+ * `temp` is caller scratch (>= count * sizeof instance).
+ *
+ * IMPORTANT: this is a state/batching sort, not a 2.5D scene ground sort.
+ * Opaque instances are reordered by texture, so their original order is not
+ * preserved. A scene that needs stable y-sort across opaque quads must build
+ * its own stable order and submit it through zcsr_gl_submit_sorted_runs; do not
+ * use zcsr_sort_state / zcsr_gl_submit_state as the scene sorter. */
 size_t zcsr_sort_state(zcsr_gl_instance* instances, size_t count, void* temp, size_t temp_bytes,
                        size_t* out_opaque);
 
@@ -348,12 +480,24 @@ bool zcsr_gl_texture_upload_region(zcsr_gl_renderer*,
                                     const uint8_t* rgba);
 
 /* Enqueue a sprite from an atlas texture with explicit UV coordinates.
- * Enqueue-only; actual draw at flush. MULTIPLY color mode. */
+ * Enqueue-only; actual draw at flush. MULTIPLY color mode, no rotation/flip.
+ * Kept for existing callers; new atlas code should use the rotation/flip entry
+ * below so an atlas sprite and a whole-texture sprite no longer silently differ. */
 void zcsr_gl_queue_atlas_sprite(zcsr_gl_renderer*,
                                  zcsr_gl_texture atlas,
                                  float dx, float dy, float dw, float dh,
                                  float u0, float v0, float u1, float v1,
                                  float r, float g, float b, float a);
+
+/* Atlas sub-rect with the same rotation-about-center and explicit mirroring as
+ * zcsr_gl_submit. Negative dw/dh are normalized into flip_x/flip_y. */
+void zcsr_gl_queue_atlas_sprite_rot(zcsr_gl_renderer*,
+                                     zcsr_gl_texture atlas,
+                                     float dx, float dy, float dw, float dh,
+                                     float rotation,
+                                     float u0, float v0, float u1, float v1,
+                                     float r, float g, float b, float a,
+                                     bool flip_x, bool flip_y);
 
 /* Enqueue a filled circle. segments clamped to [32, 256].
  * Enqueue-only; uses white texture, MULTIPLY mode.

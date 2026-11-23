@@ -32,6 +32,9 @@
 #ifndef GL_DRAW_FRAMEBUFFER
 #define GL_DRAW_FRAMEBUFFER 0x8CA9
 #endif
+#ifndef GL_FRAMEBUFFER_BINDING
+#define GL_FRAMEBUFFER_BINDING 0x8CA6
+#endif
 
 #include <math.h>
 #include <stddef.h>
@@ -136,24 +139,20 @@ static unsigned int zcsr_l2d_make_deferred_program(void) {
         "uniform sampler2D u_Albedo;   /* unit 4 */\n"
         "uniform sampler2D u_Emissive; /* unit 7, HDR RGBA16F */\n"
         "uniform sampler2D u_Light;    /* unit 8, accumulated light buffer */\n"
-        "uniform sampler2D u_ColorLut; /* unit 9, replaceable display-transfer LUT */\n"
         "uniform vec3 u_Ambient;\n"
+        "uniform float u_Exposure; /* linear-light exposure, applied before tonemap */\n"
+        "uniform float u_AmbientScale; /* 1 - global AO; does not touch direct light */\n"
         "out vec4 o_color;\n"
-        "vec3 display_encode(vec3 x){\n"
-        "  x = clamp(x, vec3(0.0), vec3(1.0));\n"
-        "  /* No transfer formula here: sample the algorithm-owned LUT. */\n"
-        "  return vec3(texture(u_ColorLut, vec2(x.r, 0.5)).r,\n"
-        "              texture(u_ColorLut, vec2(x.g, 0.5)).r,\n"
-        "              texture(u_ColorLut, vec2(x.b, 0.5)).r);\n"
-        "}\n"
         "void main(){\n"
         "  vec3 albedo = texture(u_Albedo, v_uv).rgb;\n"
         "  vec3 emissive = texture(u_Emissive, v_uv).rgb;\n"
         "  vec3 light = texture(u_Light, v_uv).rgb;\n"
-        "  /* G0 is GL_SRGB8_ALPHA8: hardware already decodes albedo to linear RGB. */\n"
-        "  vec3 lit = albedo * (emissive + light + u_Ambient);\n"
-        "  vec3 mapped = lit / (lit + vec3(1.0));\n"
-        "  o_color = vec4(display_encode(mapped), 1.0);\n"
+        "  /* G0 is linear RGBA16F: no implicit sRGB decode on sample. */\n"
+        "  vec3 lit = albedo * (emissive + light + u_Ambient * u_AmbientScale);\n"
+        "  vec3 exposed = lit * u_Exposure;\n"
+        "  vec3 mapped = exposed / (exposed + vec3(1.0));\n"
+        "  /* Keep the composite linear; the unified frame pass encodes once. */\n"
+        "  o_color = vec4(mapped, 1.0);\n"
         "}\n";
     return zcsr_l2d_link_program("light2d deferred program link failed", vs, fs);
 }
@@ -162,7 +161,8 @@ static unsigned int zcsr_l2d_make_bloom_program(void) {
     /* Bloom composite variant (reference CameraDefer2DBloomPass): the light and
      * emissive buffers get a 9-tap weighted blur; the blur's HDR brightness
      * gates how much of the blurred color replaces the sharp sample, then the
-     * same linearize/tonemap/gamma composite. */
+     * same linear tonemap composite. The unified frame pass applies display
+     * transfer once. */
     static const char* vs =
         ZCSR_GL_GLSL_VERSION
         "layout(location=0) in vec2 a_pos;\n"
@@ -178,9 +178,10 @@ static unsigned int zcsr_l2d_make_bloom_program(void) {
         "uniform sampler2D u_Albedo;   /* unit 4 */\n"
         "uniform sampler2D u_Emissive; /* unit 7, HDR RGBA16F */\n"
         "uniform sampler2D u_Light;    /* unit 8, accumulated light buffer */\n"
-        "uniform sampler2D u_ColorLut; /* unit 9, replaceable display-transfer LUT */\n"
         "uniform vec2 u_LightRes;      /* light buffer size for the tap step */\n"
         "uniform vec3 u_Ambient;\n"
+        "uniform float u_Exposure;\n"
+        "uniform float u_AmbientScale;\n"
         "out vec4 o_color;\n"
         "vec3 bloom9(sampler2D t, vec2 uv){\n"
         "  vec2 st = vec2(1.5) / max(u_LightRes, vec2(1.0));\n"
@@ -199,20 +200,16 @@ static unsigned int zcsr_l2d_make_bloom_program(void) {
         "  vec3 rgb = texture(t, uv).rgb;\n"
         "  return lum * blur + (1.0 - lum) * rgb;\n"
         "}\n"
-        "vec3 display_encode(vec3 x){\n"
-        "  x = clamp(x, vec3(0.0), vec3(1.0));\n"
-        "  /* No transfer formula here: sample the algorithm-owned LUT. */\n"
-        "  return vec3(texture(u_ColorLut, vec2(x.r, 0.5)).r,\n"
-        "              texture(u_ColorLut, vec2(x.g, 0.5)).r,\n"
-        "              texture(u_ColorLut, vec2(x.b, 0.5)).r);\n"
-        "}\n"
         "void main(){\n"
         "  vec3 albedo = texture(u_Albedo, v_uv).rgb;\n"
-        "  /* G0 is GL_SRGB8_ALPHA8: hardware already decodes albedo to linear RGB. */\n"
+        "  /* G0 is linear RGBA16F: no implicit sRGB decode on sample. */\n"
         "  vec3 lit = albedo * (bloom9(u_Emissive, v_uv)\n"
-        "                       + bloom9(u_Light, v_uv) + u_Ambient);\n"
-        "  vec3 mapped = lit / (lit + vec3(1.0));\n"
-        "  o_color = vec4(display_encode(mapped), 1.0);\n"
+        "                       + bloom9(u_Light, v_uv)\n"
+        "                       + u_Ambient * u_AmbientScale);\n"
+        "  vec3 exposed = lit * u_Exposure;\n"
+        "  vec3 mapped = exposed / (exposed + vec3(1.0));\n"
+        "  /* Keep the composite linear; the unified frame pass encodes once. */\n"
+        "  o_color = vec4(mapped, 1.0);\n"
         "}\n";
     return zcsr_l2d_link_program("light2d bloom program link failed", vs, fs);
 }
@@ -607,18 +604,55 @@ static bool zcsr_l2d_color_lut_rebuild(zcsr_gl_renderer* r,
     return true;
 }
 
-bool zcsr_gl_set_color_pipeline(zcsr_gl_renderer* renderer,
-                                const zcsr_color_pipeline_desc* pipeline) {
-    if (renderer == NULL || !zcsr_gl_make_current(renderer)) return false;
+/* The geometry input contract is a hard-coded sRGB decode in the tex/nmap
+ * shaders and the shared color_pipeline decoder on the CPU flat path. A custom
+ * descriptor may replace the final display encode, but not the inverse curve:
+ * otherwise geometry decodes with one transfer and composite encodes with
+ * another, and the pair is not round-trip. Validate the decode half against
+ * the built-in sRGB decoder at fixed sample points before accepting it. */
+static bool zcsr_l2d_pipeline_input_is_srgb(const zcsr_color_pipeline_desc* pipeline) {
+    const zcsr_color_pipeline_desc* srgb = zcsr_color_pipeline_default();
+    int i;
+    if (pipeline == NULL || pipeline->to_display == NULL ||
+        pipeline->to_linear == NULL || srgb == NULL ||
+        srgb->to_linear == NULL) {
+        return false;
+    }
+    for (i = 0; i <= 32; ++i) {
+        float v = (float)i / 32.0f;
+        float a = pipeline->to_linear(v);
+        float b = srgb->to_linear(v);
+        if (!isfinite(a) || !isfinite(b) || fabsf(a - b) > 1e-4f) return false;
+    }
+    return true;
+}
+
+bool zcsr_gl_l2d_set_color_pipeline(zcsr_gl_renderer* renderer,
+                                    const zcsr_color_pipeline_desc* pipeline) {
+    if (renderer == NULL) return false;
     if (pipeline == NULL) pipeline = zcsr_color_pipeline_default();
+    if (!zcsr_l2d_pipeline_input_is_srgb(pipeline)) return false;
+    if (!zcsr_gl_make_current(renderer)) return false;
     return zcsr_l2d_color_lut_rebuild(renderer, pipeline);
 }
 
-const zcsr_color_pipeline_desc* zcsr_gl_get_color_pipeline(const zcsr_gl_renderer* renderer) {
+const zcsr_color_pipeline_desc* zcsr_gl_l2d_get_color_pipeline(
+    const zcsr_gl_renderer* renderer) {
     if (renderer == NULL || renderer->color_pipeline == NULL) {
         return zcsr_color_pipeline_default();
     }
     return renderer->color_pipeline;
+}
+
+/* Compatibility aliases. The old names implied a global final composite;
+ * they only ever changed the Light2D path-B LUT. */
+bool zcsr_gl_set_color_pipeline(zcsr_gl_renderer* renderer,
+                                const zcsr_color_pipeline_desc* pipeline) {
+    return zcsr_gl_l2d_set_color_pipeline(renderer, pipeline);
+}
+
+const zcsr_color_pipeline_desc* zcsr_gl_get_color_pipeline(const zcsr_gl_renderer* renderer) {
+    return zcsr_gl_l2d_get_color_pipeline(renderer);
 }
 
 bool zcsr_gl_l2d_init(zcsr_gl_renderer* r) {
@@ -642,7 +676,6 @@ bool zcsr_gl_l2d_init(zcsr_gl_renderer* r) {
     r->l2d_deferred_loc_lightdata = glGetUniformLocation(r->l2d_prog_deferred, "u_LightData");
     r->l2d_deferred_loc_lightcolor = glGetUniformLocation(r->l2d_prog_deferred, "u_LightColor");
     r->l2d_deferred_loc_light = glGetUniformLocation(r->l2d_prog_deferred, "u_Light");
-    r->l2d_deferred_loc_color_lut = glGetUniformLocation(r->l2d_prog_deferred, "u_ColorLut");
 
     r->l2d_prog_bloom = zcsr_l2d_make_bloom_program();
     if (!r->l2d_prog_bloom) return false;
@@ -651,7 +684,7 @@ bool zcsr_gl_l2d_init(zcsr_gl_renderer* r) {
     r->l2d_bloom_loc_emissive = glGetUniformLocation(r->l2d_prog_bloom, "u_Emissive");
     r->l2d_bloom_loc_light = glGetUniformLocation(r->l2d_prog_bloom, "u_Light");
     r->l2d_bloom_loc_lightres = glGetUniformLocation(r->l2d_prog_bloom, "u_LightRes");
-    r->l2d_bloom_loc_color_lut = glGetUniformLocation(r->l2d_prog_bloom, "u_ColorLut");
+
 
     if (!zcsr_l2d_color_lut_rebuild(r, zcsr_color_pipeline_default())) return false;
 
@@ -714,13 +747,11 @@ bool zcsr_gl_l2d_init(zcsr_gl_renderer* r) {
     if (r->l2d_deferred_loc_albedo >= 0) glUniform1i(r->l2d_deferred_loc_albedo, 4);
     if (r->l2d_deferred_loc_emissive >= 0) glUniform1i(r->l2d_deferred_loc_emissive, 7);
     if (r->l2d_deferred_loc_light >= 0) glUniform1i(r->l2d_deferred_loc_light, 8);
-    if (r->l2d_deferred_loc_color_lut >= 0) glUniform1i(r->l2d_deferred_loc_color_lut, 9);
     glUseProgram(0);
     glUseProgram(r->l2d_prog_bloom);
     if (r->l2d_bloom_loc_albedo >= 0) glUniform1i(r->l2d_bloom_loc_albedo, 4);
     if (r->l2d_bloom_loc_emissive >= 0) glUniform1i(r->l2d_bloom_loc_emissive, 7);
     if (r->l2d_bloom_loc_light >= 0) glUniform1i(r->l2d_bloom_loc_light, 8);
-    if (r->l2d_bloom_loc_color_lut >= 0) glUniform1i(r->l2d_bloom_loc_color_lut, 9);
     glUseProgram(0);
     glUseProgram(r->l2d_prog_light);
     if (r->l2d_light_loc_normal >= 0) glUniform1i(r->l2d_light_loc_normal, 6);
@@ -850,8 +881,13 @@ bool zcsr_gl_l2d_target_create(zcsr_gl_renderer* renderer,
 
     if (renderer == NULL || out_target == NULL || formats == NULL) return false;
     if (width <= 0 || height <= 0) return false;
-    if (attachment_count == 0u ||
-        attachment_count > (size_t)ZCSR_GL_L2D_MAX_ATTACHMENTS) return false;
+    if (attachment_count != 4u) return false;
+    if (formats[0] != ZCSR_GL_L2D_FORMAT_RGBA16F ||
+        formats[1] != ZCSR_GL_L2D_FORMAT_RGBA16F ||
+        formats[2] != ZCSR_GL_L2D_FORMAT_RGBA8 ||
+        formats[3] != ZCSR_GL_L2D_FORMAT_RGBA16F) {
+        return false;
+    }
 
     for (i = 0u; i < (size_t)ZCSR_GL_L2D_MAX_TARGETS; ++i) {
         if (!renderer->l2d_targets[i].in_use) {
@@ -1019,9 +1055,9 @@ bool zcsr_gl_l2d_gbuffer_begin(zcsr_gl_renderer* renderer,
     if (!zcsr_gl_make_current(renderer)) return false;
 
     glBindFramebuffer(GL_FRAMEBUFFER, slot->fbo);
-    /* G0 is GL_SRGB8_ALPHA8. Geometry shader writes display-domain albedo values
-     * that must be stored verbatim (hardware decodes on sample, not on write).
-     * Explicitly disable GL_FRAMEBUFFER_SRGB so the driver does not re-encode. */
+    /* G0 is linear RGBA16F, so geometry writes linear RGB verbatim and the
+     * composite samples it without a decode step. GL_FRAMEBUFFER_SRGB is
+     * disabled because none of the G-buffer attachments are sRGB-encoded. */
     glDisable(GL_FRAMEBUFFER_SRGB);
     /* Draw-buffer order is the contract order: Albedo, Position, Normal, Emissive. */
     glDrawBuffers((GLsizei)slot->attachments, draw_buffers);
@@ -1035,17 +1071,34 @@ bool zcsr_gl_l2d_gbuffer_begin(zcsr_gl_renderer* renderer,
     return true;
 }
 
+bool zcsr_gl_l2d_gbuffer_is_bound(zcsr_gl_renderer* renderer) {
+    GLint bound_fbo = 0;
+    size_t i;
+    if (renderer == NULL) return false;
+    if (!zcsr_gl_make_current(renderer)) return false;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &bound_fbo);
+    if (bound_fbo == 0) return false;
+    for (i = 0u; i < (size_t)ZCSR_GL_L2D_MAX_TARGETS; ++i) {
+        const zcsr_gl_l2d_mrt* slot = &renderer->l2d_targets[i];
+        if (!slot->in_use || slot->fbo != (unsigned int)bound_fbo) continue;
+        return slot->attachments == 4 &&
+               slot->iformat[0] == GL_RGBA16F &&
+               slot->iformat[1] == GL_RGBA16F &&
+               slot->iformat[2] == GL_RGBA8 &&
+               slot->iformat[3] == GL_RGBA16F;
+    }
+    return false;
+}
+
 bool zcsr_gl_l2d_bind_default_target(zcsr_gl_renderer* renderer,
                                      int width,
                                      int height) {
     if (renderer == NULL || width <= 0 || height <= 0) return false;
     if (!zcsr_gl_make_current(renderer)) return false;
-    /* Public contract: the HIGH composite goes to the default window target only. */
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    /* Default framebuffer is not sRGB-capable (no WGL_ARB_framebuffer_sRGB
-     * pixel format requested). The composite samples the color-pipeline LUT
-     * for display encoding. */
-    glDisable(GL_FRAMEBUFFER_SRGB);
+    /* Unified contract: the composite goes to the linear frame target, not the
+     * display backbuffer. zcsr_gl_present/read_rgba performs the single encode. */
+    renderer->target = 0;
+    if (!zcsr_gl_frame_bind(renderer)) return false;
     glViewport(0, 0, width, height);
     return true;
 }
@@ -1337,7 +1390,7 @@ static bool zcsr_l2d_ensure_msaa_target(zcsr_gl_renderer* r, int w, int h) {
     if (rb == 0u) { r->l2d_msaa_samples = 0; return true; }
     glBindRenderbuffer(GL_RENDERBUFFER, rb);
     glRenderbufferStorageMultisample(GL_RENDERBUFFER, r->l2d_msaa_samples,
-                                     GL_RGBA8, w, h);
+                                     GL_RGBA16F, w, h);
     if (glGetError() != GL_NO_ERROR) {
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
         glDeleteRenderbuffers(1, &rb);
@@ -1367,7 +1420,7 @@ static bool zcsr_l2d_ensure_msaa_target(zcsr_gl_renderer* r, int w, int h) {
     return true;
 }
 
-/* Ensures the composite FBO (sRGB-encoded 8-bit result) exists at w x h. */
+/* Ensures the composite FBO (linear RGBA16F result) exists at w x h. */
 static bool zcsr_l2d_ensure_composite_target(zcsr_gl_renderer* r, int w, int h) {
     unsigned int tex = 0;
     if (r->l2d_comp_fbo != 0 && r->l2d_comp_tex != 0 &&
@@ -1381,8 +1434,8 @@ static bool zcsr_l2d_ensure_composite_target(zcsr_gl_renderer* r, int w, int h) 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0,
+                 GL_RGBA, GL_HALF_FLOAT, NULL);
     if (r->l2d_comp_fbo == 0u) glGenFramebuffers(1, &r->l2d_comp_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, r->l2d_comp_fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
@@ -1413,8 +1466,8 @@ bool zcsr_gl_l2d_bind_composite_target(zcsr_gl_renderer* renderer,
     static const GLenum comp_draw = GL_COLOR_ATTACHMENT0;
     glDrawBuffers(1, &comp_draw);
     glViewport(0, 0, width, height);
-    /* Composite shader outputs display-encoded values from the color LUT;
-     * do not let the FBO re-encode. */
+    /* Composite shader outputs linear values; the unified frame pass applies
+     * the display LUT exactly once. Do not let the FBO re-encode. */
     glDisable(GL_FRAMEBUFFER_SRGB);
     GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (st != GL_FRAMEBUFFER_COMPLETE) return false;
@@ -1452,8 +1505,8 @@ bool zcsr_gl_l2d_finalize_composite(zcsr_gl_renderer* renderer,
     }
 
     if (renderer->l2d_post_cb != NULL) {
-        /* Bind default framebuffer so the hook draws directly to screen. */
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        /* The hook draws into the same linear frame target; it must not encode. */
+        if (!zcsr_gl_frame_bind(renderer)) return false;
         glViewport(0, 0, width, height);
         glDisable(GL_FRAMEBUFFER_SRGB);
         /* Expose composite texture on unit 9 without disturbing units 4-8. */
@@ -1466,14 +1519,14 @@ bool zcsr_gl_l2d_finalize_composite(zcsr_gl_renderer* renderer,
     }
 
     if (!hook_ok) {
-        /* No hook (or hook failed): present composite FBO via a textured
-         * fullscreen triangle (glBlitFramebuffer is not in the glad loader). */
+        /* No hook (or hook failed): copy the linear composite into the linear
+         * frame target. The frame pass is the only display encode. */
         static const zcsr_l2d_vertex tri[3] = {
             { -1.0f, -1.0f, 0.0f, 0.0f },
             {  3.0f, -1.0f, 2.0f, 0.0f },
             { -1.0f,  3.0f, 0.0f, 2.0f }
         };
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (!zcsr_gl_frame_bind(renderer)) return false;
         glViewport(0, 0, width, height);
         glDisable(GL_FRAMEBUFFER_SRGB);
         glDisable(GL_BLEND);

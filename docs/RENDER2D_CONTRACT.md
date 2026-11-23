@@ -1,7 +1,7 @@
 # RENDER2D_CONTRACT.md — 2D 渲染基础契约
 
-基线：tag `light2d-baseline-v1.1`，commit `1911e3b`。
-本文记录当前 2D 渲染契约，并与 `LIGHT2D_INTEGRATION.md`、`LIGHT2D_MATH_MODEL.md`、`LIGHT2D_PIPELINE_MAP.md` 交叉引用；公式不在这里重复，条款后的源码位置用于核对。
+基线：当前工作树（GPU-only 运行时 + 保留 CPU 后端接口）；不再引用已漂移的 `1911e3b` 行号。
+本文是 2D 渲染的唯一事实源；与 `LIGHT2D_INTEGRATION.md`、`LIGHT2D_MATH_MODEL.md`、`LIGHT2D_PIPELINE_MAP.md` 交叉引用，冲突时以本文 + 当前符号实现为准。源码位置用于核对，符号/函数名优先于行号。
 
 状态标签（每条必须挂一个）：
 
@@ -17,15 +17,32 @@
 
 ## 0. 两条渲染路径并存（先读这个，再看下面九节）
 
-仓库里同时存在两条互不相同的 2D 渲染路径，后面所有契约都在这两条之上：
+仓库里同时存在两条互不相同的 2D 渲染提交路径，但它们共享同一个线性工作空间：
 
 - 路径 A — 立即精灵/UI 路径：`modules/glrender/glrender_core.c` + `glrender_sprite.c` + `glrender_instanced.c`。
-  屏幕像素空间，`glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` 直混合
-  （`glrender_core.c:264-265`），左上原点 dst rect（`include/zcsr/gl_render.h:41`）。
-  **不进 Light2D G-buffer，不受光照。**
+  屏幕像素空间，左上原点 dst rect（`include/zcsr/gl_render.h`）。纹理在采样器
+  解码到线性，tint/常量在 shader 解码，按 painter order 写入 **RGBA16F 线性帧目标**，
+  再按 straight-alpha 在线性域混合。**不进 Light2D G-buffer，不受光照。**
 - 路径 B — Light2D 延迟光照路径：`modules/glrender/glrender_l2d_geo.c` + `modules/light2d/light2d.c`
   + `glrender_light2d_ext.c`。世界空间凸四边形进 MRT G-buffer，blend/depth 全关，
-  painter's order（`glrender_l2d_geo.c:291-293`）。
+  painter's order。合成结果先写线性 composite（RGBA16F），再写同一个线性帧目标。
+
+- [FROZEN] **全引擎统一线性工作空间**：Path A 和 Path B 都写入
+  `zcsr_gl_renderer.frame_tex`（RGBA16F 线性）；`zcsr_gl_present` / `zcsr_gl_read_rgba`
+  通过 `zcsr_color_pipeline` LUT 只编码一次到显示域。任何路径都不再直写默认
+  framebuffer，也不在合成 FS 里各自 encode。证据：`glrender_core.c`
+  `zcsr_gl_frame_bind/encode`、`glrender.c` `zcsr_gl_present/read_rgba`、
+  `glrender_light2d_ext.c` composite 输出 `vec4(mapped,1.0)`。
+- [CURRENT-LIMITED] 统一线性帧要求设备能创建 `RGBA16F` 颜色附件；不满足时
+  `zcsr_gl_create` 直接失败，不退回显示域直写。1.0 的最低 GPU 契约因此包含
+  float color buffer。
+- [FROZEN] 后端选择接口：`zcsr_render_backend_available(GPU)` 为 true，
+  `zcsr_render_backend_available(CPU)` 为 false；
+  `zcsr_gl_create_with_backend(..., CPU)` 返回 NULL 并输出诊断。
+  1.0 只有 GPU 一个可用运行时；CPU 只是同名接口位，不做第二套软件光栅器。
+  两者若都存在，也必须共用同一个 RGBA16F 线性帧和同一次最终 LUT encode。
+  证据：`gl_render.h` 的 `zcsr_render_backend`；`glrender.c`
+  `zcsr_gl_create_with_backend`；`test_glrender.c` 的 GPU-only 断言。
 
 `modules/sprite/sprite.c` 的 `zcsr_sprite_draw` 是个桥：把世界 (x,y) 在 wz=0 投成屏幕像素后
 喂路径 A（`sprite.c:23-48`）。所以**现有地面精灵画在合成结果之上，不受点光照射**——这是现状，
@@ -36,22 +53,37 @@
 
 ## 1. 颜色空间与材质语义
 
-- [FROZEN] 纹理以普通 `GL_RGBA` 内部格式上传，GPU 不做 sRGB 解码。
-  证据：`glrender_core.c:313`、`:330`（`glTexImage2D(..., GL_RGBA, ..., GL_UNSIGNED_BYTE, rgba)`）。
-- [FROZEN] Light2D 路径 B 的 Albedo 线性化点 = 合成 FS 内 `pow(albedo, vec3(2.2))`，deferred 与 bloom
-  两个变体同一处。**本规则只描述 Light2D 的 G-buffer 合成路径，不适用于路径 A 的立即 Sprite/UI**——
-  路径 A 直写默认目标，不做这个 pow。禁止在 Light2D geo 纹理路径再解一次 sRGB。
-  证据：`glrender_light2d_ext.c:126`（deferred）、`:176`（bloom）；契约原文 `gl_render_l2d_geo.h:82-85`。
-- [FROZEN] Light2D 路径 B 的输出编码 = 同一合成 FS 内 `pow(mapped, 1/2.2)`，tonemap `x/(x+1)` 也在同一 FS，
-  无独立后处理 pass。**该输出编码规则不代表路径 A 有相同的颜色转换流程**。
-  证据：`glrender_light2d_ext.c:128-129`、`:179-180`。
-- [FROZEN] tint 与平色 albedo_rgba 实际在**显示域(gamma)**与纹理想素逐通道相乘，乘积直写 RGBA8 G0，
-  合成时才整体 pow2.2——不是线性空间乘子。v1.1 已裁决旧头文件"linear"标注为错误描述。
-  证据：FS `vec4 rgba = texture(u_tex, v_uv) * u_tint;`（`glrender_l2d_geo.c:91`）；
-  公开契约 `gl_render_l2d_geo.h:23-26`（平色）、`:75-78`（tint）。
-- [FROZEN] tint/albedo 乘积 >1 被 RGBA8 截断到 1.0，G0 路径不承载 HDR。
-  证据：G0 = RGBA8（`glrender_light2d_ext.c:724`）；头文件明说 `>1 is clamped by RGBA8`（`gl_render_l2d_geo.h:26`）。
-- [FROZEN] HDR>1 只在 RGBA16F 附件上保留：G3 Emissive、光累积缓冲。
+- [FROZEN] 默认纹理上传 = `GL_SRGB8_ALPHA8`（`ZCSR_COLOR_SPACE_DISPLAY`），
+  采样器硬件解码到线性；shader 不再对 DISPLAY texel 二次解码。需要线性数据时用
+  `zcsr_gl_texture_create_ex(..., ZCSR_COLOR_SPACE_LINEAR, ...)` 上传为 `GL_RGBA8`；
+  `ZCSR_COLOR_SPACE_SRGB` 同样使用 sRGB8 存储。
+  证据：`glrender_core.c` 的 `zcsr_gl_texture_create_ex` / `zcsr_gl_internal_format`。
+- [CURRENT] 渲染器固定纹理池为 256 个槽（`ZCSR_GL_MAX_TEXTURES`），纹理 handle→槽索引
+  是 512 槽开放寻址表。池满时 `zcsr_gl_texture_create_ex` 返回 0；调用方必须显式处理上传失败。
+  证据：`glrender_internal.h`、`glrender_core.c`。
+- [FROZEN] Light2D 路径 B 的 Albedo 线性化点 = 几何提交边界：flat 常量由 CPU
+  在提交边界显式 sRGB 解码；DISPLAY/SRGB 纹理由采样器硬件解码；LINEAR 数据不解码；
+  DISPLAY tint 由 geometry shader 显式 sRGB 解码；G0 是 `GL_RGBA16F` 线性附件，
+  合成 FS 采样时不再有隐式解码。
+  证据：`light2d.c` 的 `zcsr_l2d_gbuffer_formats`；`glrender_l2d_geo.c` 的
+  `geo_fs` / `geo_tex_fs` / `geo_nmap_fs`。
+- [FROZEN] 全帧输出编码 = `zcsr_gl_present/read_rgba` 采样
+  `zcsr_color_pipeline` 生成的 LUT，一次写显示域 RGBA8；采样 LUT 前先对 RGBA16F 做一次
+  HDR tonemap（`m<=1` 时不改，`m>1` 时按最大通道归一压缩），再 encode。Light2D composite FS
+  只输出线性结果 `vec4(mapped,1.0)`，不再自己 encode。
+  证据：`glrender_core.c` `zcsr_gl_frame_encode`、`glrender_light2d_ext.c`
+  `zcsr_l2d_make_deferred_program` / `zcsr_l2d_make_bloom_program`。
+- [FROZEN] 路径 B 的 tint 默认仍是显示域乘子（`zcsr_gl_l2d_geo_tex_face`），
+  shader 显式解码到线性后写入 G0；要线性 tint 用
+  `zcsr_gl_l2d_geo_tex_face_ex(..., ZCSR_L2D_TINT_LINEAR, ...)` 配 LINEAR 源纹理。
+  新增的可选 per-object 3x3 矩阵也在该 extended 入口，按行主序传入，shader 内在线性域应用。
+  证据：`glrender_l2d_geo.c` `geo_tex_fs` / `geo_tex_face_impl`。
+- [FROZEN] flat albedo 仍按显示域常量接收，由 CPU 在提交边界解码；G0 支持 >1，
+  但显示域输入解码后被 clamp 到 1.0。3x3 矩阵输出可超过 1 并由 RGBA16F 保留。
+  证据：G0 = `GL_RGBA16F`（`light2d.c` 的 `zcsr_l2d_gbuffer_formats`）；
+  头文件 `gl_render_l2d_geo.h` 的 face 语义。
+- [FROZEN] HDR>1 在 RGBA16F 附件上保留：G0 Albedo、G1 Position、G3 Emissive、
+  光累积缓冲。
   证据：`glrender_light2d_ext.c:726`（G1/G3 用 RGBA16F）、`:1141`（光缓冲 RGBA16F）。
 - [CURRENT-LIMITED] `zcsr_light.rgb` 注释声明为 linear light 颜色，`a` 为逐光强度，允许 >1。
   证据：`include/zcsr/light2d.h:39-42`。限制：进入光缓冲后仍走同一合成公式，
@@ -61,12 +93,20 @@
   证据：`glrender_light2d_ext.c:127`（deferred）、`:177-178`（bloom 对 E 也做 9-tap 后放进同一括号）。
 - [PROPOSED] 独立加性自发光 `C = albedo_lin*(light+ambient) + emissive_lin`——未实现，触发条件=真实自发光需求，
   届时必须重跑合成回归。依据：`LIGHT2D_MATH_MODEL.md` §4.4。
-- [UNSUPPORTED] 法线贴图、粗糙度图、金属度图、遮罩图——材质通道里没有这些采样器，FS 只有 u_tex/u_tint/u_emissive。
-  证据：`glrender_l2d_geo.c:83-85`。
-- [UNSUPPORTED] sRGB 上传格式（`GL_SRGB8`/`GL_SRGB8_ALPHA8`）——全仓 `glTexImage2D` 内部格式只有
-  `GL_RGBA`/`GL_RGBA16F`/`GL_R8`（`glrender_core.c:313,330`；`glrender_light2d_ext.c:421,1109,1141`）。
-  未来要线性材质流必须改这里，不要假定 GPU 已经在解码。
-- [FROZEN] 环境光固定 `vec3(0.03)`。证据：`modules/light2d/light2d.c:783`。
+- [CURRENT-LIMITED] 法线贴图已有 `zcsr_gl_l2d_geo_nmap_face`（albedo + tangent-space
+  法线，TBN 在 FS 内构建）；粗糙度/金属度/遮罩图仍未支持。
+  证据：`glrender_l2d_geo.c` `geo_nmap_*`。
+- [FROZEN] 纹理存储格式由 `zcsr_gl_texture_create_ex` 显式选择：DISPLAY/SRGB →
+  `GL_SRGB8_ALPHA8`（采样器解码），LINEAR → `GL_RGBA8`。路径 A 只接受
+  `ZCSR_COLOR_SPACE_DISPLAY`；路径 B 可用 SRGB/LINEAR。默认
+  `zcsr_gl_texture_create` 仍是 DISPLAY + alpha-capable，兼容旧调用。
+  证据：`glrender_core.c`、`gl_render.h`。
+- [FROZEN] 环境光默认 `vec3(0.03)`，可通过 `zcsr_light2d_set_environment` 改为任意
+  非负线性 RGB；`ambient_occlusion` 只乘环境光，`exposure` 在 tonemap 前相乘。
+  证据：`modules/light2d/light2d_environment.c`、`light2d.c` 合成 uniform。
+- [FROZEN] 太阳是 scene environment 的一等平行光，不占光槽；HIGH/ULTRA 消费，
+  LOW/MEDIUM 明确忽略。平行光影长由 `dir_z` 推导，`cast_shadow=false` 关闭其掩码。
+  证据：`include/zcsr/light2d.h`、`light2d.c` `zcsr_l2d_draw_high`。
 
 ---
 
@@ -94,8 +134,9 @@
   `zcsr_gl_draw_text` 也是屏幕像素（`gl_render.h:70-72`）。
 - [CURRENT-LIMITED] "Tile 尺寸"目前不是引擎概念；唯一参考量是默认 128px/unit。
   没有 Tilemap、没有 tile-pixels-per-unit 配置。证据：全仓无 tile 模块；默认相机注释 `light2d.h:67`。
-- [CURRENT-LIMITED] 现有 GL 精灵不带高度：`zcsr_sprite_draw` 写死 `wz=0.0f` 投影。
-  证据：`sprite.c:23`。要带高度精灵是新需求。
+- [FROZEN] 现有 GL 精灵带显式高度入口：`zcsr_sprite_draw_at_height`；
+  `zcsr_sprite_draw` 是它的 `ground_z = 0` 兼容包装，lit 路径用同名 `ground_z`。
+  证据：`sprite.c`、`sprite.h`。
 - [UNSUPPORTED] 相机旋转、透视、矩阵栈——camera.h 明说 "No rotation, no perspective, no matrices"。
   证据：`camera.h:4`。
 
@@ -111,10 +152,13 @@
   两条路径原点不同，不要混用。
 - [FROZEN] Light2D geo 接口不收 pivot/局部原点——宿主自己把精灵局部坐标乘缩放旋转换成**世界角点**
   `corners_xyz[12]` 再提交。证据：`gl_render_l2d_geo.h:20-22`；geo_face 直接吃世界角点（`glrender_l2d_geo.c:351-359`）。
-- [CURRENT-LIMITED] 旋转：整纹理路径绕中心旋转（`sprite.c:34`）；**图集子矩形路径无旋转通道**。
-  证据：`sprite.c:27` 的 if/else 注释 "the atlas queue has no rotation channel"。
-- [UNKNOWN] 镜像/翻转（负 scale_x 或负 scale_y）：`zcsr_transform` 有 scale 分量，`sprite.c:24-25` 直接乘进
-  pw/ph，负宽高在 `zcsr_gl_queue_atlas_sprite` / VS 里的行为无文档、无测试。要做镜像必须先补这条契约。
+- [FROZEN] 旋转：整纹理路径绕中心旋转；图集子矩形用
+  `zcsr_gl_queue_atlas_sprite_rot`，与整纹理路径同一旋转语义。
+  证据：`sprite.c`、`glrender_sprite.c`。
+- [FROZEN] 镜像/翻转：负 `scale_x/scale_y` 由 `zcsr_sprite_draw*` 转成显式
+  `flip_x/flip_y`，渲染器只交换 UV，不向 GL 传负宽高；直接提交
+  `zcsr_gl_sprite/atlas_sprite` 时负 dst.w/h 也按同规则归一化。
+  证据：`glrender_sprite.c` `zcsr_gl_normalize_sprite_rect`。
 - [UNSUPPORTED] 父子变换 / 节点层级：transform 是扁平组件数组，无矩阵栈、无 ECS。
   证据：`transform.h:3` "No manager, no ECS — callers own the arrays"。
 - [UNSUPPORTED] 九宫格（9-slice）拉伸：全仓无 nine/slice 相关代码；图集 region 只有单矩形 uv0/v0/u1/v1
@@ -163,8 +207,25 @@
 - [FROZEN] Light2D geo 路径**无 per-vertex color**：颜色走 uniform u_albedo 或 u_tint（`glrender_l2d_geo.c:39,84`）。
 - [FROZEN] 立即精灵路径顶点格式是另一套：x2 + uv2 + rgba4 + mode2（`glrender_core.c:252-259`），
   与 Light2D geo 不共享 VAO/VBO/attrib 布局。两条路径各自独立，不要在契约里强行统一。
-- [FROZEN] 实例化顶点 `zcsr_gl_instance` = 15 float + uint32 tex + float z + bool has_alpha = 72 字节，
-  tex/z/has_alpha 是 CPU-only 排序键。证据：`include/zcsr/gl_render.h` 的 `zcsr_gl_instance`。
+- [FROZEN] 实例化顶点 `zcsr_gl_instance` = 39 float + uint32 tex + float z + bool has_alpha = 168 字节，
+  tex/z/has_alpha 是 CPU-only 排序键。其中 `recolor` 为 `zcsr_color_transform`（hue、ramp、
+  S/V、glow、emissive、rim 六组标量），零初始化时等价于旧行为。证据：
+  `include/zcsr/gl_render.h` 的 `zcsr_gl_instance`、`include/zcsr/color.h` 的 `zcsr_color_transform`。
+- [FROZEN] Path A 实例的着色顺序固定为：旧 tint/mode（MULTIPLY/MIX/ADD）→ selective HSV hue
+  remap → shared 1D ramp（按线性 luma，只对 hue 源族命中的像素加权；mode 1 只替换 OKLab a/b，
+  保留源 L）→ chroma/value conditioning（S boost/floor、V gain/contrast，同样只对 hue 源族命中的像素加权）
+  → additive glow → HDR emissive core → alpha-rim shell。
+  hue/ramp/chroma/glow/emissive/rim 只在显式 amount>0 时参与；任一阶段开启都不得走
+  multiply-only 快路径。证据：`modules/glrender/glrender_instanced.c` 的实例 fragment shader。
+- [FROZEN] ramp 有两种模式：mode 0 是整个 RGB 行替换（legacy）；mode 1 是材质遮罩的
+  OKLab 色度梯度，只替换 a/b 并按 `ramp_luma` 可选混合 L。全 RGB 替换会覆盖图层明暗，
+  不能用于“保留原画渐变”的材质。ramp 权重额外乘以 hue 命中权重，避免把非同色系的
+  绿叶/茎一起洗成目标色；chroma/value 同样按命中权重混合。ramp 绑定是 `zcsr_gl_set_color_ramp`，
+  必须是 Path A DISPLAY 纹理，`rows` 读取图集高度内的行。
+  证据：同上的 `apply_recolor` 与 `zcsr_gl_set_color_ramp`。
+- [FROZEN] HDR 只在最终显示编码点收一次：Path A 的 emissive 允许写入 >1 的 RGBA16F，
+  `zcsr_gl_frame_encode` 在采样颜色 LUT 前做 `max(0)` + 单次 HDR tonemap，
+  不再在各 sprite shader 里 clamp。证据：`glrender_core.c` 的 `display_encode`。
 - [CURRENT-LIMITED] Light2D geo 路径 = 每面一次 draw call，无合并、无实例化、无跨面批处理。
   证据：`glrender_l2d_geo.c:373,433` 每面独立 draw。
 - [FROZEN] 立即精灵路径批处理：同纹理图集 sprite 合并成一次 draw；实例化路径按纹理 run 分组。
@@ -187,13 +248,16 @@
   证据：`sprite.h:43`；`texture_atlas.h:31-33`。
 - [UNSUPPORTED] 旋转图块（atlas 内 90° 旋转打包）：atlas 打包只做轴对齐 shelf placement，无旋转位。
   证据：`texture_atlas.h:25-28` placement 只有 x/y/w/h。
-- [UNSUPPORTED] 图集子矩形 + 旋转同时：见 §3，`sprite.c:43` 注释明说 atlas queue 无旋转通道。
+- [FROZEN] 图集子矩形 + 旋转：`zcsr_gl_queue_atlas_sprite_rot(..., rotation, ..., flip_x, flip_y)`
+  与整纹理 `zcsr_gl_submit` 同语义；旧 `zcsr_gl_queue_atlas_sprite` 是 rotation=0、无 flip 的兼容包装。
 - [FROZEN] 过滤：创建默认 NEAREST，`zcsr_gl_texture_filter` 可切 LINEAR。
   证据：`glrender_core.c:309-310`（默认创建）、`:322-323`（filter 接口）。
 - [FROZEN] Wrap：全部 `GL_CLAMP_TO_EDGE`，无 REPEAT/MIRROR。
   证据：`glrender_core.c:311-312`、`glrender_light2d_ext.c:419-420,1107-1108,1139-1140`。
-- [UNSUPPORTED] mipmap：全仓无 `glGenerateMipmap`，min_filter 只在 NEAREST/LINEAR 间切（`glrender_core.c:309,322`）。
-  缩小纹理会直接线性取单像素，无 LOD 链。
+- [CURRENT-LIMITED] mipmap：`zcsr_gl_texture_create_ex` 在 `tex_quality >= 2` 时生成
+  mip 链并用 `GL_LINEAR_MIPMAP_LINEAR`；`zcsr_gl_texture_upload` 重传后会重建，
+  生成失败则回退双线性而不是读旧链。`zcsr_gl_texture_filter` 仍可显式切 NEAREST/LINEAR。
+  证据：`glrender_core.c` `zcsr_gl_generate_mips`。
 - [UNKNOWN] 像素对齐（pixel snapping / 整数 PPU 对齐）：无任何 snap 代码或注释，要做必须新立契约。
 - [UNSUPPORTED] 九宫格多区域 UV：见 §3。
 - [CURRENT-LIMITED] atlas padding 只有 1px gutter（打包期固定），不支持运行时可调 inset。
@@ -207,22 +271,28 @@
 
 ## 7. 纹理资源与数据图语义
 
-- [FROZEN] 普通纹理上传 = 8-bit RGBA，内部 `GL_RGBA`，`GL_UNSIGNED_BYTE`，上传时 GPU 不做 sRGB 解码。
-  **这只是上传行为，不代表路径 A 与路径 B 共享同一套颜色处理流程**。
-  证据：`glrender_core.c:313`（create）、`:330`（带 linear 标志的 create）。
+- [FROZEN] 默认纹理上传 = 8-bit RGBA 源数据，DISPLAY 内部格式
+  `GL_SRGB8_ALPHA8`，采样器解码；LINEAR 内部格式 `GL_RGBA8`，原样采样。
+  需要显式色彩空间时使用 `zcsr_gl_texture_create_ex`，不能靠默认入口猜。
+  **Path A 与 Path B 共享这套解码契约；区别只在提交模型和光照。**
+  证据：`glrender_core.c` `zcsr_gl_texture_create_ex` / `zcsr_gl_internal_format`。
 - [CONTRACT] “0 堆”范围：引擎 renderer 状态、实例/顶点批、arena 都在调用方提供的固定缓冲区；
   `zcsr_arena_alloc_count` 只统计引擎 arena 的成功分配，不统计 libc malloc、GL 驱动或操作系统内部分配。
   需要严格拆 CPU/GPU 时用 `zcsr_gl_gpu_timer_begin/end/last_ms`（桌面 GL 3.3；Android 返回 false）。
-- [FROZEN] Light2D 路径 B 的颜色图处理：G0 Albedo 在合成阶段由 `pow(albedo, vec3(2.2))` 手动线性化。
-  路径 A 的立即 Sprite/UI 不经过 Light2D 合成，**不得把这条颜色空间契约推广到路径 A**。
-  上传入口当前不区分颜色图与数据图（`gl_render.h:36` 签名只有 rgba/w/h，无 internalformat 参数）；
-  法线/粗糙度/遮罩等数据图不属于现有 Light2D 材质能力。证据：`glrender_light2d_ext.c:126`。
+- [FROZEN] 全引擎颜色图处理：Path A 和 Path B 都写入 RGBA16F 线性帧；
+  纹理在采样器完成唯一次解码（DISPLAY/SRGB 用 sRGB8 sampler，LINEAR 直通），
+  DISPLAY tint/常量在 shader 或 CPU 解码。最终由 `zcsr_gl_present/read_rgba`
+  的 LUT 一次编码。路径 A 的立即 Sprite/UI 也遵守这条，不再直写显示域。
+  上传入口用 `zcsr_gl_texture_create_ex` 显式区分 DISPLAY/SRGB/LINEAR；数据图
+  （法线等）必须用 LINEAR，不能当颜色图。
+  证据：`zcsr_gl_texture_create_ex`、`glrender_core.c` `zcsr_gl_frame_encode`。
 - [FROZEN] G-buffer 附件格式表：
-  - G0 Albedo = RGBA8（`glrender_light2d_ext.c:724`）
+  - G0 Albedo = `GL_RGBA16F`（线性写入，采样无隐式解码）
   - G1 Position = RGBA16F（`:726`）
   - G2 Normal = RGBA8（`:724`）
   - G3 Emissive = RGBA16F（`:726`）
-  枚举同步在 `gl_render_light2d_ext.h:22-25`。
+  枚举同步在 `gl_render_light2d_ext.h:22-25`；实际创建在 `light2d.c` 的
+  `zcsr_l2d_gbuffer_formats`。
 - [FROZEN] 阴影掩码 = R8 单通道；光累积 = RGBA16F。证据：`glrender_light2d_ext.c:1109`、`:1141`。
 - [FROZEN] 清屏值：Albedo/Emissive=0；Position=(0,0,65504,1) 远哨兵（空气不受光）；Normal=(0.5,0.5,0,1) 中性朝上。
   证据：`glrender_light2d_ext.c:861-866`、`:881-883`。
@@ -241,8 +311,11 @@
   `GL_UNPACK_ALIGNMENT=1` 也不还原。`src_stride % 4 != 0` 或平台无 `GL_UNPACK_ROW_LENGTH` 时退化为
   逐行 `glTexSubImage2D`（`:254-263`），不碰 ROW_LENGTH。调用方若此前设过非零 ROW_LENGTH 或
   非 1 ALIGNMENT，本函数不会替你恢复。
-- [PROPOSED] 线性数据纹理（法线/粗糙度/遮罩）未来应走独立上传入口，带明确 internalformat 枚举，
-  不进 G0 的 gamma 直写路径。触发条件=首款游戏真的要法线贴图。
+- [FROZEN] 线性数据纹理已有受支持入口：`zcsr_gl_texture_create_ex(..., ZCSR_COLOR_SPACE_LINEAR, ...)`
+  上传为 `GL_RGBA8` 线性数据；`zcsr_gl_l2d_geo_nmap_face` 可按切线空间法线图提交到 G2。
+  证据：`gl_render.h` 的 `ZCSR_COLOR_SPACE_LINEAR`；`gl_render_l2d_geo.h` 的 `nmap_face`。
+- [PROPOSED] 法线图之外的额外线性数据纹理（粗糙度/遮罩/分层材质）尚未定义独立
+  G-buffer 通道或上传约定。触发条件=首款游戏真的需要这些材质通道。
 
 ---
 
@@ -256,13 +329,21 @@
 - [FROZEN] Painter's order 责任在宿主：远到近提交不穿插凸面。
   证据：`gl_render_l2d_geo.h:37-39`。
 - [FROZEN] 排序参考键 `q = height_shear*(y-cy) + z`，升序提交；`world_z` 单独不是通用深度。
-  证据：`gl_render_l2d_geo.h:40-42`。
+  scene 路径先把 scene(x,y,z) 映射为 Light2D(x,z,y)：scene `y` 是高度、scene `z` 是地面轴，
+  `zcsr_scene_build_lit_order` 用四角平均 q；`zcsr_scene_build_order` 的 Path A 键是四角
+  平均相机眼距，降序提交。
+  证据：`gl_render_l2d_geo.h:40-42`；`scene_submit.c` 的 `scene_entity_lit_q` /
+  `entity_camera_depth`；`test_scene.c` / `test_scene_submit.c` 的同 layer/order 深度与 q
+  测试。
 - [FROZEN] alpha-cutout 唯一规则：`if (rgba.a < 0.5) discard;`（严格小于；作用于 texel*tint 乘积）。
   证据：`glrender_l2d_geo.c:92`。阈值 0.5、比较符 `<`、先 discard 再写四附件——被丢片元对所有附件零写入。
 - [UNSUPPORTED] Light2D G-buffer 路径的任意半透明混合 / 排序：cutout 之外没有半透明通道。
   证据：`glrender_l2d_geo.c:291` blend 关；`LIGHT2D_INTEGRATION.md` §7。
-- [FROZEN] 但路径 A（立即精灵）有 straight alpha 混合：`glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)`。
-  证据：`glrender_core.c:264-265`。这是屏幕空间 sprite/UI 的混合，与 G-buffer 无关。
+- [FROZEN] 路径 A（立即精灵）有 straight alpha 混合：
+  `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)`，混合发生在 RGBA16F
+  线性帧内，因此 50% 黑叠白得到线性 0.5、显示域约 188，而不是旧显示域的 128。
+  证据：`glrender_core.c` 初始化 blend + `zcsr_gl_frame_bind`；`test_glrender.c`
+  的 `unified linear frame round-trip and linear blending` 断言。
 - [FROZEN] 实例透明分类只看 instance 字段：alpha<1.0 或 mode=MIX/ADD 视为透明；**不读 GPU 纹理像素 alpha**。
   纹理带透明像素时宿主必须自己把实例标透明。证据：`gl_render.h:143-149`。
 - [FROZEN] 实例排序：opaque 按纹理 run 合并 draw；translucent 按 z 远到近（大 z=远=先画）。
@@ -273,10 +354,14 @@
   证据：`glrender_light2d_ext.c:1001-1002`。
 - [FROZEN] 阴影掩码混合 = `GL_MAX`。证据：`glrender_light2d_ext.c:1201`。
 - [FROZEN] 渲染阶段固定顺序：
-  begin_geometry → 宿主提交世界几何 → begin_lighting → add_light×N → end_lighting（合成回默认目标）→ 宿主 HUD/路径 A 精灵。
-  证据：`light2d.h:114-122`；`LIGHT2D_INTEGRATION.md` §1。
-- [CURRENT-LIMITED] UI 没有独立层概念：HUD 就是 end_lighting 之后用路径 A 在默认目标上画的屏幕像素。
-  证据：`LIGHT2D_INTEGRATION.md` §1 末行。
+  begin_geometry → 宿主提交世界几何 → begin_lighting → add_light×N → end_lighting
+  （合成到线性 frame）→ 宿主 HUD/路径 A 精灵（同一个线性 frame）→ flush →
+  present/read_rgba（唯一一次 LUT encode）。
+  证据：`light2d.h`；`glrender_light2d_ext.c` `zcsr_gl_l2d_finalize_composite`；
+  `glrender.c` `zcsr_gl_present`。
+- [CURRENT-LIMITED] UI 没有独立层概念：HUD 就是 end_lighting 之后用路径 A
+  在同一个线性帧上画的屏幕像素，最后统一 encode。证据：`glrender_core.c`
+  `zcsr_gl_frame_encode`。
 
 ---
 
@@ -339,11 +424,13 @@
 
 1. 共享 `zcsr_camera`（center/ppu/height_shear），世界系 X 东 Y 南 Z 上、地面 z=0。
 2. 平色凸四边形（`geo_face`）+ 纹理凸四边形（`geo_tex_face`）进 G-buffer，轴对齐法线。
-3. 颜色语义：tint 显示域乘、Albedo sRGB 内容、合成唯一 pow2.2；alpha-cutout <0.5。
+3. 颜色语义：Path A/B 都写 RGBA16F 线性帧；纹理在采样器解码，tint/常量按域解码，
+   最终 `present/read_rgba` 用 `zcsr_color_pipeline` LUT 一次编码；alpha-cutout <0.5。
 4. 点光（高度/半径/decay/逐光强度）+ ray 阴影（间接 GPU 证据，非同像素因果）。
 5. Painter's order：宿主按 q 键远到近提交，不穿插。
 6. 固定渲染目标 1280×720 已验证；动态 resize 不做保证。
-7. HUD/屏幕 UI/透明精灵走路径 A（straight alpha，屏幕像素），不要求光照。
+7. HUD/屏幕 UI/透明精灵走路径 A（straight alpha，屏幕像素），写入同一线性帧，
+   不要求光照；最终与 Path B 一起 encode。
 
 **不要依赖**（v1.1 明确未验证或不支持，详见各节标签）：
 
@@ -363,6 +450,7 @@
 
 各领域状态计数（按本文实际条目逐条数，FROZEN / CURRENT-LIMITED / PROPOSED / UNSUPPORTED / UNKNOWN）：
 
+- §0 路径模型：3 / 1 / 0 / 0 / 0
 - §1 颜色空间与材质：8 / 1 / 1 / 2 / 0
 - §2 单位相机：10 / 2 / 0 / 1 / 0
 - §3 Pivot 变换：4 / 1 / 1 / 2 / 1
@@ -373,7 +461,7 @@
 - §8 深度混合：12 / 1 / 0 / 2 / 0
 - §9 生命周期：11 / 2 / 1 / 0 / 0
 
-合计：FROZEN 75 / CURRENT-LIMITED 11 / PROPOSED 5 / UNSUPPORTED 14 / UNKNOWN 2。
+合计：FROZEN 78 / CURRENT-LIMITED 12 / PROPOSED 5 / UNSUPPORTED 14 / UNKNOWN 2。
 UNKNOWN 两项（负 scale 镜像、像素对齐）源码无证据，未猜。
 
 ---
@@ -435,16 +523,15 @@ UNKNOWN 两项（负 scale 镜像、像素对齐）源码无证据，未猜。
 
 1. 世界系 + 唯一投影公式：X 东/Y 南/Z 上、`zcsr_camera` 活指针、PPU、height_shear、
    viewport 取 GL viewport。证据：§2。
-2. G-buffer 四附件布局：G0 GL_SRGB8_ALPHA8 显示域（采样时硬件解码为线性） /
-   G1 RGBA16F 世界XYZ / G2 RGBA8 编码法线 / G3 RGBA16F emissive + 清屏值。证据：§7。
+2. G-buffer 四附件布局：G0 RGBA16F 线性 albedo / G1 RGBA16F 世界XYZ /
+   G2 RGBA8 编码法线 / G3 RGBA16F emissive + 清屏值。证据：§7。
 3. 帧序与 GL 状态配对：begin_geometry→geo→begin_lighting→add_light→end_lighting→HUD；
    geo begin/end 精确保存恢复。证据：§9。
-4. 路径 A/B 边界：路径 A 屏幕像素 straight-alpha 不受光；路径 B 世界几何进 G-buffer 受光；
-   不自动互通。证据：§0、§8。
-5. 路径 B 颜色语义：Albedo 在 G0 的 SRGB8 采样时由硬件唯一解码为线性；
-   合成 FS 通过 `zcsr_color_pipeline` 生成的 LUT 编码回显示域，shader 内不再写
-   pow/linear_to_srgb 公式。Emissive 当前被 albedo 调制。
-   **本条只约束路径 B，不推广到路径 A**。证据：§1。
+4. 路径 A/B 边界：Path A 屏幕像素 straight-alpha 不受光，Path B 世界几何进 G-buffer 受光；
+   两者都写同一个 RGBA16F 线性帧，但提交模型不互通。证据：§0、§8。
+5. 全帧颜色语义：Path A/B 都只写线性值；纹理采样器解码，tint/常量按域解码；
+   `present/read_rgba` 通过 `zcsr_color_pipeline` 的 LUT 一次 encode。
+   Light2D composite FS 不再单独 encode。证据：§1。
 
 ### 14.3 MODULE-CFG 现有旋钮（游戏可调，值来自现有 API）
 
@@ -496,10 +583,12 @@ UV 透传（按角点顺序，不翻转）：
 uv_st[8] = (a.u0,a.v0), (a.u1,a.v0), (a.u1,a.v1), (a.u0,a.v1)
 ```
 
-法线：地面/水平精灵统一 `(0,0,1)`。立面、斜面、翻转法线不在本期，见 §14.5 槽位。
+法线：无 normal map 时地面/水平精灵统一 `(0,0,1)`；立面/斜面可通过
+`zcsr_gl_l2d_geo_nmap_face` 提交切线空间法线，逐材质额外 normal 覆盖层仍在 §14.5。
 
 提交：
-- 受光精灵 → `zcsr_gl_l2d_geo_tex_face(r, a.tex, corners_xyz, uv_st, tint, (0,0,1), emissive)`。
+- 受光精灵（常量法线）→ `zcsr_gl_l2d_geo_tex_face(r, a.tex, corners_xyz, uv_st, tint, (0,0,1), emissive)`。
+- 受光精灵（法线图）→ `zcsr_gl_l2d_geo_nmap_face(...)`，输入切线空间法线图。
 - HUD、屏幕 UI、不透明背景 → 继续走路径 A（`zcsr_sprite_draw`/`zcsr_gl_submit`），不进 G-buffer。
 - 透明特效（半透明叠加）→ 路径 A；当前路径 B 不支持半透明。证据：§8。
 - 排序：受光精灵之间仍由宿主按 q 键远到近提交（§8）。
@@ -508,10 +597,12 @@ uv_st[8] = (a.u0,a.v0), (a.u1,a.v0), (a.u1,a.v1), (a.u0,a.v1)
 
 这些位置现在留接口、不实现。未来第一款游戏真需要时，在 ADAPTER 层加，不动 §14.2 的 CORE：
 
-- normal 覆盖：水平 (0,0,1) 之外的立面法线输入（PROPOSED，触发=墙面精灵需求）。
+- normal 覆盖：基础法线图已由 `zcsr_gl_l2d_geo_nmap_face` 支持（见 §1）；本槽位
+  仅指逐材质额外 normal 覆盖层，仍未定（PROPOSED，触发=墙面精灵需求）。
 - emissive 材质参数：除 uniform emissive 外的逐精灵发光（PROPOSED，当前 G3 是逐 draw uniform）。
 - tint 模式：MIX/ADD 闪烁（路径 A 已有 `zcsr_color_mode`，路径 B 未接；PROPOSED）。
-- 纹理样式扩展：未来加 normal map / 遮罩图时走独立上传入口，不混 G0 gamma 路径（§7 PROPOSED）。
+- 纹理样式扩展：normal map 已存在；遮罩图/粗糙度图等额外数据纹理仍走独立上传入口，
+  不混 G0 gamma 路径（§7）。
 - ground_z 非 0 悬浮精灵：接口已留，当前几何上和贴地等价，不需要特殊处理。
 
 **不开放的扩展**：tilemap、动画帧、九宫格、图集旋转、premultiplied alpha、
@@ -541,18 +632,19 @@ Sprite 实例化直进 G-buffer。这些保持 UNSUPPORTED 记录（§1-§9）�
 
 **1. 自定义后处理 hook（CRT/色偏/扫描线）—— SUPPORTED**
 - 接口：`zcsr_gl_l2d_set_post_process_hook(ctx, callback, userdata)`。
-- 合成现在先写进引擎拥有的合成 FBO（`l2d_comp_tex`，GL_RGBA8），不再直接
-  画默认 framebuffer 0。回调触发时该纹理绑在 unit 9，回调从它采样做全屏效果。
+- 合成现在先写进引擎拥有的合成 FBO（`l2d_comp_tex`，GL_RGBA16F 线性），再写
+  统一线性帧；不再直写默认 framebuffer 0。回调触发时该纹理绑在 unit 9，
+  回调从它采样做全屏效果，输出写回线性帧。
 - 责任边界：
-  - 调用时机：合成完成、写默认 framebuffer 之前，每帧至多一次。
+  - 调用时机：合成完成、写线性帧之前，每帧至多一次。
   - 资源所有权：合成纹理由引擎创建/持有/销毁，回调不得删除或重分配。
-  - 输出目标：回调负责把结果写回默认 framebuffer（此时已绑 0）。
+  - 输出目标：回调负责把线性结果写回当前绑定的线性帧；不得做 display encode。
   - GL 状态：回调可改 shader/纹理单元/framebuffer，返回后引擎不依赖其状态；
-    回调必须自己保证输出已落屏。
-  - 失败处理：回调返回 false 或未注册时，引擎用 blit program 直复制原始合成。
+    回调必须自己保证输出已写入线性帧。
+  - 失败处理：回调返回 false 或未注册时，引擎用 blit program 直复制原始线性合成。
   - 线程：仅在渲染线程、GL current 时调用，不可重入。
-- 限制：合成纹理是 LDR GL_RGBA8，不保留 HDR 信息供任意 bloom 算法；
-  视口尺寸随引擎 viewport，window resize 由引擎重建。
+- 限制：合成纹理是线性 RGBA16F，保留 HDR；最终显示编码由 present/read_rgba
+  统一执行。视口尺寸随引擎 viewport，window resize 由引擎重建。
 
 **2. 自定义光类型（spot/area light）—— SPOT 已 SUPPORTED，其余 PROPOSED**
 - 已落地：`ZCSR_LIGHT_SPOT = 2`，`zcsr_light` 加 `inner_angle/outer_angle`（弧度），
@@ -594,11 +686,35 @@ Sprite 实例化直进 G-buffer。这些保持 UNSUPPORTED 记录（§1-§9）�
 ## 16. UI / 文字 / HUD 的渲染归属（v1.5）
 
 - UI、文字、HUD 永远走路径 A immediate forward batch（zcsr_gl_fill_rect /
-  zcsr_gl_draw_text / zcsr_font_atlas_draw_text），由宿主在 light2d 合成到默认
-  framebuffer 之后提交，最后统一 flush + present。
+  zcsr_gl_draw_text / zcsr_font_atlas_draw_text），由宿主在 light2d 合成到
+  统一线性帧之后提交，最后统一 flush + present/read_rgba（一次 encode）。
 - 禁止把 UI / 文字 / HUD 提交进 light2d 的 G-buffer（G0/G1/G2/G3）或光照 pass。
   它们不参与延迟光照，也不该被光线调制。
 - 重开销项（ray_shadows、bloom、light_scale_pct=100、高 gain）只挂在 HIGH / ULTRA
   档；LOW 档默认全关、走高性能路径。切档时这些项随之开关，不是永久开。
 - 字体默认 TTF（Inter），通过 font_atlas 注入 UI 后端；未注入时回退内置 8x8
   bitmap font，老 test 不受影响。
+
+## 17. GPU-only 收口后仍未合并的结构边界
+
+以下不是“已实现但没写文档”，而是当前明确不做假统一的边界：
+
+- **三套相机不互相冒充**：`zcsr_camera`（X 东 / Y 南 / Z 上，height-shear）、
+  `zcsr_scene_camera`（x/z 地面轴、y 高度、look-at + ortho）、
+  `zcsr_camera3d`（透视数学工具）各自成立。没有隐式转换；混用必须由调用方
+  显式换算并写清轴映射。路径 B 的 `geo_*` 入口只接受 `zcsr_camera`。
+- **Pivot 仍按各自路径定义**：屏幕 sprite 以矩形中心为锚点；scene entity 用
+  `pivot_x/pivot_y`；实例路径用中心 + 宽高；L2D face 用显式四角。跨路径迁移
+  必须重算锚点，不能假设同一个 pivot 语义。
+- **路径 B 没有 lit instancing**：`geo_tex_face*` 是一面一次提交，没有跨面
+  batch。需要大量受光实体时，先做实例化 lit batch，不能直接拿路径 A 的实例
+  数量去压路径 B。
+- **存在统一入口但不自动选路径**：`zcsr_scene_submit` 是 scene 的唯一统一提交入口，
+  调用方必须显式选择 `ZCSR_SCENE_SUBMIT_DISPLAY` 或 `ZCSR_SCENE_SUBMIT_LIT`。
+  DISPLAY 复用 `scene_render` 的矩形/四角桥；LIT 复用 `zcsr_gl_l2d_geo_*`，并按
+  §8 的 q 键远到近提交。没有“自动根据 scene 内容选路径”的隐式行为，也不能用
+  `scene_render` 的桥冒充 LIT 提交。
+- **路径 A 不做自动 alpha 排序**：`zcsr_gl_submit` 是 painter order；需要
+  透明排序时用 `zcsr_gl_instance` + `has_alpha` + `zcsr_sort_state`。
+- **Light2D 只有 1D per-channel LUT + per-face 3x3 矩阵**：没有全局 3D LUT；
+  per-object 色彩分级用 `zcsr_gl_l2d_geo_tex_face_ex` 的矩阵入口。

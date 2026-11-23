@@ -1,6 +1,11 @@
 #ifndef ZCSR_CAMERA3D_H
 #define ZCSR_CAMERA3D_H
-/* Perspective camera: 3D world -> 2D screen pixels, done in software.
+/* Perspective camera projection utility: 3D world points -> 2D screen pixels.
+ *
+ * This module is a math utility. It is not a 3D renderer, not a 3D scene
+ * camera and not a 3D model pipeline. It projects points and billboards for a
+ * perspective effect; ZCSR scene rendering remains a 2.5D orthographic quad
+ * pipeline.
  *
  * Why software: the renderer is a 2D quad batcher with no model/view/projection
  * stage, so a perspective camera cannot be expressed as a matrix upload. Instead
@@ -24,6 +29,11 @@ typedef struct {
     int   view_w, view_h;        /* viewport in pixels */
 } zcsr_camera3d;
 
+/* Canonical concept name. zcsr_camera3d is the legacy type name and remains
+ * valid; new code should read this as a perspective projection camera, not a
+ * 3D scene camera. */
+typedef zcsr_camera3d zcsr_perspective_camera;
+
 void zcsr_camera3d_init(zcsr_camera3d* c, int view_w, int view_h,
                         float eye_x, float eye_y, float eye_z,
                         float yaw_deg, float pitch_deg, float fov_y_deg);
@@ -37,6 +47,16 @@ void zcsr_camera3d_look_at(zcsr_camera3d* c, float tx, float ty, float tz);
 bool zcsr_camera3d_project(const zcsr_camera3d* c,
                            float x, float y, float z,
                            float* out_px, float* out_py, float* out_depth);
+
+/* Inverse ground-plane query: screen pixel -> world point on z=0.
+ *
+ * This is the picking primitive for 2.5D ground placement. It casts a ray
+ * through the perspective camera and intersects the z=0 plane. Returns false
+ * when the ray does not hit the ground in front of the camera. It is a math
+ * helper, not a scene query and not a 3D picking system. */
+bool zcsr_camera3d_screen_to_ground(const zcsr_camera3d* c,
+                                    float px, float py,
+                                    float* out_x, float* out_y);
 
 /* Screen-space rect of a camera-facing billboard of world size `world_w` x `world_h`
  * centred at (x,y,z). Perspective shrinks it with distance. */

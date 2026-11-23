@@ -38,7 +38,7 @@ s_y = H/2 + ((y − c_y) − k·z)·p
 单凭屏幕坐标不能同时定 x/y/z——逆变换必须指定 z。
 
 ### 1.4 投影不变量 【CURRENT，自动化】
-test_light2d_math（ctest `light2d_math`，24 断言）：z=0 往返、已知 z 往返、
+test_light2d_math（ctest `light2d_math`，29 项检查）：z=0 往返、已知 z 往返、
 k-shift 定律、view_rect、zoom 钳位 [8,1024]、排序键序、slab 用例。
 G-buffer 对 k 不变（世界数据不随投影改写）= 场景级属性，Q3 双 k 截图
 探针运行验证（Position/Normal 窗格逐字节不变）。
@@ -53,7 +53,7 @@ G-buffer 对 k 不变（世界数据不随投影改写）= 场景级属性，Q3 
 
 | 附件 | 格式 | 数学职责 | 写入 | 读取 |
 |---|---|---|---|---|
-| G0 Albedo | RGBA8 | 材质色（显示域，见 §5） | geo FS | 合成 FS |
+| G0 Albedo | RGBA16F | 线性材质色（提交边界解码一次，见 §3.2） | geo FS | 合成 FS |
 | G1 Position | RGBA16F | 世界 XYZ（清屏远哨兵=空气） | geo FS（varying 直传） | light FS |
 | G2 Normal | RGBA8 | 表面朝向（编码见 §2.3） | geo FS | light FS（仅 xy） |
 | G3 Emissive | RGBA16F | 线性自发光 | geo FS（uniform） | 合成 FS |
@@ -72,37 +72,41 @@ G-buffer 对 k 不变（世界数据不随投影改写）= 场景级属性，Q3 
 ## 3. 纹理、Alpha 与颜色空间
 
 ### 3.1 采样与 cutout 【CURRENT】
-`C = texture(UV) ⊙ tint`（逐通道）；**`C.a < 0.5 → discard`**（严格小于；
-glrender_l2d_geo.c:92）。丢弃片元不写任何 attachment；通过者按表面写入。
+`C = decode(texture(UV)) ⊙ decode(tint)`（按各自色彩空间，逐通道，解码一次）；
+**`C.a < 0.5 → discard`**（严格小于；glrender_l2d_geo.c:92）。丢弃片元不写任何 attachment；通过者按表面写入。
 UV：(u0,v0)=子矩形图像左上，v 向图像底（与 sprite 管线一致；运行证据=
 红象限探针证伪翻转）。UNSUPPORTED：任意半透明混合/排序；alpha→遮挡体。
 
-### 3.2 颜色空间 【CURRENT】
-纹理以普通 GL_RGBA 上传（无 sRGB 内部格式）→ GPU 无解码。
-**全链路唯一线性化 = 合成 FS 的 `A_lin = pow(max(A_stored,0), 2.2)`**
-（ext.c deferred/bloom FS）。因此 texel 直写 G0（同平色路径编码），
-纹理路径禁止二次解码。输出：`C_out = DisplayEncode(C_lin/(C_lin+1))`，
-其中 `DisplayEncode` 来自 `zcsr_color_pipeline` 的可替换 LUT；tonemap 在合成
-FS，显示编码不在 shader 内写死公式。
+### 3.2 颜色空间 【FROZEN：统一线性帧】
 
-**tint / albedo 的实际乘法空间（v1.1 契约裁决）**：geo FS 在
-显示域直接做 `rgba = texture(UV) ⊙ tint` 后写入 G0（GL_SRGB8_ALPHA8），
-合成采样 G0 时由硬件整体解码为线性。因此 tint 与平色 albedo_rgba 实际是
-**显示域（gamma）乘子**，与纹理想素同空间相乘——**不是线性空间
-乘法**。
-**裁决**：旧版头文件曾将 tint/albedo 标注为 "linear"，该描述与实际
-实现不符，自 v1.1 起视为已纠正的契约说明。需要真正线性 tint 的
-调用者不能把当前路径当作已支持该语义；要在线性空间做颜色调制，
-必须单独设计纹理解码 + 光照域 + 输出编码的完整 sRGB 工作流，
-并重新跑合成回归——暂不实现。
-数学推论：`(texel·tint)^2.2 = texel^2.2 · tint^2.2`，tint 本身
-也被 gamma 化。
+默认源纹理以 `GL_SRGB8_ALPHA8`（`ZCSR_COLOR_SPACE_DISPLAY`）上传，采样器
+自动解码到线性。需要线性数据时，调用方必须用
+`zcsr_gl_texture_create_ex(..., ZCSR_COLOR_SPACE_LINEAR, ...)` 上传为 `GL_RGBA8`；
+颜色图与数据图不能靠同一个默认入口猜。
 
-**HDR >1 的适用范围**：G0 是 RGBA8，tint/albedo 乘积 >1 会被
-归一化格式截断到 1.0，**G0 路径不能承载 HDR Albedo**——不能因为
-tint 参数是 float 就推断经过 RGBA8 后仍保留超出 1 的数据。
-HDR >1 仅在 RGBA16F 附件上保留：G3 Emissive 与光缓冲（light
-accumulation RGBA16F）。
+G0 固定为 `GL_RGBA16F` **线性 albedo**：DISPLAY 常量/tint 由 CPU/shader
+显式 sRGB 解码，DISPLAY/SRGB 纹理由采样器解码，LINEAR 数据直通。
+`GL_FRAMEBUFFER_SRGB` 在 G-buffer/线性帧上关闭；合成 FS 采样 G0 时没有
+隐式解码。输出：
+
+```
+C_lin = albedo_lin ⊙ (E_lin + Σ light_lin + ambient_lin * ambient_scale)
+C_exp = C_lin * exposure
+C_mapped = C_exp/(C_exp+1)
+```
+
+`C_mapped` 作为线性值写入统一 `frame_tex`（RGBA16F），最后由
+`zcsr_gl_present/read_rgba` 通过 `zcsr_color_pipeline` 的 LUT 编码一次。
+tonemap 在合成 FS，显示编码不在 shader 内写死公式。该 LUT **作用于整个
+线性帧（Path A + Path B）**，不是只作用于路径 B。
+
+**tint / albedo 的实际乘法空间**：tint 域由入口选择。DISPLAY tint 先解码到
+线性，LINEAR tint 直通；纹理按其自身 `color_space` 解码；二者在线性域逐通道
+相乘，再应用可选 3x3 矩阵。每个颜色通道只允许一次解码。
+
+**HDR >1 的适用范围**：G0 是 16F，能保存 >1 的线性 albedo；但 DISPLAY 输入
+解码后 clamp 到 [0,1]。3x3 矩阵输出可超过 1。G3/光缓冲同为 RGBA16F。
+
 
 ## 4. 光照模型
 
@@ -131,8 +135,8 @@ PROPOSED 候选（未来统一用，当前不用）：`a = max(0,1−r²)²`—�
 （gain=全局 options.gain；逐光强度=a 已乘进 color——light2d.c draw_high）。
 合成（ext.c deferred/bloom FS 直查）：
 ```
-C_lin = albedo_lin ⊙ (E_lin + Σ light_lin + vec3(0.03))    （环境光 0.03 固定）
-C_out = ( C_lin/(C_lin+1) )^(1/2.2)
+C_lin = decode_srgb(G0) ⊙ (E_lin + Σ light_lin + vec3(0.03))  （环境光 0.03 固定）
+C_out = DisplayEncode(C_lin/(C_lin+1))                         （color_pipeline LUT）
 ```
 **Emissive 当前语义（合并前审计明确）**：E_lin 在合成中**先与光照/
 环境光相加，再被 albedo_lin 逐通道调制**——即发光面的颜色也受其
@@ -193,7 +197,7 @@ x_tip = xmax·Lz/(Lz−H) 含 Lz=3/5 双光高与 near-H 长影边界 + 退化�
 | G-buffer 写入 | 面+材质 | 四附件 | glrender_l2d_geo.c | 校验失败=false，无写入 |
 | 阴影 | G1+光+遮挡体 | V 因子 | ext.c light FS / light2d.c | 盒数>8 截断 |
 | 光累积 | G-buffer+光 | 光缓冲 RGBA16F | ext.c light program | emit 失败=false |
-| 合成 | 光缓冲+G0+G3 | 窗口默认目标 | ext.c deferred/bloom FS | 目标绑定失败=false |
+| 合成 | 光缓冲+G0+G3 | RGBA16F 线性 frame（present 再 LUT encode） | ext.c deferred/bloom FS | 目标绑定失败=false |
 
 同一约定唯一权威：投影/逆变换/往返→本文 §1 + camera.h；alpha→§3.1
 + geo 头注释；遮挡语义→§5.2 + light2d.h。其他文档引用不复制。
@@ -211,9 +215,9 @@ x_tip = xmax·Lz/(Lz−H) 含 Lz=3/5 双光高与 near-H 长影边界 + 退化�
 | 光照方向 | max(0,N·L̂) 逐样例 | 源码审计（公式直查） | 审计（无数值单测） |
 | 衰减 | r≥1 无第一项 | 源码审计 | 审计 |
 | 射线相交 | 4 密封用例+边界+尖端双光高+near-H 两侧 | ctest 29 项 + autoquit proof | ✅自动（CPU 镜像） |
-| 颜色空间 | 线性化仅合成一处 | 源码 grep（无二次 pow2.2） | ✅审计 |
-| 合成目标 | 结果落默认目标 | v15 修复 + 探针 | ✅运行 |
-| 平行光 | — | 无运行证据 | ⚠️未验证 |
+| 颜色空间 | Path A/B 都写 RGBA16F 线性帧；纹理采样器解码；tint/常量按域解码；present 仅一次 LUT encode | 源码审计 + `light2d_environment`/`scene_submit` + integration slice | ✅运行 |
+| 合成目标 | 结果落统一线性 frame，不直写默认目标 | v15 修复 + 探针 + `glrender_test` 线性回读 | ✅运行 |
+| 平行光 | sun 一等环境光，`dir_z` 推影长；integration slice 实跑 | `zcsr_light2d_integration_slice` | ✅运行 |
 
 ### 7.1 证据等级区分（v1.1 审计补记）
 
@@ -243,7 +247,8 @@ x_tip = xmax·Lz/(Lz−H) 含 Lz=3/5 双光高与 near-H 长影边界 + 退化�
 1. 世界→屏幕：§1.2（三处实现一致，ctest 断言）。
 2. 几何→四附件：§2.2 生产者/消费者表。
 3. Normal 支持域：§2.3（朝上+轴对齐；斜面=PROPOSED 触发条件）。
-4. 线性化点：§3.2（合成 FS 唯一）；输出编码：同 FS ^(1/2.2)。
+4. 线性化点：§3.2（几何提交边界唯一解码，G0 RGBA16F 线性）；输出编码：合成 FS 的
+   `zcsr_color_pipeline` LUT，不是写死 `^(1/2.2)`。
 5. 光方向/衰减/可见性/emissive：§4.2-4.4（合成表达式逐因子）。
 6. 射线=线段（非无限射线）；遮挡体=footprint×[0,H] 棱柱（§5.1-5.2）。
 7. 排序=painter's order（无深度测试），q 仅参考键（§5.3）。

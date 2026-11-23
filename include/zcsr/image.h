@@ -2,11 +2,11 @@
 #define ZCSR_IMAGE_H
 /* image loading, decoding, and offline CPU processing to 8-bit RGBA (RGBA32).
  *
- * SEPARATED from rendering (per project decision): this module ONLY produces pixel buffers.
- * The GPU path (glrender) and the software path (render) CONSUME the RGBA32 it produces through
- * their existing texture-create entry points (e.g. zcsr_gl_texture_create(rgba, w, h)). `image`
- * never includes a renderer; renderers never include `image`. Decouples decode/processing from
- * upload/draw so both render paths share one decoder.
+ * SEPARATED from rendering: this module ONLY produces pixel buffers. It is
+ * offline baking, NOT a runtime renderer and NOT a fallback when GL is
+ * unavailable. The GPU path consumes produced bytes via zcsr_gl_texture_create
+ * / _create_ex. `image` never includes a renderer; renderers never include
+ * `image`. Decouples decode/processing from upload/draw.
  *
  * Implementer: modules/image (vendors stb_image, used ONLY here for multi-format decode).
  * No runtime heap: decode and all processing write into a CALLER-PROVIDED buffer; stb_image is

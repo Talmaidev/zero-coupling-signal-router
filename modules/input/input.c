@@ -377,6 +377,10 @@ static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
 #include <mach/mach_time.h>
 #include "input_cocoa.h" /* same-module C-ABI shim over Cocoa NSEvent key pumping */
 
+/* Platform-owned NSWindowDelegate close flag (platform_cocoa.c).  Kept as a
+ * C-ABI extern so input does not include the platform module's private header. */
+extern bool zcsr_platform_cocoa_take_close(zcsr_surface* s);
+
 uint64_t zcsr_clock_now_ns(void) {
     static mach_timebase_info_data_t timebase;
     uint64_t now = mach_absolute_time();
@@ -404,7 +408,9 @@ static void zcsr_input_platform_pump(zcsr_input* input, zcsr_surface* window) {
     int closed = 0;
     if (!input || !ns_window) return;
     zcsr_cocoa_input_pump(ns_window, zcsr_input_key_trampoline, input, &closed);
-    if (closed) {
+    /* zcsr_cocoa_input_pump no longer infers close from isVisible; the
+     * NSWindowDelegate records it before the window can disappear. */
+    if (closed || zcsr_platform_cocoa_take_close(window)) {
         input->close_requested = true;
         zcsr_record_close(window);
     }
@@ -496,6 +502,11 @@ bool zcsr_window_close_requested(zcsr_surface* s) {
     /* WM_CLOSE is recorded on the surface by the window proc; also drain it so
      * an app that only pumps surface events still sees the request exactly once. */
     if (zcsr_platform_win32_take_close(s)) requested = true;
+#endif
+#if defined(__APPLE__)
+    /* NSWindowDelegate records windowShouldClose: / applicationShouldTerminate:
+     * here before AppKit can hide or destroy the window. */
+    if (zcsr_platform_cocoa_take_close(s)) requested = true;
 #endif
     return requested;
 }

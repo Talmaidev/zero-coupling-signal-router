@@ -2,7 +2,10 @@
 #define ZCSR_CAMERA_H
 /* 2D game camera: world units -> screen pixels (height-shear projection).
  * Pan + zoom + the single height-shear constant. No rotation, no perspective,
- * no matrices. Pure float math, zero heap. Screen space is y-down:
+ * no matrices. This is a legacy 2D/2.5D compatibility camera, not a general
+ * scene camera. A 2.5D scene camera with yaw, pitch, roll and ortho size is a
+ * separate contract; do not treat height_shear as a full 3D projection.
+ * Pure float math, zero heap. Screen space is y-down:
  *   px = (wx - center_x) * px_per_unit + view_w * 0.5
  *   py = (wy - center_y - height_shear * wz) * px_per_unit + view_h * 0.5
  * height_shear is the ONLY authoritative k: 0 = pure top-down, 0.5 = the

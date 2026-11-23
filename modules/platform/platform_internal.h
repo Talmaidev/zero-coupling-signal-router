@@ -93,9 +93,14 @@ struct zcsr_surface {
     int x_key_head, x_key_tail;
 #elif defined(__APPLE__)
     void* ns_window;
+    void* ns_delegate;   /* retained ZCSRWindowDelegate*; released by surface destroy */
+    /* NSWindowDelegate 只置位；应用决定是否退出。程序化销毁必须先置
+     * delegate.forceClose，避免被自己的 windowShouldClose: veto 卡住。 */
+    bool  close_requested;
     /* 窗口状态：create 默认 BORDERLESS（与 Win32 一致），set_mode 才会切换。
-     * width/height 是客户区尺寸（point，不是 backing pixel）；get_client_size 以它为准，
-     * get_dpi_scale 返回 backingScaleFactor（Retina 为 2.0）。 */
+     * width/height 是客户区 client pixel（不是 AppKit point）；Cocoa 在
+     * create/set_client_size/get_client_size 边界按 backingScaleFactor 换算，
+     * 与 GL viewport 和输入坐标保持同一空间。get_dpi_scale 返回 backingScaleFactor。 */
     zcsr_window_mode mode;
     int   width, height;
 #else

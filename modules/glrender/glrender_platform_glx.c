@@ -25,10 +25,20 @@ typedef void (*PFN_glXSwapIntervalEXT)(Display*, GLXDrawable, int);
 typedef int  (*PFN_glXSwapIntervalMESA)(unsigned);
 
 static void* glx_proc(const char* name) {
-    /* glXGetProcAddressARB 返回函数指针；用 union 避免函数指针 ↔ void* 的告警。 */
+    /* glXGetProcAddressARB returns a function pointer; use union to cross the
+     * function-pointer/object-pointer boundary without a cast. */
     union { void* p; void (*f)(void); } u;
     u.f = (void (*)(void))glXGetProcAddressARB((const GLubyte*)name);
     return u.p;
+}
+
+/* C does not allow casting void* to a function pointer. Copy the address into
+ * the correctly typed slot; glXGetProcAddressARB and void* have the same
+ * representation on the POSIX/X11 targets this backend supports. */
+static void glx_proc_copy(const char* name, void* out, size_t out_size) {
+    void* raw = glx_proc(name);
+    memset(out, 0, out_size);
+    memcpy(out, &raw, out_size < sizeof(raw) ? out_size : sizeof(raw));
 }
 
 bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface);
@@ -125,7 +135,8 @@ bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface) {
     }
     r->glx_fbconfig = chosen;
 
-    create_attribs = (PFN_glXCreateContextAttribsARB)glx_proc("glXCreateContextAttribsARB");
+    create_attribs = NULL;
+    glx_proc_copy("glXCreateContextAttribsARB", &create_attribs, sizeof(create_attribs));
     if (create_attribs) {
         r->glx_context = create_attribs(dpy, r->glx_fbconfig, NULL, True, ctx_attrs);
     }
@@ -206,8 +217,8 @@ void zcsr_gl_platform_set_vsync(zcsr_gl_renderer* r, bool on) {
     if (!exts) return;
 
     if (strstr(exts, "GLX_EXT_swap_control")) {
-        PFN_glXSwapIntervalEXT set_ext =
-            (PFN_glXSwapIntervalEXT)glx_proc("glXSwapIntervalEXT");
+        PFN_glXSwapIntervalEXT set_ext = NULL;
+        glx_proc_copy("glXSwapIntervalEXT", &set_ext, sizeof(set_ext));
         if (set_ext) {
             set_ext(dpy, (GLXDrawable)(uintptr_t)r->glx_window, on ? 1 : 0);
             r->glx_swap_interval_set = on ? 1 : 0;
@@ -215,8 +226,8 @@ void zcsr_gl_platform_set_vsync(zcsr_gl_renderer* r, bool on) {
         }
     }
     if (strstr(exts, "GLX_MESA_swap_control")) {
-        PFN_glXSwapIntervalMESA set_mesa =
-            (PFN_glXSwapIntervalMESA)glx_proc("glXSwapIntervalMESA");
+        PFN_glXSwapIntervalMESA set_mesa = NULL;
+        glx_proc_copy("glXSwapIntervalMESA", &set_mesa, sizeof(set_mesa));
         if (set_mesa) {
             set_mesa(on ? 1u : 0u);
             r->glx_swap_interval_set = on ? 1 : 0;

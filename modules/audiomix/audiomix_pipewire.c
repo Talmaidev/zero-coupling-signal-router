@@ -72,9 +72,20 @@ static void zcsr_pw_on_stream_process(void* data) {
         return;
     }
 
-    /* Requested frames in this buffer. */
-    size = buf->requested ? (uint32_t)buf->requested : ZCSR_MIX_PERIOD_FRAMES;
-    if (size > ZCSR_MIX_PERIOD_FRAMES * 2) size = ZCSR_MIX_PERIOD_FRAMES * 2;
+    /* Frames that fit in this buffer.  pw_buffer::requested only exists in
+     * newer PipeWire releases; datas[0].maxsize is available on every release
+     * we support (Ubuntu 20.04/22.04 ship 0.3.4x).  Keep one mixer period as
+     * the normal size and never exceed what the mapping can hold. */
+    size = ZCSR_MIX_PERIOD_FRAMES;
+    {
+        uint32_t max_frames = buf->buffer->datas[0].maxsize /
+            (2U * (uint32_t)sizeof(int32_t));
+        if (max_frames < size) size = max_frames;
+        if (size == 0) {
+            pw_stream_queue_buffer(pw->stream, buf);
+            return;
+        }
+    }
 
     dst = (int32_t*)buf->buffer->datas[0].data;
     if (!dst) {
@@ -134,7 +145,7 @@ void zcsr_mix_backend_open(zcsr_mix_backend* b) {
     const struct spa_pod* params[1];
     uint8_t buffer[1024];
     struct spa_pod_builder pod_builder = SPA_POD_BUILDER_INIT(buffer, sizeof buffer);
-    static const struct spa_audio_info_raw raw_info = {
+    struct spa_audio_info_raw raw_info = {
         .format = SPA_AUDIO_FORMAT_S32_LE,
         .rate = ZCSR_MIX_RATE,
         .channels = 2,

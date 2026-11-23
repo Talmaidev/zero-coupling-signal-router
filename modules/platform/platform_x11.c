@@ -25,7 +25,9 @@
 #include <X11/Xmd.h>
 #include <X11/Xresource.h>
 #include <X11/cursorfont.h>
+#ifdef ZCSR_HAVE_XRANDR
 #include <X11/extensions/Xrandr.h>
+#endif
 #include <locale.h>
 #include <math.h>
 #include <stdlib.h>
@@ -540,6 +542,7 @@ float zcsr_surface_get_dpi_scale(const zcsr_surface* s) {
 }
 
 /* ---------------- display enumeration ---------------- */
+#ifdef ZCSR_HAVE_XRANDR
 static int x_query_refresh_hz(Display* dpy) {
     XRRScreenResources* res;
     XRROutputInfo* out_info;
@@ -574,6 +577,14 @@ static int x_query_refresh_hz(Display* dpy) {
     XRRFreeScreenResources(res);
     return hz;
 }
+#else
+/* XRandR dev headers are optional. Window creation and GLX still work; only
+ * refresh-rate reporting/fullscreen mode switching are unavailable. */
+static int x_query_refresh_hz(Display* dpy) {
+    (void)dpy;
+    return 0;
+}
+#endif
 
 int zcsr_display_count(void) { return 1; }
 
@@ -627,6 +638,13 @@ zcsr_window_mode zcsr_surface_get_mode(const zcsr_surface* s) {
 
 /* Real XRandR mode switch. The contract limits this to exclusive fullscreen;
  * windowed/borderless return false without touching the output mode. */
+#ifndef ZCSR_HAVE_XRANDR
+bool zcsr_surface_set_refresh_hz(zcsr_surface* s, int hz) {
+    (void)s;
+    (void)hz;
+    return false;
+}
+#else
 bool zcsr_surface_set_refresh_hz(zcsr_surface* s, int hz) {
     Display* dpy;
     XRRScreenResources* res;
@@ -690,6 +708,7 @@ bool zcsr_surface_set_refresh_hz(zcsr_surface* s, int hz) {
     XRRFreeScreenResources(res);
     return changed;
 }
+#endif /* ZCSR_HAVE_XRANDR */
 
 /* ---------------- 光标 ---------------- */
 bool zcsr_surface_set_cursor_shape(zcsr_surface* s, zcsr_cursor_shape shape) {

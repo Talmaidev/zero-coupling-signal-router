@@ -67,7 +67,10 @@ void zcsr_cocoa_input_pump(void* ns_window, zcsr_cocoa_key_cb cb, void* ctx, int
             if (is_down && [event isARepeat]) continue; /* edge semantics: ignore auto-repeat */
             if (cb) cb(ctx, keycode, is_down);
         }
-        if (out_close && window && ![window isVisible]) *out_close = 1;
+        /* Close is owned by the NSWindowDelegate, not inferred from
+         * ![window isVisible].  The delegate records the request before the
+         * window can disappear, so Cancel can actually keep it open. */
+        (void)window;
     }
 }
 

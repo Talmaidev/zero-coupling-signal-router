@@ -90,11 +90,38 @@ static void test_ortho_pitch_mapping(void) {
     CHECK(near(zcsr_camera_get_pitch_deg(&c), 63.43f, 0.5f));
 }
 
+static void test_screen_ground_roundtrip(void) {
+    zcsr_camera3d c;
+    float px, py, depth, gx, gy;
+    /* 2.5D ground pick: project a z=0 point, then invert the same camera. */
+    zcsr_camera3d_init(&c, 800, 600, 0, 0, 20, 0, 60, 60);
+    CHECK(zcsr_camera3d_project(&c, 5, 3, 0, &px, &py, &depth));
+    CHECK(zcsr_camera3d_screen_to_ground(&c, px, py, &gx, &gy));
+    CHECK(near(gx, 5, 1e-3f));
+    CHECK(near(gy, 3, 1e-3f));
+
+    zcsr_camera3d_init(&c, 800, 600, 0, 0, 20, 35, 55, 55);
+    CHECK(zcsr_camera3d_project(&c, -4, -2, 0, &px, &py, &depth));
+    CHECK(zcsr_camera3d_screen_to_ground(&c, px, py, &gx, &gy));
+    CHECK(near(gx, -4, 1e-3f));
+    CHECK(near(gy, -2, 1e-3f));
+}
+
+static void test_screen_ground_miss(void) {
+    zcsr_camera3d c;
+    float gx = 0, gy = 0;
+    /* Looking up: the ray never reaches z=0 in front of the camera. */
+    zcsr_camera3d_init(&c, 800, 600, 0, 0, 10, 0, -30, 60);
+    CHECK(!zcsr_camera3d_screen_to_ground(&c, 400, 300, &gx, &gy));
+}
+
 int main(void) {
     test_perspective_center();
     test_perspective_depth_scaling();
     test_perspective_behind();
     test_pitch_down();
+    test_screen_ground_roundtrip();
+    test_screen_ground_miss();
     test_ortho_pitch_mapping();
     if (fails) { printf("camera3d: %d check(s) failed\n", fails); return 1; }
     printf("camera3d: all checks passed\n");

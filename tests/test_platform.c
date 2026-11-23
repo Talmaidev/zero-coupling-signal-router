@@ -155,6 +155,19 @@ int main(void) {
                 CHECK(zcsr_surface_set_client_size(s, 100, 100) != false, 26);
                 /* move to invalid display while fullscreen must fail. */
                 CHECK(zcsr_surface_move_to_display(s, 99999) != false, 27);
+#if defined(__linux__)
+                /* X11 with XRandR: request the refresh rate the display
+                 * reports.  This is a real mode switch on servers that expose
+                 * a non-zero dot clock (Xorg dummy/VNC, real GPUs); Xvfb
+                 * reports 0 Hz, so the positive path is skipped there. */
+                {
+                    zcsr_display_info di;
+                    if (zcsr_display_get(0, &di) &&
+                        strcmp(di.name, "X11") == 0 && di.refresh_hz > 0) {
+                        CHECK(zcsr_surface_set_refresh_hz(s, di.refresh_hz) != true, 44);
+                    }
+                }
+#endif
                 /* Re-requesting fullscreen must succeed and not corrupt state. */
                 CHECK(zcsr_surface_set_mode(s, ZCSR_WINDOW_FULLSCREEN) == false, 28);
                 /* Leave fullscreen back to windowed. */
