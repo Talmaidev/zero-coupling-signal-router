@@ -1,4 +1,5 @@
 ZCSR change notes
+Version 1.0.0; main is the canonical history.
 2026-11-25
 
 Repository hygiene constraints hardened (build layout enforced)
