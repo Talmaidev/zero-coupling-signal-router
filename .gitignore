@@ -23,3 +23,7 @@ build_main/
 
 # runtime UI layout state
 settings_layout.txt
+
+# prebuilt media deps (FFmpeg LGPL shared / libwebp static); regenerate per third_party/DEPENDENCIES.md
+/third_party/prebuilt/
+

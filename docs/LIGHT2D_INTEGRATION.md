@@ -170,14 +170,15 @@ self（G1）；sprite/instance 管线直接进 G-buffer（单输出 shader，需
 **唯一可靠的验收是读像素**：
 
 ```powershell
-# 1) 构建（零警告）
-cmd /c "call \"C:\Program Files\Microsoft Visual Studio\18\Professional\VC\Auxiliary\Build\vcvars64.bat\" && cmake --build build-msvc -j"
+# 1) 构建（零警告）；构建树位于共享输出根，源码树内不得出现 build-msvc
+$build = "C:\Users\chen\Documents\build\zcsr\zero-coupling-signal-router\win-msvc"
+cmd /c "call \"C:\Program Files\Microsoft Visual Studio\18\Professional\VC\Auxiliary\Build\vcvars64.bat\" && cmake --build `"$build`" -j"
 # 2) autoquit 冒烟（proof 4/4 PASS 打印在 stdout）
-build-msvc\zcsr_test.exe autoquit
+& "$build\Release\zcsr_test.exe" autoquit
 # 3) 截图探针（启动 exe → 定窗 → 截帧 → 读指定像素 RGB）
 powershell -ExecutionPolicy Bypass -File tools\verify_light2d_shot.ps1
 # 4) 数学契约 ctest（纯 CPU：投影往返/k-shift 定律/射线 slab 用例）
-cmd /c "call \"C:\Program Files\Microsoft Visual Studio\18\Professional\VC\Auxiliary\Build\vcvars64.bat\" && cd build-msvc && ctest -R light2d_math --output-on-failure"
+cmd /c "call \"C:\Program Files\Microsoft Visual Studio\18\Professional\VC\Auxiliary\Build\vcvars64.bat\" && cd `"$build`" && ctest -R light2d_math --output-on-failure"
 ```
 
 `tools/verify_light2d_shot.ps1`（自 build-msvc/shot.ps1 固化）在 1280×720

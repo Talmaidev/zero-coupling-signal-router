@@ -1,11 +1,14 @@
 /* Engine-ext - image module.
  * Renderer-agnostic decode and offline CPU image processing. Includes only shared contracts
- * plus the vendored stb_image implementation; all allocations come from the caller buffer.
+ * plus the vendored stb_image implementation. Output pixels are caller-owned; backend scratch
+ * stays behind the opaque handle, with no retained per-frame heap growth.
  */
 #include "zcsr/image.h"
+#include "image_internal.h"
 
 #include <limits.h>
 #include <stdint.h>
+#include <string.h>
 
 typedef struct {
     unsigned char* base;
@@ -53,9 +56,18 @@ static void* zcsr_image_realloc_sized(void* ptr, size_t old_size, size_t new_siz
     return dst;
 }
 
+/* T0 image line: only PNG / JPEG / BMP / GIF / HDR routes are compiled out of
+ * stb_image. The removed legacy/spectator containers are switched off at the
+ * stb compile boundary so their decoders cannot be reached from any dispatch
+ * path. HDR decoding stays enabled (STBI_NO_HDR not defined) so
+ * stbi_loadf_from_memory is available; the float Radiance RGBE path is
+ * tonemapped to RGBA8 here. STBI_NO_LINEAR stays undefined as well: the float
+ * interface used by the HDR route is guarded by it in stb_image.h. */
 #define STBI_NO_STDIO
-#define STBI_NO_HDR
-#define STBI_NO_LINEAR
+#define STBI_NO_TGA
+#define STBI_NO_PSD
+#define STBI_NO_PIC
+#define STBI_NO_PNM
 #define STB_IMAGE_STATIC
 #define STBI_MALLOC(sz) zcsr_image_alloc(sz)
 #define STBI_REALLOC(p, sz) zcsr_image_realloc_sized((p), 0, (sz))
@@ -67,7 +79,14 @@ static void* zcsr_image_realloc_sized(void* ptr, size_t old_size, size_t new_siz
 #pragma GCC diagnostic ignored "-Wunused-function"
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #endif
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4244 4267 4189 4389)
+#endif
 #include "../../third_party/stb_image.h"
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif
@@ -91,7 +110,18 @@ static void zcsr_copy_rgba(uint8_t* dst, const uint8_t* src, size_t bytes) {
     for (size_t i = 0; i < bytes; ++i) dst[i] = src[i];
 }
 
-zcsr_image zcsr_image_decode(const void* encoded, size_t encoded_len, void* buffer, size_t bytes) {
+/* ---- Internal decode routes (shared with the ICO/CUR container parser) ---- */
+
+/* stb 8-bit load; assumes the caller has attached the arena. Returns pixels
+ * (inside the arena) or NULL. */
+static unsigned char* zcsr_stb8_load(const void* encoded, size_t encoded_len,
+                                     int* w, int* h, int* channels) {
+    return stbi_load_from_memory((const unsigned char*)encoded, (int)encoded_len,
+                                 w, h, channels, 4);
+}
+
+zcsr_image zcsr_image_decode_stb8(const void* encoded, size_t encoded_len,
+                                  void* buffer, size_t bytes) {
     zcsr_image_arena arena;
     int w = 0;
     int h = 0;
@@ -103,12 +133,210 @@ zcsr_image zcsr_image_decode(const void* encoded, size_t encoded_len, void* buff
     }
     arena = (zcsr_image_arena){ (unsigned char*)buffer, bytes, 0 };
     zcsr_image_active_arena = &arena;
-    pixels = stbi_load_from_memory((const unsigned char*)encoded, (int)encoded_len, &w, &h, &channels, 4);
+    pixels = zcsr_stb8_load(encoded, encoded_len, &w, &h, &channels);
     zcsr_image_active_arena = 0;
     (void)channels;
     if (!pixels || !zcsr_image_size(w, h, &image_bytes)) return (zcsr_image){ 0, 0, 0 };
     (void)image_bytes;
     return (zcsr_image){ w, h, pixels };
+}
+
+int zcsr_image_stb8_info(const void* encoded, size_t encoded_len, int* w, int* h) {
+    int comp = 0;
+    if (!encoded || encoded_len == 0 || encoded_len > (size_t)INT_MAX || !w || !h) return 0;
+    return stbi_info_from_memory((const unsigned char*)encoded, (int)encoded_len, w, h, &comp);
+}
+
+const uint8_t* zcsr_image_load_gif_frames(const void* encoded, size_t encoded_len,
+                                          void* buffer, size_t bytes,
+                                          int* w, int* h, int* frame_count,
+                                          int** delays) {
+    zcsr_image_arena arena;
+    int channels = 0;
+    int* gif_delays = 0;
+    const uint8_t* pixels;
+
+    if (!encoded || encoded_len == 0 || encoded_len > (size_t)INT_MAX || !buffer || bytes == 0 ||
+        !w || !h || !frame_count || !delays) {
+        return 0;
+    }
+    arena = (zcsr_image_arena){ (unsigned char*)buffer, bytes, 0 };
+    zcsr_image_active_arena = &arena;
+    pixels = stbi_load_gif_from_memory((const unsigned char*)encoded, (int)encoded_len,
+                                       &gif_delays, w, h, frame_count, &channels, 4);
+    zcsr_image_active_arena = 0;
+    if (!pixels || *frame_count <= 0) return 0;
+    *delays = gif_delays;
+    return pixels;
+}
+
+/* Reinhard filmic-ish compress without a libm dependency: c/(1+c), clamp, round.
+ * NaN / negative inputs map to black. */
+static uint8_t zcsr_tonemap_channel(float c) {
+    float r;
+    if (!(c > 0.0f)) return 0;
+    r = c / (1.0f + c);
+    if (r > 1.0f) r = 1.0f;
+    return (uint8_t)(r * 255.0f + 0.5f);
+}
+
+static uint8_t zcsr_tonemap_alpha(float a) {
+    if (!(a > 0.0f)) return 0;
+    if (a > 1.0f) return 255;
+    return (uint8_t)(a * 255.0f + 0.5f);
+}
+
+/* Radiance RGBE: stb decodes to linear float RGBA; we compress to RGBA8 inside
+ * the caller buffer. The float scratch and the packed output both live in the
+ * same bump arena. */
+static zcsr_image zcsr_image_decode_hdr(const void* encoded, size_t encoded_len,
+                                       void* buffer, size_t bytes) {
+    zcsr_image_arena arena;
+    int w = 0;
+    int h = 0;
+    int channels = 0;
+    float* pixels;
+    size_t image_bytes;
+    size_t count;
+    uint8_t* out;
+
+    if (!encoded || encoded_len == 0 || encoded_len > (size_t)INT_MAX || !buffer || bytes == 0) {
+        return (zcsr_image){ 0, 0, 0 };
+    }
+    arena = (zcsr_image_arena){ (unsigned char*)buffer, bytes, 0 };
+    zcsr_image_active_arena = &arena;
+    pixels = stbi_loadf_from_memory((const unsigned char*)encoded, (int)encoded_len,
+                                    &w, &h, &channels, 4);
+    if (!pixels || !zcsr_image_size(w, h, &image_bytes)) {
+        zcsr_image_active_arena = 0;
+        return (zcsr_image){ 0, 0, 0 };
+    }
+    out = (uint8_t*)zcsr_image_alloc(image_bytes);
+    if (!out) {
+        zcsr_image_active_arena = 0;
+        return (zcsr_image){ 0, 0, 0 };
+    }
+    count = (size_t)w * (size_t)h;
+    for (size_t i = 0; i < count; ++i) {
+        const float* f = &pixels[i * 4];
+        uint8_t* o = &out[i * 4];
+        o[0] = zcsr_tonemap_channel(f[0]);
+        o[1] = zcsr_tonemap_channel(f[1]);
+        o[2] = zcsr_tonemap_channel(f[2]);
+        o[3] = zcsr_tonemap_alpha(f[3]);
+    }
+    zcsr_image_active_arena = 0;
+    (void)channels;
+    return (zcsr_image){ w, h, out };
+}
+
+static uint16_t zcsr_rd16le(const uint8_t* p) {
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+
+static uint32_t zcsr_rd32le(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void zcsr_wr16le(uint8_t* p, uint16_t v) {
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+}
+
+static void zcsr_wr32le(uint8_t* p, uint32_t v) {
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+    p[2] = (uint8_t)((v >> 16) & 0xFFu);
+    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+/* Wrap a bare ICO/CUR DIB in a synthetic 14-byte BMP file header so the stb
+ * BMP loader can consume it. Icon DIBs store biHeight doubled (image height +
+ * AND mask height); we halve it per the icon convention. */
+zcsr_image zcsr_image_decode_dib(const void* dib, size_t dib_len,
+                                 void* buffer, size_t bytes) {
+    zcsr_image_arena arena;
+    const uint8_t* d = (const uint8_t*)dib;
+    uint32_t bi_size;
+    int32_t width;
+    int32_t height2;
+    uint16_t bpp;
+    uint32_t compression;
+    uint32_t palette_bytes;
+    uint32_t data_offset;
+    size_t wrapper_len;
+    uint8_t* wrapper;
+    zcsr_image img;
+
+    if (!dib || dib_len < 40 || !buffer || bytes == 0) return (zcsr_image){ 0, 0, 0 };
+    bi_size = zcsr_rd32le(d + 0);
+    if (bi_size != 40 && bi_size != 56 && bi_size != 108 && bi_size != 124) {
+        return (zcsr_image){ 0, 0, 0 };
+    }
+    width = (int32_t)zcsr_rd32le(d + 4);
+    height2 = (int32_t)zcsr_rd32le(d + 8);
+    bpp = zcsr_rd16le(d + 14);
+    compression = zcsr_rd32le(d + 16);
+    if (width <= 0 || height2 <= 0) return (zcsr_image){ 0, 0, 0 };
+    if (compression != 0) return (zcsr_image){ 0, 0, 0 };           /* BI_RGB only */
+    if (bpp != 16 && bpp != 24 && bpp != 32) return (zcsr_image){ 0, 0, 0 };
+    palette_bytes = 0;                                              /* no palette for >=16bpp */
+
+    arena = (zcsr_image_arena){ (unsigned char*)buffer, bytes, 0 };
+    zcsr_image_active_arena = &arena;
+
+    if (dib_len > SIZE_MAX - 14u) { zcsr_image_active_arena = 0; return (zcsr_image){ 0, 0, 0 }; }
+    wrapper_len = 14u + dib_len;
+    wrapper = (uint8_t*)zcsr_image_alloc(wrapper_len);
+    if (!wrapper) { zcsr_image_active_arena = 0; return (zcsr_image){ 0, 0, 0 }; }
+
+    wrapper[0] = 'B';
+    wrapper[1] = 'M';
+    zcsr_wr32le(wrapper + 2, (uint32_t)wrapper_len);
+    zcsr_wr16le(wrapper + 6, 0);
+    zcsr_wr16le(wrapper + 8, 0);
+    data_offset = 14u + bi_size + palette_bytes;
+    zcsr_wr32le(wrapper + 10, data_offset);
+    memcpy(wrapper + 14, d, dib_len);
+    /* Halve the doubled icon height in the copied DIB header. */
+    zcsr_wr32le(wrapper + 14 + 8, (uint32_t)(height2 / 2));
+
+    {
+        int w = 0;
+        int h = 0;
+        int channels = 0;
+        unsigned char* pixels = zcsr_stb8_load(wrapper, wrapper_len, &w, &h, &channels);
+        size_t image_bytes = 0;
+        zcsr_image_active_arena = 0;
+        (void)channels;
+        if (!pixels || !zcsr_image_size(w, h, &image_bytes)) return (zcsr_image){ 0, 0, 0 };
+        (void)image_bytes;
+        img = (zcsr_image){ w, h, pixels };
+    }
+    return img;
+}
+
+zcsr_image zcsr_image_decode(const void* encoded, size_t encoded_len, void* buffer, size_t bytes) {
+    zcsr_image_format fmt;
+
+    if (!encoded || encoded_len == 0 || !buffer || bytes == 0) {
+        return (zcsr_image){ 0, 0, 0 };
+    }
+    fmt = zcsr_image_detect_format(encoded, encoded_len);
+    switch (fmt) {
+        case ZCSR_IMAGE_FMT_HDR:
+            return zcsr_image_decode_hdr(encoded, encoded_len, buffer, bytes);
+        case ZCSR_IMAGE_FMT_ICO:
+        case ZCSR_IMAGE_FMT_CUR:
+            return zcsr_image_decode_container(encoded, encoded_len, buffer, bytes);
+        case ZCSR_IMAGE_FMT_WEBP:
+            return zcsr_image_decode_webp(encoded, encoded_len, buffer, bytes);
+        default:
+            /* PNG / JPEG / BMP / GIF, and UNKNOWN signatures the stb
+             * sniffers may still recognize. */
+            return zcsr_image_decode_stb8(encoded, encoded_len, buffer, bytes);
+    }
 }
 
 bool zcsr_image_chroma_key(zcsr_image* img,

@@ -8,12 +8,21 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-BUILD_DIR="${ROOT_DIR}/build"
-VERIFY_BIN="${BUILD_DIR}/verify_macos"
+# Logs and scratch live outside the source tree under a sibling zcsr-build-macos
+# root; the verify_macos binary is read from the out-of-tree build produced by
+# verify_macos_linear.sh (override its location if that build used another dir).
+BUILD_DIR="${ZCSR_MACOS_LOG_DIR:-$ROOT_DIR/../zcsr-build-macos/logs}"
+case "$BUILD_DIR" in
+    "$ROOT_DIR"/*|"$ROOT_DIR")
+        echo "ERROR: BUILD_DIR '${BUILD_DIR}' is inside the source tree (${ROOT_DIR}); refused." >&2
+        exit 1
+        ;;
+esac
+VERIFY_BIN="${ZCSR_MACOS_VERIFY_BIN:-$ROOT_DIR/../zcsr-build-macos/verify_linear/verify_macos}"
 
 if [[ ! -x "${VERIFY_BIN}" ]]; then
     echo "ERROR: ${VERIFY_BIN} does not exist or is not executable." >&2
-    echo "Build it with: cmake --build build --target verify_macos" >&2
+    echo "Build it first with tools/verify_macos_linear.sh (out-of-tree build)." >&2
     exit 1
 fi
 

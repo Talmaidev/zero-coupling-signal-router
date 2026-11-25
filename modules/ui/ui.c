@@ -1,4 +1,5 @@
 #include "ui_internal.h"
+#include "zcsr/ui_text_edit.h"
 #include "zcsr/diagnostics.h"
 
 static ZCSR_UI g_ui_pool[ZCSR_UI_MAX_INSTANCE_COUNT];
@@ -429,6 +430,7 @@ ZCSR_Result zcsr_ui_set_focus(ZCSR_UI* ui, ZCSR_NodeId id)
     if (id == ZCSR_NODE_INVALID) { ui->focus_id = ZCSR_NODE_INVALID; return ZCSR_OK; }
     n = ui_find_node(ui, id);
     if (!n) return ZCSR_ERR_NOT_FOUND;
+    n->text_anchor = n->caret_byte;   /* a new focus always starts collapsed */
     ui->focus_id = id;
     return ZCSR_OK;
 }
@@ -482,31 +484,26 @@ ZCSR_Result zcsr_ui_clear_events(ZCSR_UI* ui)
     return ZCSR_OK;
 }
 
-/* ---- UTF-8 helpers ---- */
-static uint32_t utf8_seq_len(const char* s, uint32_t len, uint32_t pos)
+/* ---- Text editing: the node only stores bytes; the algorithm lives in
+ * zcsr/ui_text_edit.h so UIM and the engine cannot drift apart again. ---- */
+static zcsr_text_edit node_text_view(ZCSR_UI_Node* n)
 {
-    unsigned char c;
-    if (pos >= len) return 0;
-    c = (unsigned char)s[pos];
-    if ((c & 0x80) == 0) return 1;
-    if ((c & 0xE0) == 0xC0) return 2;
-    if ((c & 0xF0) == 0xE0) return 3;
-    if ((c & 0xF8) == 0xF0) return 4;
-    return 1;
+    zcsr_text_edit e;
+    e.data = n->text_buf;
+    /* text_cap is the array size (bytes), so the payload limit is one less:
+     * the terminator still has to fit. */
+    e.capacity = n->text_cap > 0 ? (size_t)n->text_cap - 1u : 0u;
+    e.length = strlen(n->text_buf);
+    e.cursor = n->caret_byte <= e.length ? n->caret_byte : e.length;
+    e.anchor = n->text_anchor <= e.length ? n->text_anchor : e.cursor;
+    e.read_only = n->read_only;
+    return e;
 }
-static uint32_t utf8_next(const char* s, uint32_t len, uint32_t pos)
+
+static void node_text_store(ZCSR_UI_Node* n, const zcsr_text_edit* e)
 {
-    uint32_t sl = utf8_seq_len(s, len, pos);
-    return sl == 0 ? pos : pos + sl;
-}
-static uint32_t utf8_prev(const char* s, uint32_t pos)
-{
-    uint32_t p;
-    if (pos == 0) return 0;
-    p = pos - 1;
-    while (p > 0 && (((unsigned char)s[p] & 0xC0) == 0x80))
-        p--;
-    return p;
+    n->caret_byte = (uint32_t)e->cursor;
+    n->text_anchor = (uint32_t)e->anchor;
 }
 
 /* Hit test: topmost visible enabled node at (x,y), ignoring separator/label/panel background. */
@@ -712,30 +709,39 @@ ZCSR_Result zcsr_ui_process_input(ZCSR_UI* ui, const ZCSR_Input* in)
             if (n->float_val > n->float_max) n->float_val = n->float_max;
             ui_emit_event(ui, ZCSR_EVENT_SLIDER_CHANGED, n->id, n->component);
         } else if (n->component == ZCSR_COMPONENT_TEXT_INPUT) {
-            if (in->key == ZCSR_UI_KEY_ENTER)
+            if (in->key == ZCSR_UI_KEY_ENTER) {
                 ui_emit_event(ui, ZCSR_EVENT_TEXT_SUBMITTED, n->id, n->component);
-            else if (in->key == ZCSR_UI_KEY_ESCAPE)
+            } else if (in->key == ZCSR_UI_KEY_ESCAPE) {
                 ui_emit_event(ui, ZCSR_EVENT_TEXT_CANCELLED, n->id, n->component);
-            else if (in->key == ZCSR_UI_KEY_BACKSPACE && n->caret_byte > 0 && n->text_cap > 0) {
-                uint32_t len = (uint32_t)strlen(n->text_buf);
-                uint32_t prev = utf8_prev(n->text_buf, n->caret_byte);
-                uint32_t sl = n->caret_byte - prev; /* bytes to delete */
-                memmove(n->text_buf + prev,
-                        n->text_buf + n->caret_byte,
-                        len - n->caret_byte);
-                n->caret_byte = prev;
-                n->text_buf[len - sl] = '\0';
-                ui_emit_event(ui, ZCSR_EVENT_TEXT_CHANGED, n->id, n->component);
-            } else if (in->key == ZCSR_UI_KEY_LEFT && n->caret_byte > 0) {
-                n->caret_byte = utf8_prev(n->text_buf, n->caret_byte);
-            } else if (in->key == ZCSR_UI_KEY_RIGHT && n->text_cap > 0) {
-                uint32_t len = (uint32_t)strlen(n->text_buf);
-                uint32_t nx = utf8_next(n->text_buf, len, n->caret_byte);
-                if (nx > n->caret_byte) n->caret_byte = nx;
-            } else if (in->key == ZCSR_UI_KEY_HOME)
-                n->caret_byte = 0;
-            else if (in->key == ZCSR_UI_KEY_END && n->text_cap > 0)
-                n->caret_byte = (uint32_t)strlen(n->text_buf);
+            } else if (n->text_cap > 0) {
+                zcsr_text_edit te = node_text_view(n);
+                bool changed = false;
+                switch (in->key) {
+                case ZCSR_UI_KEY_BACKSPACE:
+                    (void)zcsr_text_backspace(&te, &changed);
+                    break;
+                case ZCSR_UI_KEY_DELETE:
+                    (void)zcsr_text_delete_forward(&te, &changed);
+                    break;
+                case ZCSR_UI_KEY_LEFT:
+                    zcsr_text_move_cursor(&te, -1);
+                    break;
+                case ZCSR_UI_KEY_RIGHT:
+                    zcsr_text_move_cursor(&te, 1);
+                    break;
+                case ZCSR_UI_KEY_HOME:
+                    zcsr_text_cursor_home(&te);
+                    break;
+                case ZCSR_UI_KEY_END:
+                    zcsr_text_cursor_end(&te);
+                    break;
+                default:
+                    break;
+                }
+                node_text_store(n, &te);
+                if (changed)
+                    ui_emit_event(ui, ZCSR_EVENT_TEXT_CHANGED, n->id, n->component);
+            }
         }
         break;
     }
@@ -743,20 +749,11 @@ ZCSR_Result zcsr_ui_process_input(ZCSR_UI* ui, const ZCSR_Input* in)
     case ZCSR_INPUT_TEXT: {
         n = ui_find_node(ui, ui->focus_id);
         if (n && n->component == ZCSR_COMPONENT_TEXT_INPUT && n->enabled && n->text_cap > 0) {
-            size_t len = strlen(n->text_buf);
-            size_t cap = n->text_cap;
-            uint32_t j;
-            for (j = 0; j < in->text_bytes && len + 1 < cap; j++) {
-                if (n->caret_byte < len)
-                    memmove(n->text_buf + n->caret_byte + 1,
-                            n->text_buf + n->caret_byte,
-                            len - n->caret_byte);
-                n->text_buf[n->caret_byte] = in->text_utf8[j];
-                n->caret_byte++;
-                len++;
+            zcsr_text_edit te = node_text_view(n);
+            if (zcsr_text_insert(&te, in->text_utf8, in->text_bytes) == ZCSR_TEXT_OK) {
+                node_text_store(n, &te);
+                ui_emit_event(ui, ZCSR_EVENT_TEXT_CHANGED, n->id, n->component);
             }
-            n->text_buf[len] = '\0';
-            ui_emit_event(ui, ZCSR_EVENT_TEXT_CHANGED, n->id, n->component);
         }
         break;
     }

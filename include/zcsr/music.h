@@ -1,7 +1,11 @@
 #ifndef ZCSR_MUSIC_H
 #define ZCSR_MUSIC_H
-/* Streaming music player (OGG Vorbis / MP3). Decodes in a background thread,
- * feeds PCM into an audiomix stream channel. No heap: caller provides buffer.
+/* Streaming music player: OGG Vorbis / MP3 / WAV PCM / FLAC / AAC / M4A / Opus.
+ * Decodes in a background thread, feeds PCM into an audiomix stream channel.
+ *
+ * Memory contract: output PCM is caller-owned. A backend may hold decoder
+ * context and scratch memory behind the opaque handle; there is no retained
+ * per-frame heap growth and no allocation on the per-frame output path.
  * Implemented in modules/music. Depends on zcsr/audio_mix.h. */
 #include "audio_mix.h"
 #include <stdbool.h>
@@ -10,9 +14,25 @@
 
 typedef struct zcsr_music zcsr_music;
 
+/* Container/encoding identifiers. Values are part of the 1.0 ABI; the T0
+ * cleanup removed unsupported entries before release, so the numbering is
+ * dense and must not be renumbered later. */
 typedef enum {
-    ZCSR_MUSIC_OGG = 0,
-    ZCSR_MUSIC_MP3 = 1
+    ZCSR_MUSIC_OGG = 0,   /* Ogg Vorbis (stb_vorbis) */
+    ZCSR_MUSIC_MP3 = 1,   /* MPEG-1/2 Layer III (minimp3) */
+    /* RIFF/WAVE PCM or IEEE float. Compressed WAV codecs (ADPCM, A-law,
+     * mu-law) are rejected at parse time with ZCSR_MUSIC_ERR_UNSUPPORTED;
+     * they have no enum entry and no "recognized but unsupported" path. */
+    ZCSR_MUSIC_WAV = 2,
+    /* FLAC (native container, not Ogg FLAC), decoded via vendored dr_flac. */
+    ZCSR_MUSIC_FLAC = 3,
+    /* AAC, ADTS framing. FFmpeg backend, hidden behind the opaque handle. */
+    ZCSR_MUSIC_AAC = 4,
+    /* AAC inside MP4 (ftyp M4A/MP4). FFmpeg backend, opaque handle. */
+    ZCSR_MUSIC_M4A = 5,
+    /* Ogg Opus. FFmpeg backend, opaque handle. */
+    ZCSR_MUSIC_OPUS = 6,
+    ZCSR_MUSIC_COUNT = 7
 } zcsr_music_format;
 
 typedef enum {
@@ -32,6 +52,33 @@ typedef enum {
     ZCSR_MUSIC_ERR_DECODE,
     ZCSR_MUSIC_ERR_NO_DEVICE
 } zcsr_music_error;
+
+/* Decoded stream attributes parsed at load. total_frames is 0 when the
+ * container does not expose a frame count up front (for example MP3, which
+ * only learns sample rate/channels on the first decoded frame). */
+typedef struct zcsr_music_spec {
+    uint32_t sample_rate;
+    uint16_t channels;
+    uint16_t bits_per_sample;
+    uint64_t total_frames;
+} zcsr_music_spec;
+
+/* True when this build ships a working decoder for fmt. The three FFmpeg-backed
+ * formats (AAC, M4A, Opus) return true only when the FFmpeg backend is compiled
+ * in; unknown enum values return false. */
+bool zcsr_music_format_supported(zcsr_music_format fmt);
+
+/* Copy the decoded stream attributes of an instance. Returns false only for
+ * NULL arguments; an untagged/unknown field stays zero, never uninitialized. */
+bool zcsr_music_get_spec(const zcsr_music* music, zcsr_music_spec* out_spec);
+
+/* Best-effort container detection from the encoded bytes alone. Writes the
+ * matched enum to out_fmt and returns true for a recognized T0 signature.
+ * Returns false (and leaves out_fmt untouched) when the signature is unknown.
+ * Detection does not guarantee decodability, but every returned enum has a
+ * real decoder in this build. */
+bool zcsr_music_detect_format(const void* encoded, size_t len,
+                               zcsr_music_format* out_fmt);
 
 /* Buffer size required for zcsr_music_load. Includes alignment slack.
  * Uses safe_add to avoid overflow. */
@@ -75,7 +122,7 @@ bool zcsr_music_duration_ms(const zcsr_music* music, uint64_t* out_ms);
  * Does not restart or join the decoder thread. Returns true when the request is
  * accepted; position_ms() is based on the target immediately after acceptance.
  * MP3 seek re-decodes from the first frame because no index buffer is allocated;
- * OGG seek uses stb_vorbis's sample index. */
+ * OGG seek uses stb_vorbis's sample index; FFmpeg backends use av_seek_frame. */
 bool zcsr_music_seek_ms(zcsr_music* music, uint64_t ms);
 
 #define ZCSR_MUSIC_TEXT_CAP 128u

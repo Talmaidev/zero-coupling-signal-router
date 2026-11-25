@@ -93,7 +93,7 @@ void zcsr_font_atlas_destroy(zcsr_font_atlas* a) {
     memset(a, 0, sizeof(*a));
 }
 
-/* Switch to a different TTF font at runtime. The glyph cache is fully
+/* Switch to a different TTF/OTF font at runtime. The glyph cache is fully
  * invalidated (different font => different metrics and bitmaps); the atlas
  * texture object itself is reused (fixed 1024x1024). */
 void zcsr_font_atlas_set_font(zcsr_font_atlas* a, zcsr_font* font) {

@@ -164,10 +164,33 @@ static ATOM zcsr_window_class(void) {
     return atom;
 }
 
+/* Per-monitor DPI awareness, before the first window exists. Without it the
+ * process is DPI-unaware, Windows bitmap-scales the whole window and
+ * GetDpiForWindow keeps reporting 96, so zcsr_surface_get_dpi_scale() — the
+ * single DPI source for layout/fonts/input — could never tell 100% from 150%.
+ * Loaded dynamically so no link dependency and no old-SDK header is needed. */
+static void zcsr_win_enable_dpi_awareness(void) {
+    static bool done = false;
+    HMODULE user32;
+    if (done) return;
+    done = true;
+    user32 = GetModuleHandleA("user32.dll");
+    if (user32) {
+        typedef BOOL (WINAPI *set_ctx_fn)(HANDLE);
+        set_ctx_fn p = (set_ctx_fn)(void*)GetProcAddress(user32, "SetProcessDpiAwarenessContext");
+        if (p) {
+            /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 == (HANDLE)-4 */
+            if (p((HANDLE)(LONG_PTR)-4)) return;
+        }
+    }
+    SetProcessDPIAware();   /* system-DPI fallback (Vista+) */
+}
+
 static zcsr_surface* zcsr_surface_create_impl(const char* title, zcsr_rect bounds,
                                               bool layered) {
     HWND hwnd;
     zcsr_surface* surface;
+    zcsr_win_enable_dpi_awareness();
     DWORD ex_style = WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
     DWORD style = WS_POPUP;
     if (layered) ex_style |= WS_EX_LAYERED;

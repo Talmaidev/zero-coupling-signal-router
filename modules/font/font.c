@@ -1,5 +1,6 @@
-/* zcsr font module — TrueType rasterizer via stb_truetype.
- * No heap: caller buffer + internal bump allocator for stb_truetype temporaries. */
+/* zcsr font module — TrueType/OpenType (TTF glyf / OTF CFF) rasterizer via stb_truetype.
+ * Glyph bitmaps are caller-owned. The opaque handle holds a fixed bump allocator for
+ * stb_truetype temporaries; no retained per-glyph heap grows with glyph count. */
 #include "zcsr/font.h"
 #include "../../third_party/stb_truetype.h"  /* declarations only; implementation in stb_truetype_impl.c */
 #include <string.h>
@@ -50,6 +51,47 @@ static uint8_t* align_up_ptr(uint8_t* p, size_t align) {
 
 static size_t align_up_sz(size_t s, size_t align) {
     return (s + align - 1u) & ~(align - 1u);
+}
+
+static uint32_t be32(const uint8_t* p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] <<  8) |  (uint32_t)p[3];
+}
+
+/* Bounds-check the sfnt header and table directory before handing the bytes to
+ * stb_truetype. stb's table lookup trusts the directory without validating
+ * offsets against the input length; a truncated or corrupted header would
+ * otherwise read out of bounds. Only plain TTF (0x00010000) and CFF OTF ('OTTO')
+ * are accepted; TTC collections and WOFF/WOFF2 magics are rejected here, before
+ * any decode path runs. The magic is also cross-checked against the outline
+ * tables: an 'OTTO' file must carry a 'CFF ' table, a TrueType file must carry
+ * both 'glyf' and 'loca' (a magic-only rename does not pass). */
+static bool zcsr_font_sanity_ok(const uint8_t* data, size_t len) {
+    uint32_t magic;
+    uint16_t num_tables;
+    size_t i;
+    bool has_cff = false, has_glyf = false, has_loca = false;
+    if (len < 12u) return false;
+    magic = be32(data);
+    if (magic != 0x00010000u && magic != 0x4F54544Fu) return false;  /* 'OTTO' */
+    num_tables = (uint16_t)(((uint16_t)data[4] << 8) | (uint16_t)data[5]);
+    if (num_tables == 0) return false;
+    if ((size_t)num_tables > (len - 12u) / 16u) return false;
+    for (i = 0; i < (size_t)num_tables; ++i) {
+        const uint8_t* rec = data + 12u + 16u * i;
+        uint32_t off = be32(rec + 8);
+        uint32_t slen = be32(rec + 12);
+        if (off > len || slen > len - off) return false;
+        if (memcmp(rec, "CFF ", 4) == 0) has_cff = true;
+        else if (memcmp(rec, "glyf", 4) == 0) has_glyf = true;
+        else if (memcmp(rec, "loca", 4) == 0) has_loca = true;
+    }
+    if (magic == 0x4F54544Fu) {
+        if (!has_cff) return false;
+    } else {
+        if (!has_glyf || !has_loca) return false;
+    }
+    return true;
 }
 
 /* ---- public API ---- */
@@ -103,6 +145,10 @@ zcsr_font* zcsr_font_load(const void* ttf, size_t ttf_len,
     f->scratch.capacity = 64u * 1024u;
     f->scratch.used = 0;
     f->scratch.failed = false;
+    if (!zcsr_font_sanity_ok(f->ttf_copy, f->ttf_len)) {
+        memset(f, 0, sizeof(*f));
+        return NULL;
+    }
     if (!stbtt_InitFont(&f->info, f->ttf_copy, 0)) {
         memset(f, 0, sizeof(*f));
         return NULL;

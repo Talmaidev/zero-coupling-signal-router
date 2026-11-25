@@ -1,8 +1,12 @@
 #ifndef ZCSR_FONT_H
 #define ZCSR_FONT_H
-/* TrueType font rasterizer. Loads TTF/OTF from memory, rasterizes glyphs to A8 bitmaps.
- * No heap: caller provides buffer. Implemented in modules/font.
- * Uses stb_truetype (vendored in third_party/), not exposed in this header. */
+/* TrueType/OpenType font rasterizer. Loads TTF/OTF (CFF) from memory, rasterizes
+ * glyphs to A8 bitmaps.
+ * Output glyph bitmaps are caller-owned. The backend may hold scratch memory behind
+ * the opaque handle; no retained per-glyph heap grows with glyph count, and no
+ * allocation happens per glyph on the rasterization path.
+ * Implemented in modules/font. Uses stb_truetype (vendored in third_party/), not
+ * exposed in this header. */
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>

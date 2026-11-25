@@ -1,133 +1,177 @@
 # Testing
 
-Two complementary layers, kept in **separate directories on purpose**:
+## Building
 
-| Directory | Purpose | Runs where |
-|---|---|---|
-| `tests/` | **Per-module unit / contract tests** — each module exercised *in isolation* against its contract header, plus one cross-module wiring test. Correctness gates. | Headless, via `ctest`. |
-| `integration/` | **Runnable demo + performance benchmarks** — modules composed into a running app, and frame-time / throughput measured. | Manual; some need a real display / sound card / gamepad. |
+### Build directory layout (enforced, not advisory)
 
-## Why two directories
+Build and test artifacts **never** live inside the repository tree. All
+build outputs go to a sibling build root; the repository checkout contains
+only source, fixtures, and documentation.
 
-The split mirrors the project's zero-coupling rule:
+- Windows: `C:\Users\chen\Documents\build\zcsr\<repo>\<preset>`
+- Linux: `/home/chen/zcsr-builds/<repo>/<preset>`
 
-- **`tests/` proves each module works alone.** A module compiles independently and is tested only through its public contract — never by reaching into another module. So each `tests/test_<module>.c` links exactly the one module (plus the contract layer it depends on) and asserts that module's behavior. These are fast, deterministic, **headless**, and are the suite a CI job runs. The single exception, `tests/test_integration.c`, checks that several modules wire together *correctly* (logic), not performance.
-- **`integration/` proves the modules work together as a real app, and how fast.** It holds the `zcsr_demo` (wires the whole stack and prints status) and the benchmarks (`bench*.c` — sprite frame-time, worst-case adversary, raylib comparison, culling, atlas, etc.). These are about **composition and performance**, and several depend on a real GPU / window / device, so they are not part of the headless correctness suite. Benchmarks **skip** themselves when run headless rather than fail.
+> 旧根 `zcsr-builds` 已整体迁入 `build\zcsr`，旧路径不再使用。
 
-Keeping them apart means the correctness suite stays fast, deterministic and CI-friendly, while the display-/hardware-dependent demo and perf artifacts don't pollute it.
+Do not create `build`, `build-*`, `out`, `out-*`, or any scratch directory
+inside the repository root. This layout is enforced by three layers:
 
-## tests/ — unit & contract suite (`ctest`)
+1. **Configure-time guard** — the root `CMakeLists.txt` refuses any build
+   tree that equals or sits under the source tree (`CMAKE_BINARY_DIR` under
+   `CMAKE_SOURCE_DIR`) with a fatal configure error. In-repo configure
+   fails; out-of-tree configure succeeds.
+2. **`repo_hygiene` CTest gate** — registered under `LABELS
+   "gate;hygiene"` (only when `ZCSR_BUILD_TESTS=ON`). It is a pure CMake
+   `cmake -P` script (`cmake/repo_hygiene_check.cmake`), cross-platform,
+   with no PowerShell/shell dependency, and it writes nothing inside the
+   source tree. It scans this repository only: any `build*/`, `out*/`,
+   `CMakeCache.txt`, `CMakeFiles/`, `Testing/`, `_dl/`, `_src/`, or stray
+   `*.obj/*.pdb/*.ilk/*.exe` outside the allowlist fails the gate.
+   `tests/data/**` (including the required fixture `tests/data/t0.wav`),
+   `tests/video_data/**`, `third_party/prebuilt/**`, `third_party/**`, and
+   `.git/**` are allowed.
+3. **Six-repo read-only sweep (Windows workstation only)** —
+   `C:\Users\chen\Documents\build\_reports\check_repo_hygiene.ps1` scans the
+   router and its five sibling repositories. Exit codes: `0` clean,
+   `1` violations found, `2` required repo missing / scan incomplete.
+   Linux checkouts hold only this repository, so the gate never fails there
+   for missing siblings; the full six-repo sweep does not run off Windows.
 
-The engine repository now has its own CTest entry points via the top-level
-`enable_testing()` and `tests/CMakeLists.txt`. The current Windows Release suite
-has 37 tests, covering core, signal, hsm, platform, glrender, light2d, audio,
-music, input, collision, save, ui, viewport, color_pipeline, scene_camera,
-scene, scene_render and scene_submit, plus the cross-module checks. The extra
-`light2d_math` entry is the pure-CPU shadow/projection contract (29 checks).
-
-`glrender` includes a real-backbuffer assertion for the unified linear frame:
-source texture round-trip and 50% black-over-white linear blending. On Windows
-(Intel Arc B580/WGL) and Linux (Mesa llvmpipe/GLX) it prints
-`PASS: unified linear frame round-trip and linear blending`. A surface-less
-environment still passes the CPU sort/contract checks but skips the GL probe.
-
-`game_test` is retired. The consumer builds in `zcsr_runtime` and `zcsr_editor`
-register their own UIM page/settings tests; they are not part of this engine
-suite.
-
-## Build & run
-
-### Windows (MSVC + VS 2026 generator)
-
-```powershell
-cmake -S . -B build -G "Visual Studio 18 2026" -A x64
-cmake --build build --config Release
-
-# Targeted: only the module/contract touched by the change, 8 at a time.
-ctest --test-dir build -C Release -R glrender -j 8
-ctest --test-dir build -C Release -R state -j 8
-
-# Deliberate full gate, not a default after every edit.
-ctest --test-dir build -C Release -j 8 --output-on-failure
-ctest --test-dir build -C Release -V       # verbose (see each assertion)
-```
-
-High-concurrency runs are not for the physical host. Move to the Doubao
-virtual desktop first, then use the repo-level runner and name only the suites
-the change actually touched:
-
-```powershell
-..\run_tests.ps1 -Suite PVZ -Jobs 8 -VirtualDesktop
-..\run_tests.ps1 -Suite Engine,Editor -Jobs 8 -VirtualDesktop
-..\run_tests.ps1 -Suite Engine -BuildOnly      # compile check only, no test run
-```
-
-The runner refuses to run tests without `-Suite` and `-VirtualDesktop`, so a
-one-file edit does not silently launch all six suites (including audio). Use
-`-BuildOnly` when the change is compile-only; reserve the test path for the
-single end-of-work verification.
-
-
-### Linux (X11/GLX default; Wayland/EGL optional)
+Run the gate before every push and in CI:
 
 ```sh
-cmake -S . -B build -G Ninja -DZCSR_ENABLE_BOX2D=OFF
-cmake --build build
-
-# Headless-safe tests run without a compositor:
-ctest --test-dir build -j 8
-
-# platform/inputext window tests need a display:
-xvfb-run -a -s '-screen 0 1280x720x24 +extension RANDR' ctest --test-dir build -j 8
-# or, for the native Wayland backend:
-WAYLAND_DISPLAY=wayland-0 ctest --test-dir build -j 8
+ctest -L gate --output-on-failure
 ```
 
-Linux window backends are still built and selectable. X11/GLX is the default when both X11 and Wayland development packages are present; Wayland/EGL is used only when selected (or when X11 is unavailable). Audio auto-selects PipeWire, then ALSA, then the silent backend. The CMake switches are `ZCSR_LINUX_WINDOW_BACKEND=auto|x11|wayland|none` and `ZCSR_AUDIO_BACKEND=auto|pipewire|alsa|none`.
+Historical stray products moved out of the router root are quarantined (not
+deleted) at
+`C:\Users\chen\Documents\build\zcsr\_quarantine\router-root-strays-20261125\`,
+with a `manifest.json` recording original paths, byte sizes, sha256,
+timestamps, and post-move verification. Full rules and exit-code semantics
+are in `C:\Users\chen\Documents\build\_reports\BUILD_LAYOUT.md`.
 
-Linux 1.0 验证口径（可回链细节见 `docs/LINUX_VERIFICATION.md`）：
-
-- Ubuntu 22.04 + GCC 11 + Mesa llvmpipe，X11/GLX + Xvfb：**35/35**，含 `inputext_x11`。
-- Ubuntu 22.04 + Weston 9 headless，原生 Wayland/EGL：**34/34**，`glrender_test` 输出 `backend=egl-wayland` 并真实回读三条 PASS。
-- Ubuntu 22.04 + PipeWire 0.3.48 + null sink：**35/35**，流真实连到 null sink；物理扬声器未验证。
-- Ubuntu 20.04 chroot + GCC 10 + glibc 2.31，X11/GLX：**35/35**；产物最高 `GLIBC_2.29` 符号。Xvfb 没有真实刷新率，XRandR 正路径另在 Xorg dummy/VNC 的 60Hz 模式上验证全屏返回 true、窗口模式返回 false。
-- Kali 物理机（真 X11 + 真 WM）此前 **35/35**；本次没有严重改动，按用户口径沿用该结果，不重跑全量。
-- 云主机只作补充：无 `/dev/dri`、无物理声卡，缺 GPU/声卡/显示模式不作为发布阻塞；Linux AMD/NVIDIA 驱动、Steam Deck/Gamescope 仍未单独验证。
-- 按用户口径，Linux 环境不再作为 1.0 门；物理机结果沿用，不为云副本差异重跑。若只改可编译代码，只做编译检查；需要验证时按改动套件选择，不默认全套。
-
-### macOS
-
-macOS uses Cocoa/NSOpenGL and requires Xcode Command Line Tools. The dedicated
-gate is:
+### Windows (MSVC, Visual Studio 18 2026, x64, Release)
 
 ```sh
-./tools/verify_macos_linear.sh
+cmake -S C:\Users\chen\Documents\GitHub\zero-coupling-signal-router ^
+      -B C:\Users\chen\Documents\build\zcsr\zero-coupling-signal-router\win-msvc ^
+      -G "Visual Studio 18 2026" -A x64
+cmake --build C:\Users\chen\Documents\build\zcsr\zero-coupling-signal-router\win-msvc --config Release
+ctest --test-dir C:\Users\chen\Documents\build\zcsr\zero-coupling-signal-router\win-msvc -C Release --output-on-failure
 ```
 
-It must print both `PASS: unified linear frame round-trip and linear blending`
-and `PASS: GL renderer smoke` on a real GUI session. See
-`docs/MACOS_VERIFICATION.md`; a headless Mac runner may skip the GL surface and
-is not sufficient for a real Mac check. **按用户 2026-11-23 决定，macOS 真机验收
-已 pass、不作为 1.0 发布门；没有真实 Mac 时不重跑此项。**
-
-### Android
-
-Android has a separate `android/CMakeLists.txt`. Build with the NDK toolchain. Tests run on-device via `adb shell`.
-
-## Coupling guard
+### Linux (GCC / Clang, Release; ASan+UBSan preset)
 
 ```sh
-bash tools/check_no_cross_includes.sh
+# GCC
+cmake -S /home/chen/zcsr_media_test \
+      -B /home/chen/zcsr-builds/zero-coupling-signal-router/linux-gcc \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc
+
+# Clang
+cmake -S /home/chen/zcsr_media_test \
+      -B /home/chen/zcsr-builds/zero-coupling-signal-router/linux-clang \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang
+
+# ASan + UBSan (GCC)
+cmake -S /home/chen/zcsr_media_test \
+      -B /home/chen/zcsr-builds/zero-coupling-signal-router/linux-asan \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc -DZCSR_ENABLE_SANITIZERS=ON
+
+cmake --build /home/chen/zcsr-builds/zero-coupling-signal-router/<preset> -j8
+ctest --test-dir /home/chen/zcsr-builds/zero-coupling-signal-router/<preset> --output-on-failure
 ```
 
-Verifies that no module includes another module's source or a relative path — only `include/zcsr/*.h` contract headers are allowed. Must PASS on every commit.
+## Test inventory
 
-## Test data
+The full gate is **61 tests on Windows** and **60 tests on Linux**. Each gate
+includes one `repo_hygiene` CTest gate (the `gate;hygiene` scripted check
+described above); the media and engine cases themselves are unchanged from the
+prior 60 / 59 count. The one remaining test-count difference is
+platform-conditional:
 
-- `tests/data/sample.mp3` — 44100Hz stereo MP3 (generated by ffmpeg, vendored)
-- `tests/data/sample.ogg` — 44100Hz stereo OGG (generated by ffmpeg, vendored)
+- `log_no_malloc` — MSVC only (dumpbin-based).
+- `input_win32_pump` — WIN32 only (real Win32 message path).
+- `inputext_x11` — Linux X11 only (registered when `XTest.h` and `libXtst`
+  are found).
 
-These are consumed by the standalone `tests/test_music_codec.c` harness. That
-harness is **not registered in CTest** (it is a manual direct-decoder check, and
-it SKIPs when the samples are absent), so the audio gate is `audio` / `audiomix`.
-Keep the samples for that manual harness (zero-network test policy).
+The T0 media gate registers 18 format targets, plus one music negative
+contract:
+
+| Domain | Targets |
+|---|---|
+| Image (7) | `image_png`, `image_jpeg`, `image_gif`, `image_gif_anim`, `image_webp`, `image_webp_anim`, `image_bmp` |
+| Music (7) | `music_mp3`, `music_aac`, `music_m4a`, `music_wav`, `music_flac`, `music_ogg`, `music_opus` |
+| Music negative | `music_negative` |
+| Video (2) | `video_mp4_h264`, `video_webm_vp9` |
+| Font (2) | `font_ttf`, `font_otf` |
+
+Legacy and regression targets (`image_hdr`, `image_ico`, `music_api`,
+`music_flac_legacy`, `music_flac_codec`, `font`, and the engine/core/ui
+suites) keep their existing registrations.
+
+## Fixture passing conventions
+
+The four domains pass fixture paths differently; the CTest registration
+matches each convention explicitly.
+
+- **Image tests** read the directory from the environment variable
+  `ZCSR_TEST_DATA_DIR` (they do not inspect `argv`; fallback `"data"`). The
+  registration sets
+  `ZCSR_TEST_DATA_DIR=<repo>/tests/data` for all seven image targets.
+- **Music and font tests** read the directory from `argv[1]` (fallback
+  `"tests/data"`). They are registered as explicit targets with
+  `COMMAND <target>_test <repo>/tests/data`.
+- **Video tests** check `argv[1]` first, then fall back to
+  `ZCSR_VIDEO_DATA_DIR`. Both are set: the command line passes
+  `<repo>/tests/video_data` and the test property exports
+  `ZCSR_VIDEO_DATA_DIR=<repo>/tests/video_data`.
+
+Because every test runs from a per-test `run_<name>` build folder, no
+relative `"."` or `"data"` fallback can resolve the fixtures; absolute
+paths are always supplied by the registration.
+
+## Device locks and timeouts
+
+- Music targets hold the `zcsr_audio_device` resource lock so audio tests do
+  not contend on the mixer/device. Timeout: **8 s**.
+- Video targets: timeout **60 s** (decode + seek + failure paths).
+- Font targets: timeout **10 s**.
+- GUI/display targets hold the `zcsr_gui_display` lock.
+- The format-gate and log suites keep their existing timeouts.
+
+## Runtime dependencies
+
+### Windows DLL placement
+
+FFmpeg ships as shared DLLs. A POST_BUILD step (`zcsr_copy_ffmpeg_runtime`)
+copies `${ZCSR_FFMPEG_ROOT}/bin/*.dll` next to every test executable that
+links the FFmpeg backend (all music and video targets, plus `music_api`).
+Image targets do not need the FFmpeg DLLs.
+
+### Linux shared-library resolution
+
+On Linux the FFmpeg shared libraries (`libav*.so`) resolve through the build
+rpath: `${ZCSR_FFMPEG_ROOT}/lib` is added to `CMAKE_BUILD_RPATH` for FFmpeg
+linked targets. No DLL copy step exists off Windows. If a local build drops
+the rpath (e.g. a packaged binary), export
+`LD_LIBRARY_PATH=${ZCSR_FFMPEG_ROOT}/lib` before running the tests.
+
+### Sanitizer noise allowance
+
+FFmpeg's own global allocations can outlive `avformat`/`avio` teardown and
+are reported by ASan as `<unknown module>` leaks. FFmpeg-linked music and
+video targets run with `ASAN_OPTIONS=detect_leaks=0`; ASan/UBSan detection
+otherwise stays enabled. Leaks, heap-buffer-overflow, or use-after-free
+reports attributed to zcsr code are treated as defects, not noise.
+
+## Warning policy
+
+- MSVC: `/W4 /WX` — warnings are errors; a clean build means zero `warning C`
+  diagnostics.
+- GCC / Clang: `-Wall -Wextra -Wpedantic`.
+- The only accepted warnings are pre-existing baseline noise in frozen
+  headers/modules (for example the variadic-macro extension in
+  `diagnostics.h`, and the >4095-char shader literal in
+  `glrender_instanced.c`); new T0 code must compile warning-free on both
+  toolchains.

@@ -1,4 +1,9 @@
-param([int]$RunMs = 800, [int]$MaxWaitMs = 20000)
+param(
+    [int]$RunMs = 800,
+    [int]$MaxWaitMs = 20000,
+    [string]$Exe = "C:\Users\chen\Documents\build\zcsr\zero-coupling-signal-router\win-msvc\Release\zcsr_test.exe",
+    [string]$OutDir = "C:\Users\chen\Documents\build\zcsr\zero-coupling-signal-router\verify-light2d"
+)
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
@@ -10,11 +15,14 @@ public class Win32 {
   public struct RECT { public int L; public int T; public int R; public int B; }
 }
 "@
-$exe = "C:\Users\chen\Documents\GitHub\zero-coupling-signal-router\build-msvc\zcsr_test.exe"
-$out = "C:\Users\chen\Documents\GitHub\zero-coupling-signal-router\build-msvc\shot_win.png"
+# Artifacts (png/stdout/stderr) stay outside the source tree under the shared
+# build root; this script must never write into the repository directory.
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+$exe = $Exe
+$out = Join-Path $OutDir "shot_win.png"
 $p = Start-Process -FilePath $exe -ArgumentList "autoquit" -PassThru `
-     -RedirectStandardOutput "C:\Users\chen\Documents\GitHub\zero-coupling-signal-router\build-msvc\shot_out.log" `
-     -RedirectStandardError "C:\Users\chen\Documents\GitHub\zero-coupling-signal-router\build-msvc\shot_err.log"
+     -RedirectStandardOutput (Join-Path $OutDir "shot_out.log") `
+     -RedirectStandardError (Join-Path $OutDir "shot_err.log")
 Start-Sleep -Milliseconds $RunMs
 [Win32]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
 $p.Refresh()
@@ -114,6 +122,6 @@ $gs.Dispose(); $small.Dispose(); $bmp.Dispose()
 Stop-Process -Id $p.Id -Force
 Write-Output "saved $out ${w}x${hh}"
 Write-Output "--- exe stdout ---"
-Get-Content "C:\Users\chen\Documents\GitHub\zero-coupling-signal-router\build-msvc\shot_out.log" -ErrorAction SilentlyContinue
+Get-Content (Join-Path $OutDir "shot_out.log") -ErrorAction SilentlyContinue
 Write-Output "--- exe stderr ---"
-Get-Content "C:\Users\chen\Documents\GitHub\zero-coupling-signal-router\build-msvc\shot_err.log" -ErrorAction SilentlyContinue
+Get-Content (Join-Path $OutDir "shot_err.log") -ErrorAction SilentlyContinue

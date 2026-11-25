@@ -5,9 +5,9 @@
 #   ANDROID_SDK_ROOT / ANDROID_HOME   SDK root (required)
 #   ANDROID_BUILD_TOOLS_DIR           build-tools dir (auto-detect latest)
 #   ZCSR_ANDROID_PLATFORM             platform dir, e.g. android-36 [android-36]
-#   ZCSR_ANDROID_SO                   path to libzcsr_phase0.so [build/android/out/arm64-v8a/libzcsr_phase0.so]
-#   ZCSR_ANDROID_BUILD_DIR            staging dir [build/android/t3_1c]
-#   ZCSR_ANDROID_APK                  output APK [build/android/zcsr_phase1c.apk]
+#   ZCSR_ANDROID_SO                   path to libzcsr_phase0.so [../zcsr-builds/android/out/arm64-v8a/libzcsr_phase0.so]
+#   ZCSR_ANDROID_BUILD_DIR            staging dir [../zcsr-builds/android/t3_1c]
+#   ZCSR_ANDROID_APK                  output APK [../zcsr-builds/android/zcsr_phase1c.apk]
 #   ZCSR_ANDROID_VERSION_CODE         override versionCode [from AndroidManifest.xml]
 #   ZCSR_ANDROID_VERSION_NAME         override versionName [from AndroidManifest.xml]
 #   ZCSR_DEBUG_STOREPASS              keystore password (required, env only)
@@ -23,6 +23,18 @@ to_abs() {
     case "$1" in
         /*) printf '%s\n' "$1" ;;
         *)  printf '%s/%s\n' "$ROOT" "$1" ;;
+    esac
+}
+
+# Hard guard: any staging / output path that resolves inside the source tree is
+# refused. Build and packaging artifacts must live outside the checkout.
+reject_in_tree() {
+    local label="$1" path="$2"
+    case "$path" in
+        "$ROOT"/*|"$ROOT")
+            echo "ERROR: ${label} '${path}' is inside the source tree (${ROOT}); refused." >&2
+            exit 1
+            ;;
     esac
 }
 
@@ -46,9 +58,12 @@ ZIPALIGN="$BUILD_TOOLS_DIR/zipalign"
 APKSIGNER="$BUILD_TOOLS_DIR/apksigner"
 ANDROID_JAR="$SDK_ROOT/platforms/${ZCSR_ANDROID_PLATFORM:-android-36}/android.jar"
 
-SO_PATH="$(to_abs "${ZCSR_ANDROID_SO:-build/android/out/arm64-v8a/libzcsr_phase0.so}")"
-BUILD_DIR="$(to_abs "${ZCSR_ANDROID_BUILD_DIR:-build/android/t3_1c}")"
-APK_OUT="$(to_abs "${ZCSR_ANDROID_APK:-build/android/zcsr_phase1c.apk}")"
+# Defaults live outside the source tree under a sibling zcsr-builds root.
+SO_PATH="$(to_abs "${ZCSR_ANDROID_SO:-$ROOT/../zcsr-builds/android/out/arm64-v8a/libzcsr_phase0.so}")"
+BUILD_DIR="$(to_abs "${ZCSR_ANDROID_BUILD_DIR:-$ROOT/../zcsr-builds/android/t3_1c}")"
+APK_OUT="$(to_abs "${ZCSR_ANDROID_APK:-$ROOT/../zcsr-builds/android/zcsr_phase1c.apk}")"
+reject_in_tree "BUILD_DIR" "$BUILD_DIR"
+reject_in_tree "APK_OUT" "$APK_OUT"
 
 KEYSTORE="${ZCSR_DEBUG_KEYSTORE:-$ROOT/android/keystore/zcsr-debug.keystore}"
 KEY_ALIAS="${ZCSR_DEBUG_KEY_ALIAS:-zcsr-debug}"

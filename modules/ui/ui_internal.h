@@ -36,6 +36,8 @@ typedef struct ZCSR_UI_Node {
     char              text_buf[ZCSR_UI_TEXT_CAPACITY];
     uint32_t          text_cap;
     uint32_t          caret_byte;
+    uint32_t          text_anchor;   /* selection anchor; == caret_byte when collapsed */
+    bool              read_only;     /* text input refuses user edits */
 
     /* Image component state. resource_key 属于宿主的纹理表（引擎不认识图片内容）：
      * 0 = 未设置（draw list 会画"缺图"样式，不再假装有图）。 */

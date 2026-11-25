@@ -1,4 +1,62 @@
 ZCSR change notes
+2026-11-25
+
+Repository hygiene constraints hardened (build layout enforced)
+- Configure-time guard kept at the root CMakeLists: an in-repo/in-tree
+  build tree is refused at configure time; all build trees must live
+  outside the source tree under the shared build\zcsr output root
+  (旧根 zcsr-builds 已整体迁入 build\zcsr，旧路径不再使用)
+- New repo_hygiene CTest (LABELS "gate;hygiene", registered only under
+  ZCSR_BUILD_TESTS): cross-platform cmake -P script
+  cmake/repo_hygiene_check.cmake; scans this source tree only, writes
+  nothing inside the tree; run as part of `ctest -L gate`
+- check_repo_hygiene.ps1 (shared build\zcsr output root) rewritten as a
+  strict-by-default six-repo read-only sweep; exit codes 0=clean,
+  1=violations found, 2=required repo missing/scan incomplete; explicit
+  allowlist for tests/data, tests/video_data, third_party/prebuilt,
+  third_party vendor source, and .git
+- 14 root-level stray *.obj plus the zcsr_audiomix_test.wav runtime output
+  were quarantined (moved, not deleted) to
+  _quarantine/router-root-strays-20261125/ with a verified manifest
+  (original paths, byte sizes, sha256, timestamps, post-move match);
+  fixtures under tests/data and tests/video_data were left untouched
+- Docs: BUILD_LAYOUT.md moved from advisory to enforced; docs/TESTING.md
+  documents the configure guard, the gate, the Windows six-repo sweep, and
+  the quarantine layout
+
+T0 media support contract (shared CMake + tests + docs收口)
+- T0 formats:
+  - Image: PNG, JPEG, GIF (static + animated), WebP (static + animated), BMP
+  - Music: MP3, AAC, M4A, WAV, FLAC, Ogg Vorbis, Ogg Opus
+  - Video: MP4/H.264, WebM/VP9
+  - Font: TTF, OTF/CFF
+- New backends wired into the shared build: libwebp (static + animated WebP),
+  FFmpeg (music AAC ADTS / AAC-in-MP4 / Ogg Opus; video fallback and WebM/VP9),
+  Media Foundation primary H.264 on Windows; retained: stb_image, dr_flac,
+  minimp3, stb_vorbis, stb_truetype
+- Public enum contraction: removed image TIFF/HEIF/HEIC/AVIF/JXL/EXR/TGA/PSD/
+  PIC/PNM; music AIFF/ALAC/WMA/AC3/DTS/AU and compressed WAV (ADPCM/A-law/
+  mu-law); video MKV/MPEG-TS/MPEG-PS/H.265/AV1/ProRes/MPEG-1/2/MJPEG/AVI;
+  font WOFF/WOFF2. Internal stb paths for the removed formats are closed.
+- Fixtures: 18 real encoded files under tests/data and tests/video_data;
+  hashes and generator commands in tests/data/FIXTURES.md and
+  tests/video_data/FIXTURES.md
+- CTest: 18 new T0 format targets plus the music negative contract; full gate
+  is 61 tests on Windows, 60 on Linux (each includes the repo_hygiene gate;
+  media/engine cases unchanged from the prior 60/59; platform-conditional
+  targets account for the Windows/Linux difference)
+- CMake: optional prebuilt probing for FFmpeg/libwebp (cache overrides
+  ZCSR_DEPS_ROOT / ZCSR_FFMPEG_ROOT / ZCSR_LIBWEBP_ROOT); missing dependency
+  degrades to an honest fail-closed backend instead of a configure fatal
+  error; Windows POST_BUILD copies FFmpeg runtime DLLs next to FFmpeg-linked
+  tests; Linux resolves libav*.so through build rpath
+- Validation: Windows MSVC Release 61/61 pass (5.99 s); Kali GCC 16.2.0
+  Release 60/60 pass (1.19 s), Clang 21.1.8 Release 60/60 pass (1.38 s),
+  GCC 16.2.0 + ASan/UBSan 60/60 pass (2.68 s); zero failures, no ASan/Leak/
+  UBSan report. The earlier video_ff.c sws_scale qualifier-type incompatibility
+  was fixed on the video line (local const slice array, no const cast);
+  shared CMake unchanged
+
 2026-11-21
 
 1.0.0
@@ -7,3 +65,64 @@ ZCSR change notes
 - public history spans 2026-05-24 to 2026-11-21 on main
 - source, build files and technical docs are the release surface
 - old work branches and tags remain only in the private archive
+
+2026-11-24
+- add include/zcsr/ui_text_edit.h: header-only text editing state machine
+  (UTF-8 boundaries, caret, selection, maxLength) shared by the engine widget
+  and UIM; header-only means no link dependency and the engine stays standalone
+- modules/ui/ui.c text input edits through that view: adds DELETE and
+  selection delete, validates UTF-8, refuses over-long inserts instead of
+  truncating; node gains text_anchor and read_only
+- modules/ui/ui_text_input.c: set_max_bytes / set_read_only / set_selection are
+  real; set_placeholder returns ZCSR_ERR_UNSUPPORTED instead of a fake OK
+- platform_win32: enable per-monitor DPI awareness V2 before the first window
+  (dynamic user32 lookup, system-DPI fallback), so zcsr_surface_get_dpi_scale
+  reports the real ratio instead of always 1.0
+- ui_text_edit.h: zcsr_text_utf8_codepoint now returns the decoded code point
+  (and the sequence length); zcsr_text_utf8_decode is a thin wrapper, so text
+  layout can classify glyphs (CJK/breaks) without a second UTF-8 decoder
+- CTest 37/37 Release (Windows, VS 18 2026)
+
+2026-11-25
+- music_api TIMEOUT 3 -> 8 seconds: the test is ~0.4-0.7 s standalone, but a
+  -j4 run could starve it past 3 s. Verified 37/37 on three consecutive -j4
+  runs; no sleeps or functional changes.
+
+2026-11-25 (media decode closure)
+- image: add Radiance HDR (.hdr/.rgbe) decode through the stb float path plus an
+  in-module Reinhard tonemap to RGBA8; add ICO/CUR container decoding (directory
+  parse, largest entry, inner PNG or bare DIB wrapped as a BMP header for stb).
+  Public API: zcsr_image_format enum (18 values, append-only),
+  zcsr_image_caps_info, zcsr_image_detect_format(), zcsr_image_caps(),
+  zcsr_image_format_name(). STBI_NO_LINEAR is left undefined so the 16-bit
+  linear reader and the stbi_loadf_* float interface are compiled in.
+- music: add native FLAC (dr_flac 0.13.4 vendored under
+  modules/music/third_party, MIT-0) and AIFF/AIFC PCM (pure-C big-endian,
+  8/16/24/32-bit, AIFC NONE only). Public API: zcsr_music_format_supported(),
+  zcsr_music_get_spec(), zcsr_music_detect_format(). AAC/M4A/ALAC/Opus/AU/WMA/
+  AC-3/DTS remain placeholder enums: format_supported()=false, load=NULL.
+- video: new zcsr_video module behind the include/zcsr/video.h contract. Windows
+  Media Foundation backend (SourceReader, RGB32->YUY2->NV12 negotiation, BT.601
+  to RGBA8, caps from a real MFTEnumEx query); the non-Windows null backend
+  reports UNSUPPORTED honestly. Committed fixture tests/video_data/sample.avi
+  (MJPEG, 64x64, 12 fps) is generated by modules/video/tools/make_sample_avi.c
+  (WIC JPEG + hand-written AVI container, no ffmpeg).
+- build/CTest wiring: register the five new contracts behind EXISTS/TARGET guards;
+  reverse-platform video TUs are hidden with HEADER_FILE_ONLY so an empty TU does
+  not trip /WX (C4206). Video fixture dir is passed via ZCSR_VIDEO_DATA_DIR; the
+  real MP4/H.264 decode is an opt-in ZCSR_VIDEO_REAL_FILE smoke and stays out of
+  the offline suite.
+- CTest 42/42 Release (Windows, VS 18 2026), 0 failed, Total Test time 3.11 s.
+
+2026-11-25 (Kali physical-machine portability pass)
+- dr_flac: replace the extracted `defined(1)` preprocessor probes with
+  `defined(DR_FLAC_64BIT)`, guarded by x86_64/AArch64 macros. MSVC happened to
+  accept the former; GCC 16 and Clang 21 reject it with "operator 'defined'
+  requires an identifier". This is a build fix, not a decoder behavior change.
+- test_music_flac_codec: cast `uint64_t` to `unsigned long long` in the failure
+  diagnostic so `%llu` is portable across LP64 and LLP64.
+- Kali Linux 192.168.1.12 (Debian, GCC 16.2.0 / Clang 21.1.8, CMake 4.3.4):
+  GCC Release 41/41, Clang Release 41/41, GCC Debug + ASan/UBSan 41/41, all
+  zero failures. Linux has `inputext_x11` instead of the two Windows-only
+  pump tests, hence 41.
+- Windows re-run after the fixes: CTest 42/42, 0 failed. No commit/push/tag.

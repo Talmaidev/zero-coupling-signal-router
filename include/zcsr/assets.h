@@ -35,7 +35,8 @@ bool zcsr_assets_read(const char* relative, void* out, size_t capacity, size_t* 
 /* 把相对路径解析成实际路径；已是绝对路径时原样返回。 */
 bool zcsr_assets_resolve(const char* relative, char* out, int cap);
 
-/* 加载任意 PNG/JPEG/BMP/TGA/GIF/PSD 为 GPU 纹理。成功后 w/h 可空。
+/* 加载 PNG/JPEG/BMP/GIF/WebP 为 GPU 纹理（T0 集合，见 zcsr_image_format）。
+ * 成功后 w/h 可空。
  * encoded/arena 均为调用方自有缓冲；本函数不再分配堆内存。
  * encoded_bytes 不足文件大小时返回 false；arena_bytes 同时容纳解码 scratch
  * 与 w*h*4 输出，调用方按图片尺寸自行估算。 */

@@ -63,6 +63,75 @@ if(MSVC)
     endif()
 endif()
 
+# --- printf format gate (negative/positive fixture compile check) -----------
+# Registered per docs/LOGGING_SPEC.md: on MSVC look for clang-cl and skip when
+# it is absent; off MSVC drive the gate with CMAKE_C_COMPILER (-Wformat
+# -Werror). Intermediate objects go to a per-gate folder under the build tree;
+# the driver script asserts OUT_DIR is inside CMAKE_BINARY_DIR and refuses to
+# write into the source tree otherwise.
+if(ZCSR_ENABLE_FORMAT_GATE)
+    set(_FG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/format_gate")
+    set(_FG_OUT_DIR "${CMAKE_BINARY_DIR}/format_gate")
+    if(MSVC)
+        find_program(ZCSR_CLANG_CL_EXECUTABLE clang-cl)
+        if(ZCSR_CLANG_CL_EXECUTABLE)
+            add_test(NAME format_gate
+                COMMAND ${CMAKE_COMMAND}
+                    -DCOMPILER=${ZCSR_CLANG_CL_EXECUTABLE}
+                    -DFLAVOR=clang-cl
+                    -DINCLUDE_DIR=${PROJECT_SOURCE_DIR}/include
+                    -DBAD_SRC=${_FG_DIR}/bad_format.c
+                    -DGOOD_SRC=${_FG_DIR}/good_format.c
+                    -DOUT_DIR=${_FG_OUT_DIR}
+                    -DBINARY_DIR=${CMAKE_BINARY_DIR}
+                    -P ${_FG_DIR}/run_format_gate.cmake)
+            set_tests_properties(format_gate PROPERTIES TIMEOUT 30)
+        else()
+            message(STATUS "format_gate test skipped: clang-cl not found (MSVC)")
+        endif()
+    else()
+        add_test(NAME format_gate
+            COMMAND ${CMAKE_COMMAND}
+                -DCOMPILER=${CMAKE_C_COMPILER}
+                -DFLAVOR=cc
+                -DINCLUDE_DIR=${PROJECT_SOURCE_DIR}/include
+                -DBAD_SRC=${_FG_DIR}/bad_format.c
+                -DGOOD_SRC=${_FG_DIR}/good_format.c
+                -DOUT_DIR=${_FG_OUT_DIR}
+                -DBINARY_DIR=${CMAKE_BINARY_DIR}
+                -P ${_FG_DIR}/run_format_gate.cmake)
+        set_tests_properties(format_gate PROPERTIES TIMEOUT 30)
+    endif()
+
+    # clang-tidy variant: register only when the installed clang-tidy actually
+    # lists bugprone-format-string. An incomplete clang-tidy build must not
+    # register a test that cannot run the check (spec: detect before registering).
+    find_program(ZCSR_CLANG_TIDY_EXECUTABLE clang-tidy
+        HINTS "C:/Program Files/Microsoft Visual Studio/18/Professional/VC/Tools/Llvm/x64/bin")
+    if(ZCSR_CLANG_TIDY_EXECUTABLE)
+        execute_process(
+            COMMAND ${ZCSR_CLANG_TIDY_EXECUTABLE} --list-checks
+                    --checks=bugprone-format-string
+            RESULT_VARIABLE _tidy_rc
+            OUTPUT_VARIABLE _tidy_checks
+            ERROR_VARIABLE _tidy_checks_err)
+        if(_tidy_rc EQUAL 0 AND _tidy_checks MATCHES "bugprone-format-string")
+            add_test(NAME clang_tidy_format
+                COMMAND ${CMAKE_COMMAND}
+                    -DCLANG_TIDY=${ZCSR_CLANG_TIDY_EXECUTABLE}
+                    -DINCLUDE_DIR=${PROJECT_SOURCE_DIR}/include
+                    -DBAD_SRC=${_FG_DIR}/bad_format.c
+                    -DGOOD_SRC=${_FG_DIR}/good_format.c
+                    -P ${_FG_DIR}/run_clang_tidy.cmake)
+            set_tests_properties(clang_tidy_format PROPERTIES TIMEOUT 30)
+        else()
+            message(STATUS "clang_tidy_format skipped: clang-tidy lacks bugprone-format-string")
+        endif()
+    else()
+        message(STATUS "clang_tidy_format skipped: clang-tidy not found")
+    endif()
+endif()
+
 add_executable(input_keymap_test test_input_keymap.c)
 target_link_libraries(input_keymap_test PRIVATE zcsr_input zcsr_platform zcsr_core)
 if(WIN32)
@@ -100,12 +169,15 @@ target_link_libraries(music_api_test PRIVATE zcsr_music zcsr_audiomix zcsr_core)
 if(WIN32)
     target_link_libraries(music_api_test PRIVATE ole32)
 endif()
+# zcsr_music pulls the FFmpeg backend transitively; its runtime DLLs must land
+# next to this executable (same POST_BUILD copy as the engine music/video tests).
+zcsr_copy_ffmpeg_runtime(music_api_test)
 add_test(NAME music_api COMMAND music_api_test "${CMAKE_CURRENT_SOURCE_DIR}/data")
 # Same rationale as the audiomix test: libpipewire's global allocations outlive
 # pw_deinit() and are reported as <unknown module> leaks. ASan/UBSan stay on.
 set_tests_properties(music_api PROPERTIES
     ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0"
-    TIMEOUT 3
+    TIMEOUT 8
     LABELS "module;audio;fast"
     RESOURCE_LOCK zcsr_audio_device)
 
@@ -119,3 +191,18 @@ add_test(NAME collision_save COMMAND collision_save_test)
 add_executable(viewport_test test_viewport.c)
 target_link_libraries(viewport_test PRIVATE zcsr_viewport zcsr_core)
 add_test(NAME viewport COMMAND viewport_test)
+
+# --- Repository hygiene gate (read-only, cross-platform cmake -P check) ---
+# Scans this source tree for in-repo build/configure/stray leftovers. The gate
+# writes nothing inside the source tree; it enumerates paths only. Registered
+# under the "gate" label: run with `ctest -L gate`. The full 6-repo sweep on
+# Windows remains the job of check_repo_hygiene.ps1; this CTest covers only the
+# current repository so Linux checkouts (where the sibling repos are absent)
+# never fail spuriously.
+add_test(NAME repo_hygiene
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+        -P ${PROJECT_SOURCE_DIR}/cmake/repo_hygiene_check.cmake)
+set_tests_properties(repo_hygiene PROPERTIES
+    TIMEOUT 30
+    LABELS "gate;hygiene")

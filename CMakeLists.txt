@@ -1,5 +1,70 @@
 cmake_minimum_required(VERSION 3.16)
 
+# --- Hard guard: the build tree must live OUTSIDE the source tree ------------
+# Repositories under C:\Users\chen\Documents\GitHub (and their Linux checkouts)
+# must stay free of build output: no in-source builds, no in-repo build/ or
+# build-*/ directories, no scratch CMakeCache.txt. This is enforced here at
+# configure time so a stale command line cannot silently re-pollute the tree.
+#
+# Guard interval: CMAKE_BINARY_DIR == CMAKE_SOURCE_DIR, or CMAKE_BINARY_DIR is
+# located underneath CMAKE_SOURCE_DIR. Comparison is case-insensitive on
+# Windows (paths there are case-insensitive) and separator-aware, so a sibling
+# directory whose name merely starts with the source path is still allowed.
+if(CMAKE_BINARY_DIR)
+  # Normalise to forward slashes first (file(TO_CMAKE_PATH) exists since 3.16,
+  # unlike cmake_path, which would raise the minimum CMake version).
+  file(TO_CMAKE_PATH "${CMAKE_SOURCE_DIR}" _zcsr_guard_src)
+  file(TO_CMAKE_PATH "${CMAKE_BINARY_DIR}" _zcsr_guard_bin)
+  if(WIN32)
+    string(TOLOWER "${_zcsr_guard_src}" _zcsr_guard_src_cmp)
+    string(TOLOWER "${_zcsr_guard_bin}" _zcsr_guard_bin_cmp)
+  else()
+    set(_zcsr_guard_src_cmp "${_zcsr_guard_src}")
+    set(_zcsr_guard_bin_cmp "${_zcsr_guard_bin}")
+  endif()
+  string(LENGTH "${_zcsr_guard_src_cmp}" _zcsr_guard_src_len)
+  string(SUBSTRING "${_zcsr_guard_bin_cmp}" 0 ${_zcsr_guard_src_len}
+         _zcsr_guard_bin_head)
+  set(_zcsr_guard_in_repo FALSE)
+  if(_zcsr_guard_bin_cmp STREQUAL _zcsr_guard_src_cmp)
+    set(_zcsr_guard_in_repo TRUE)
+  elseif(_zcsr_guard_bin_head STREQUAL _zcsr_guard_src_cmp)
+    string(SUBSTRING "${_zcsr_guard_bin_cmp}" ${_zcsr_guard_src_len} 1
+           _zcsr_guard_sep)
+    if(_zcsr_guard_sep STREQUAL "/" OR _zcsr_guard_sep STREQUAL "\\")
+      set(_zcsr_guard_in_repo TRUE)
+    endif()
+  endif()
+  if(_zcsr_guard_in_repo)
+    message(FATAL_ERROR
+      "In-repo build directory refused by ZCSR build-layout guard.\n"
+      "  CMAKE_SOURCE_DIR = ${CMAKE_SOURCE_DIR}\n"
+      "  CMAKE_BINARY_DIR = ${CMAKE_BINARY_DIR}\n"
+      "\n"
+      "Build trees must live outside the source tree: this repository (like\n"
+      "every repository under C:\\Users\\chen\\Documents\\GitHub) must stay clean.\n"
+      "Put the build tree at one of these instead:\n"
+      "  Windows: C:\\Users\\chen\\Documents\\build\\zcsr\\zero-coupling-signal-router\\<preset>\n"
+      "  Linux:   /home/chen/zcsr-builds/zero-coupling-signal-router/<preset>\n"
+      "\n"
+      "Example (Windows, Visual Studio generator):\n"
+      "  cmake -S . -B \"C:\\Users\\chen\\Documents\\build\\zcsr\\zero-coupling-signal-router\\win-msvc\" -G \"Visual Studio 18 2026\"\n"
+      "Example (Linux):\n"
+      "  cmake -S . -B /home/chen/zcsr-builds/zero-coupling-signal-router/linux-gcc\n"
+      "\n"
+      "If an old in-repo build directory already exists, delete it and use the\n"
+      "layout above; see C:\\Users\\chen\\Documents\\build\\_reports\\BUILD_LAYOUT.md.\n")
+  endif()
+  unset(_zcsr_guard_src)
+  unset(_zcsr_guard_bin)
+  unset(_zcsr_guard_src_cmp)
+  unset(_zcsr_guard_bin_cmp)
+  unset(_zcsr_guard_src_len)
+  unset(_zcsr_guard_bin_head)
+  unset(_zcsr_guard_sep)
+  unset(_zcsr_guard_in_repo)
+endif()
+
 set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING
     "Minimum supported macOS version")
 
@@ -65,6 +130,240 @@ add_library(zcsr_contracts INTERFACE)
 target_include_directories(zcsr_contracts INTERFACE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+
+# --- Optional media prebuilt dependencies (FFmpeg, libwebp) -------------------
+# Probed, never fatal: a missing dependency leaves the matching backend compiled
+# as an honest fail-closed fallback (caps/supported = false) and the build still
+# succeeds. Cache overrides: ZCSR_DEPS_ROOT, ZCSR_FFMPEG_ROOT, ZCSR_LIBWEBP_ROOT.
+if(WIN32)
+  set(ZCSR_MEDIA_DEPS_PLATFORM "win64")
+else()
+  set(ZCSR_MEDIA_DEPS_PLATFORM "linux64")
+endif()
+if(NOT DEFINED ZCSR_DEPS_ROOT OR ZCSR_DEPS_ROOT STREQUAL "")
+  set(ZCSR_DEPS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/prebuilt/${ZCSR_MEDIA_DEPS_PLATFORM}")
+endif()
+if(NOT DEFINED ZCSR_FFMPEG_ROOT OR ZCSR_FFMPEG_ROOT STREQUAL "")
+  set(ZCSR_FFMPEG_ROOT "${ZCSR_DEPS_ROOT}/ffmpeg")
+endif()
+if(NOT DEFINED ZCSR_LIBWEBP_ROOT OR ZCSR_LIBWEBP_ROOT STREQUAL "")
+  set(ZCSR_LIBWEBP_ROOT "${ZCSR_DEPS_ROOT}/libwebp")
+endif()
+
+# Header + library lookup: a prebuilt root keeps headers directly under
+# <root>/include, but a distro package lands them in the multiarch dir
+# (Debian/Ubuntu: /usr/include/x86_64-linux-gnu) or a subdir (Fedora:
+# /usr/include/ffmpeg). Both shapes are probed, so pointing the roots at /usr is
+# enough after a plain `apt install libavcodec-dev` / `dnf install ffmpeg-devel`.
+#
+# A backend is enabled ONLY when BOTH its headers AND every required link
+# library are present. A header-only match (dev headers without the import
+# archive / shared object) must NOT claim support: that would surface as an
+# undefined-symbol failure at link time instead of an honest configure-time
+# fail-closed. Missing headers and missing libraries are listed item by item
+# in the configure output.
+set(ZCSR_MEDIA_ARCH_SUFFIX "")
+if(CMAKE_LIBRARY_ARCHITECTURE)
+  set(ZCSR_MEDIA_ARCH_SUFFIX "${CMAKE_LIBRARY_ARCHITECTURE}")
+endif()
+
+# ---- FFmpeg: header + 5 libraries (avcodec/avformat/avutil/swscale/swresample) ----
+unset(ZCSR_AVCODEC_INCLUDE_DIR CACHE)
+find_path(ZCSR_AVCODEC_INCLUDE_DIR
+  NAMES libavcodec/avcodec.h
+  PATHS "${ZCSR_FFMPEG_ROOT}/include"
+        "${ZCSR_FFMPEG_ROOT}/include/${ZCSR_MEDIA_ARCH_SUFFIX}"
+        "${ZCSR_FFMPEG_ROOT}/include/ffmpeg"
+  NO_DEFAULT_PATH)
+if(NOT ZCSR_AVCODEC_INCLUDE_DIR)
+  # Distro package under /usr: fall back to the default system include search.
+  find_path(ZCSR_AVCODEC_INCLUDE_DIR NAMES libavcodec/avcodec.h)
+endif()
+
+set(ZCSR_FFMPEG_LIB_VARS "")
+foreach(_ff_lib IN ITEMS avcodec avformat avutil swscale swresample)
+  string(TOUPPER "${_ff_lib}" _ff_up)
+  unset(ZCSR_${_ff_up}_LIBRARY CACHE)
+  find_library(ZCSR_${_ff_up}_LIBRARY
+    NAMES ${_ff_lib} ${_ff_lib}-62 ${_ff_lib}-60 ${_ff_lib}-59 ${_ff_lib}-58
+    PATHS "${ZCSR_FFMPEG_ROOT}/lib"
+    NO_DEFAULT_PATH)
+  if(NOT ZCSR_${_ff_up}_LIBRARY)
+    find_library(ZCSR_${_ff_up}_LIBRARY NAMES ${_ff_lib})
+  endif()
+  list(APPEND ZCSR_FFMPEG_LIB_VARS ZCSR_${_ff_up}_LIBRARY)
+endforeach()
+
+# License compliance probe: this project links FFmpeg under the LGPL baseline.
+# A GPL or nonfree build must NOT be enabled. Inspect ffmpeg -buildconf (falls
+# back to -version) for --enable-gpl / --enable-nonfree. Detection only: this
+# never installs or changes the system.
+set(ZCSR_FFMPEG_LICENSE "unknown")
+set(ZCSR_FFMPEG_GPL FALSE)
+set(ZCSR_FFMPEG_NONFREE FALSE)
+unset(ZCSR_FFMPEG_TOOL CACHE)
+find_program(ZCSR_FFMPEG_TOOL ffmpeg
+  PATHS "${ZCSR_FFMPEG_ROOT}/bin" NO_DEFAULT_PATH)
+if(NOT ZCSR_FFMPEG_TOOL)
+  find_program(ZCSR_FFMPEG_TOOL ffmpeg)
+endif()
+if(ZCSR_FFMPEG_TOOL)
+  execute_process(
+    COMMAND ${ZCSR_FFMPEG_TOOL} -buildconf
+    OUTPUT_VARIABLE _ff_buildconf
+    ERROR_VARIABLE _ff_buildconf_err
+    RESULT_VARIABLE _ff_bc_rc)
+  if(NOT _ff_bc_rc EQUAL 0 OR NOT _ff_buildconf)
+    execute_process(
+      COMMAND ${ZCSR_FFMPEG_TOOL} -version
+      OUTPUT_VARIABLE _ff_buildconf
+      ERROR_VARIABLE _ff_version_err
+      RESULT_VARIABLE _ff_ver_rc)
+  endif()
+  if(_ff_buildconf MATCHES "--enable-gpl")
+    set(ZCSR_FFMPEG_GPL TRUE)
+  endif()
+  if(_ff_buildconf MATCHES "--enable-nonfree")
+    set(ZCSR_FFMPEG_NONFREE TRUE)
+  endif()
+  if(ZCSR_FFMPEG_GPL)
+    set(ZCSR_FFMPEG_LICENSE "GPL")
+  elseif(ZCSR_FFMPEG_NONFREE)
+    set(ZCSR_FFMPEG_LICENSE "nonfree")
+  else()
+    set(ZCSR_FFMPEG_LICENSE "LGPL")
+  endif()
+endif()
+
+set(ZCSR_FFMPEG_MISSING "")
+if(NOT ZCSR_AVCODEC_INCLUDE_DIR)
+  list(APPEND ZCSR_FFMPEG_MISSING "header libavcodec/avcodec.h")
+endif()
+foreach(_ff_lib IN ITEMS avcodec avformat avutil swscale swresample)
+  string(TOUPPER "${_ff_lib}" _ff_up)
+  if(NOT ZCSR_${_ff_up}_LIBRARY)
+    list(APPEND ZCSR_FFMPEG_MISSING "library lib${_ff_lib}")
+  endif()
+endforeach()
+set(ZCSR_FFMPEG_FOUND TRUE)
+if(ZCSR_FFMPEG_MISSING)
+  set(ZCSR_FFMPEG_FOUND FALSE)
+endif()
+if(ZCSR_FFMPEG_GPL OR ZCSR_FFMPEG_NONFREE)
+  set(ZCSR_FFMPEG_FOUND FALSE)
+endif()
+
+# ---- libwebp: header + 3 libraries (webp / webpdemux / sharpyuv) ----
+unset(ZCSR_WEBP_INCLUDE_DIR CACHE)
+find_path(ZCSR_WEBP_INCLUDE_DIR
+  NAMES webp/decode.h
+  PATHS "${ZCSR_LIBWEBP_ROOT}/include"
+        "${ZCSR_LIBWEBP_ROOT}/include/${ZCSR_MEDIA_ARCH_SUFFIX}"
+  NO_DEFAULT_PATH)
+if(NOT ZCSR_WEBP_INCLUDE_DIR)
+  find_path(ZCSR_WEBP_INCLUDE_DIR NAMES webp/decode.h)
+endif()
+
+set(ZCSR_WEBP_LIB_VARS "")
+foreach(_wp_lib IN ITEMS webp webpdemux sharpyuv)
+  string(TOUPPER "${_wp_lib}" _wp_up)
+  unset(ZCSR_${_wp_up}_LIBRARY CACHE)
+  find_library(ZCSR_${_wp_up}_LIBRARY
+    NAMES ${_wp_lib} lib${_wp_lib}
+    PATHS "${ZCSR_LIBWEBP_ROOT}/lib"
+    NO_DEFAULT_PATH)
+  if(NOT ZCSR_${_wp_up}_LIBRARY)
+    find_library(ZCSR_${_wp_up}_LIBRARY NAMES ${_wp_lib} lib${_wp_lib})
+  endif()
+  list(APPEND ZCSR_WEBP_LIB_VARS ZCSR_${_wp_up}_LIBRARY)
+endforeach()
+
+set(ZCSR_WEBP_MISSING "")
+if(NOT ZCSR_WEBP_INCLUDE_DIR)
+  list(APPEND ZCSR_WEBP_MISSING "header webp/decode.h")
+endif()
+foreach(_wp_lib IN ITEMS webp webpdemux sharpyuv)
+  string(TOUPPER "${_wp_lib}" _wp_up)
+  if(NOT ZCSR_${_wp_up}_LIBRARY)
+    list(APPEND ZCSR_WEBP_MISSING "library lib${_wp_lib}")
+  endif()
+endforeach()
+set(ZCSR_LIBWEBP_FOUND TRUE)
+if(ZCSR_WEBP_MISSING)
+  set(ZCSR_LIBWEBP_FOUND FALSE)
+endif()
+
+# FFmpeg: AAC/M4A/Opus music backend + video fallback/WebM-WebP backend.
+add_library(zcsr_ffmpeg INTERFACE)
+if(ZCSR_FFMPEG_FOUND)
+  target_include_directories(zcsr_ffmpeg INTERFACE
+    $<BUILD_INTERFACE:${ZCSR_AVCODEC_INCLUDE_DIR}>)
+  target_compile_definitions(zcsr_ffmpeg INTERFACE ZCSR_HAVE_FFMPEG)
+  if(NOT WIN32)
+    target_link_directories(zcsr_ffmpeg INTERFACE
+      $<BUILD_INTERFACE:${ZCSR_FFMPEG_ROOT}/lib>)
+  endif()
+  target_link_libraries(zcsr_ffmpeg INTERFACE
+    ${ZCSR_AVCODEC_LIBRARY} ${ZCSR_AVFORMAT_LIBRARY} ${ZCSR_AVUTIL_LIBRARY}
+    ${ZCSR_SWSCALE_LIBRARY} ${ZCSR_SWRESAMPLE_LIBRARY})
+  message(STATUS "FFmpeg backend enabled: ${ZCSR_FFMPEG_ROOT} (license=${ZCSR_FFMPEG_LICENSE})")
+else()
+  if(ZCSR_FFMPEG_GPL OR ZCSR_FFMPEG_NONFREE)
+    message(WARNING
+      "FFmpeg backend DISABLED: detected a ${ZCSR_FFMPEG_LICENSE} build "
+      "(${ZCSR_FFMPEG_TOOL}). This is GPL/nonfree, NOT the required LGPL "
+      "variant, so it is non-compliant and must not be linked. Use an LGPL "
+      "shared build (BtbN FFmpeg.LGPL.Shared / vcpkg x64-windows / distro LGPL).")
+  else()
+    message(STATUS "FFmpeg backend DISABLED (fail-closed) under ${ZCSR_FFMPEG_ROOT}.")
+    foreach(_ff_missing IN LISTS ZCSR_FFMPEG_MISSING)
+      message(STATUS "  missing: ${_ff_missing}")
+    endforeach()
+    message(STATUS "  music AAC/M4A/Opus and the video FFmpeg fallback are disabled.")
+  endif()
+endif()
+
+# libwebp: static WebP static/animated image backend.
+add_library(zcsr_libwebp INTERFACE)
+if(ZCSR_LIBWEBP_FOUND)
+  target_include_directories(zcsr_libwebp INTERFACE
+    $<BUILD_INTERFACE:${ZCSR_WEBP_INCLUDE_DIR}>)
+  target_compile_definitions(zcsr_libwebp INTERFACE ZCSR_HAVE_LIBWEBP)
+  if(NOT WIN32)
+    target_link_directories(zcsr_libwebp INTERFACE
+      $<BUILD_INTERFACE:${ZCSR_LIBWEBP_ROOT}/lib>)
+  endif()
+  target_link_libraries(zcsr_libwebp INTERFACE
+    ${ZCSR_WEBP_LIBRARY} ${ZCSR_WEBPDEMUX_LIBRARY} ${ZCSR_SHARPYUV_LIBRARY})
+  message(STATUS "libwebp backend enabled: ${ZCSR_LIBWEBP_ROOT}")
+else()
+  message(STATUS "libwebp backend DISABLED (fail-closed) under ${ZCSR_LIBWEBP_ROOT}.")
+  foreach(_wp_missing IN LISTS ZCSR_WEBP_MISSING)
+    message(STATUS "  missing: ${_wp_missing}")
+  endforeach()
+  message(STATUS "  WebP decode and animated WebP are disabled.")
+endif()
+
+# Keep the wrapper interfaces in the install/export set so install(EXPORT) does
+# not complain that an installed module requires a non-exported target.
+set_property(GLOBAL APPEND PROPERTY ZCSR_INSTALL_TARGETS zcsr_ffmpeg zcsr_libwebp)
+
+# Linux test executables must resolve the shared libav*.so at run time; add the
+# prebuilt lib dir to the build rpath. Windows resolves DLLs via the POST_BUILD
+# copy below (zcsr_copy_ffmpeg_runtime).
+if(NOT WIN32 AND ZCSR_FFMPEG_FOUND)
+  list(APPEND CMAKE_BUILD_RPATH "${ZCSR_FFMPEG_ROOT}/lib")
+endif()
+
+# Copies the FFmpeg shared DLLs next to a target after build. No-op off Windows.
+function(zcsr_copy_ffmpeg_runtime target)
+  if(WIN32 AND ZCSR_FFMPEG_FOUND)
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${ZCSR_FFMPEG_ROOT}/bin" "$<TARGET_FILE_DIR:${target}>"
+      COMMENT "Copying FFmpeg runtime DLLs next to ${target}")
+  endif()
+endfunction()
 
 # --- Each module compiles independently, seeing ONLY the contracts (zero-coupling) ---
 function(zcsr_module name)
@@ -133,6 +432,9 @@ zcsr_module(light2d)   # Light2D additive lighting (no GL calls; drives glrender
 target_link_libraries(zcsr_light2d PUBLIC zcsr_glrender zcsr_light2d_environment)
 target_include_directories(zcsr_light2d PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/glad/include)
 zcsr_module(image)
+if(ZCSR_LIBWEBP_FOUND)
+  target_link_libraries(zcsr_image PUBLIC zcsr_libwebp)
+endif()
 zcsr_module(assets)   # 开发者自带资源导入（相对路径 -> 纹理/字体/WAV）
 target_link_libraries(zcsr_assets PUBLIC zcsr_image zcsr_glrender zcsr_audiomix)     # decode→RGBA32 + offline CPU processing (separated from rendering; vendors stb_image)
 zcsr_module(atlas)     # Texture atlas shelf-packing + region table (pure logic, no GL)
@@ -146,6 +448,28 @@ if(UNIX AND NOT APPLE)
   target_link_libraries(zcsr_font PUBLIC m)  # stb_truetype uses sqrt/floor/ceil/fmod/pow
 endif()
 zcsr_module(music)     # Streaming music player (OGG/MP3, depends on audiomix)
+# --- Video module: MF primary (Windows MP4/H.264), FFmpeg fallback + WebM/VP9 ---
+# zcsr_module(video) globs non-recursive modules/video/*.c. video_ff.c compiles
+# on every host; video_mf.c is Windows-only and is hidden as a header-only TU
+# off Windows so the glob does not compile an empty translation unit under /WX.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/modules/video/video.c)
+  zcsr_module(video)
+  if(ZCSR_FFMPEG_FOUND)
+    target_link_libraries(zcsr_video PUBLIC zcsr_ffmpeg)
+    # video_ff.c gates its real backend on this video-specific macro.
+    target_compile_definitions(zcsr_video PRIVATE ZCSR_VIDEO_HAVE_FFMPEG)
+  endif()
+  if(WIN32)
+    # MF source reader + decoder MFTs (MP4/H.264 primary backend).
+    target_link_libraries(zcsr_video PUBLIC
+      mfplat mfreadwrite mfuuid propsys ole32 uuid)
+  else()
+    # MF backend TU is Windows-only; hide it on Linux/macOS/Android.
+    set_source_files_properties(
+      ${CMAKE_CURRENT_SOURCE_DIR}/modules/video/video_mf.c
+      PROPERTIES HEADER_FILE_ONLY TRUE)
+  endif()
+endif()
 zcsr_module(ui)        # Generic UI runtime (node/input/focus/apply/preset/draw-list + GL backend)
 zcsr_module(camera)    # 2.5D orthographic camera (world units + shear)
 if(UNIX AND NOT APPLE)
@@ -206,6 +530,10 @@ target_include_directories(zcsr_glrender PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thi
 
 # music depends on audiomix (stream channels)
 target_link_libraries(zcsr_music PUBLIC zcsr_audiomix)
+if(ZCSR_FFMPEG_FOUND)
+  # AAC (ADTS), AAC-in-MP4 (M4A), Ogg Opus decoders live behind the FFmpeg backend.
+  target_link_libraries(zcsr_music PUBLIC zcsr_ffmpeg)
+endif()
 if(UNIX AND NOT APPLE)
   target_link_libraries(zcsr_music PUBLIC m)  # stb_vorbis uses log/exp/pow/sin/cos
 endif()

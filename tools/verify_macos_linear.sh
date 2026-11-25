@@ -10,7 +10,14 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${ROOT_DIR}/build_macos"
+# Build tree lives outside the source tree under a sibling zcsr-build-macos root.
+BUILD_DIR="${ZCSR_MACOS_BUILD_DIR:-$ROOT_DIR/../zcsr-build-macos/verify_linear}"
+case "$BUILD_DIR" in
+    "$ROOT_DIR"/*|"$ROOT_DIR")
+        echo "ERROR: BUILD_DIR '${BUILD_DIR}' is inside the source tree (${ROOT_DIR}); refused." >&2
+        exit 1
+        ;;
+esac
 LOG="${BUILD_DIR}/verify_macos_linear.log"
 
 mkdir -p "${BUILD_DIR}"

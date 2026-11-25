@@ -230,6 +230,90 @@ static void test_duration_30s(const char* data_dir) {
     free(buffer);
 }
 
+static void wav_put16(unsigned char* p, uint16_t v) {
+    p[0] = (unsigned char)(v & 0xffu);
+    p[1] = (unsigned char)((v >> 8) & 0xffu);
+}
+
+static void wav_put32(unsigned char* p, uint32_t v) {
+    p[0] = (unsigned char)(v & 0xffu);
+    p[1] = (unsigned char)((v >> 8) & 0xffu);
+    p[2] = (unsigned char)((v >> 16) & 0xffu);
+    p[3] = (unsigned char)((v >> 24) & 0xffu);
+}
+
+/* WAV is generated in memory so the contract is reproducible without a binary
+ * fixture: 48 kHz, stereo, signed 16-bit PCM, exactly one second. */
+static void test_wav_pcm(void) {
+    const uint32_t rate = 48000u;
+    const uint16_t channels = 2u;
+    const uint16_t bits = 16u;
+    const uint32_t frames = rate;
+    const uint32_t frame_bytes = channels * (bits / 8u);
+    const uint32_t data_bytes = frames * frame_bytes;
+    const size_t encoded_len = 44u + (size_t)data_bytes;
+    unsigned char* encoded = (unsigned char*)malloc(encoded_len);
+    unsigned char* buffer;
+    zcsr_music* music;
+    zcsr_music_info info;
+    uint64_t duration = 0;
+    size_t i;
+
+    if (!encoded) {
+        CHECK(0, "wav allocation");
+        return;
+    }
+    memset(encoded, 0, encoded_len);
+    memcpy(encoded + 0u, "RIFF", 4u);
+    wav_put32(encoded + 4u, (uint32_t)(encoded_len - 8u));
+    memcpy(encoded + 8u, "WAVE", 4u);
+    memcpy(encoded + 12u, "fmt ", 4u);
+    wav_put32(encoded + 16u, 16u);
+    wav_put16(encoded + 20u, 1u);
+    wav_put16(encoded + 22u, channels);
+    wav_put32(encoded + 24u, rate);
+    wav_put32(encoded + 28u, rate * frame_bytes);
+    wav_put16(encoded + 32u, (uint16_t)frame_bytes);
+    wav_put16(encoded + 34u, bits);
+    memcpy(encoded + 36u, "data", 4u);
+    wav_put32(encoded + 40u, data_bytes);
+    for (i = 0; i < frames; ++i) {
+        int16_t sample = (i & 1u) ? (int16_t)-1200 : (int16_t)1200;
+        unsigned char* dst = encoded + 44u + (size_t)i * frame_bytes;
+        wav_put16(dst, (uint16_t)sample);
+        wav_put16(dst + 2u, (uint16_t)sample);
+    }
+
+    buffer = (unsigned char*)malloc(zcsr_music_buffer_bytes_required(encoded_len));
+    if (!buffer) {
+        free(encoded);
+        CHECK(0, "wav music buffer allocation");
+        return;
+    }
+    music = zcsr_music_load(encoded, encoded_len, ZCSR_MUSIC_WAV,
+                            buffer, zcsr_music_buffer_bytes_required(encoded_len));
+    free(encoded);
+    if (!music) {
+        free(buffer);
+        CHECK(0, "wav load");
+        return;
+    }
+    CHECK(zcsr_music_duration_ms(music, &duration), "wav duration known");
+    printf("music_api: wav duration=%llu\n", (unsigned long long)duration);
+    CHECK(duration >= 999u && duration <= 1001u, "wav duration ~1s");
+    CHECK(zcsr_music_seek_ms(music, 500u), "wav seek accepted");
+    CHECK(zcsr_music_seek_ms(music, 5000u), "wav seek clamps");
+    memset(&info, 0xff, sizeof(info));
+    CHECK(zcsr_music_get_info(music, &info), "wav info accepted");
+    CHECK(info.title[0] == '\0' && info.artist[0] == '\0', "wav has no fake tags");
+    CHECK(zcsr_music_cover_bytes_required(music) == 0u, "wav has no cover");
+    CHECK(!zcsr_music_play(music), "wav play without mixer rejected");
+    CHECK(zcsr_music_get_error(music) == ZCSR_MUSIC_ERR_NO_DEVICE,
+          "wav no device error");
+    zcsr_music_destroy(music);
+    free(buffer);
+}
+
 /* Fast threadless contract: 1s fixture, bounded pump calls, no real-time
  * 30s drain. The 30s fixture is covered by test_duration_30s above; a slow
  * hardware playback test belongs in a separate opt-in target. */
@@ -334,6 +418,8 @@ int main(int argc, char** argv) {
     test_empty_metadata(data_dir, "sample.mp3", ZCSR_MUSIC_MP3);
     printf("music_api: 30s duration start\n");
     test_duration_30s(data_dir);
+    printf("music_api: wav contract start\n");
+    test_wav_pcm();
     printf("music_api: threadless start\n");
     test_threadless_pump(data_dir);
     printf("music_api: device contract start\n");

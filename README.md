@@ -59,23 +59,99 @@ link the whole tool layer.
 
 需要 CMake 3.16+、C11 编译器；Windows 使用 MSVC。Linux 不是“只装 C11 编译器”就能完整构建：X11/GLX 后端需要 `libx11-dev` + `libgl1-mesa-dev`（发行版等价包名即可），`libxrandr-dev` 可选；全量测试的 `inputext_x11` 用例还需要 `libxtst-dev`，缺失时 CMake 自动跳过该用例，其余测试仍会构建和运行。Wayland/EGL 后端需要 `wayland-client`、`wayland-scanner`、`wayland-protocols`、`libxkbcommon-dev`、`libegl1-mesa-dev`；音频可选 `libpipewire-0.3-dev` + `libspa-0.2-dev` 或 `libasound2-dev`，完全缺失时走静默后端。
 
+构建目录必须放在源码树**外**——根 `CMakeLists.txt` 的 guard 会在 configure 期拒绝仓内目录并打印可用路径；下面的 `..\zcsr-build` 只是示例，任意仓外路径都可以：
+
 ```powershell
-cmake -S . -B build -G "Visual Studio 18 2026" -A x64
-cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure
+cmake -S . -B ..\zcsr-build\win-msvc -G "Visual Studio 18 2026" -A x64
+cmake --build ..\zcsr-build\win-msvc --config Release
+ctest --test-dir ..\zcsr-build\win-msvc -C Release --output-on-failure
 ```
 
 macOS 15+ / Xcode 16+ 使用同一套 CMake 源，但必须在有 GUI 会话的真实 Mac 上构建和运行：
 
 ```bash
-cmake -S . -B build_macos -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
-cmake --build build_macos -j
+cmake -S . -B ../zcsr-build/macos -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
+cmake --build ../zcsr-build/macos -j
 ./tools/verify_macos_linear.sh
 ```
 
 脚本保留给将来有真实 Mac 时复验。按用户 2026-11-23 决定，macOS 真机验收已 pass、不再作为 1.0 发布门；没有真实 Mac 时不声称已编译或运行。
 
 当前基线是 29 个模块库、37 个 CTest（36 个旧基线 + 新增纯 CPU `light2d_math`）。Windows 旧基线 36/36，新增 `light2d_math` 29/29；Linux 补充验证分四条路径：Ubuntu 22.04 + GCC 11 + X11/GLX（Xvfb/RANDR/XTEST）35/35、原生 Wayland/EGL（Weston headless）34/34、PipeWire 0.3.48 + null sink 35/35、Ubuntu 20.04 chroot + glibc 2.31 重新构建 35/35（这些日志是新增测试前的历史结果，未重跑）。Linux 日志来自两个互不一致的云副本：`/home/user/zcsr_linux` 有最新 PipeWire/XRandR，但仍含已清理的 composite 死代码和旧 XTest 门控；`/home/user/zcsr_linux_1_0_verify` 已清理 shader/加门控，但 audio/platform 仍是旧版。按用户口径 Linux 环境不再作为门，物理机结果已过，不为副本差异重跑；macOS 与 Git tag/发布打包不属于当前工作范围。Linux 产物在 glibc 2.31 工具链上的最高符号为 `GLIBC_2.29`。Kali 物理机此前通过 35/35，按用户口径沿用、不重跑全量；云主机只有 Mesa llvmpipe，缺 GPU/声卡不作为发布阻塞。Linux AMD/NVIDIA 真实 GPU 驱动仍未单独验证；细节和限制见 `docs/LINUX_VERIFICATION.md`。测试覆盖 core、signal、hsm、platform、glrender、light2d、audio、music、input、collision、save、ui、viewport、color_pipeline、scene_camera、scene、scene_render 等模块。
+
+## 可选媒体依赖（FFmpeg / libwebp）
+
+这两个库体量大、许可证独立，**不随仓库分发**（`third_party/prebuilt/` 由 `.gitignore` 排除，新 clone 里没有它们）。缺失时构建照常成功，只是对应后端 fail-closed：WebP 与 FFmpeg 支撑的格式（AAC/M4A/Opus、WebM/video、WebP 静图与动图）报 `caps=false`、解码返回 `UNSUPPORTED`。
+
+**版本口径**：维护者落库的 prebuilt 为 FFmpeg **BtbN `n8.1` LGPL shared**、libwebp **1.4.0**（详见 `third_party/DEPENDENCIES.md` 的版本矩阵）。下面每段都是可直接复制的安装命令；装完把 root 指向系统前缀（Linux/macOS 是 `/usr` / `/opt/local`，Windows 是 vcpkg 的 `installed/x64-windows`），configure 会打印 `FFmpeg backend enabled: <root> (license=LGPL)` 或 `DISABLED … missing: …`。头文件落在 Debian 的 multiarch 目录或 Fedora 的 `include/ffmpeg/` 子目录也能命中。探测要求头文件与库同时存在：FFmpeg 五个库（avcodec/avformat/avutil/swscale/swresample）、libwebp 三个库（webp/webpdemux/sharpyuv）缺一即 fail-closed。三个 cache 变量可覆盖：`ZCSR_DEPS_ROOT`、`ZCSR_FFMPEG_ROOT`、`ZCSR_LIBWEBP_ROOT`。
+
+**许可前提**：本项目 AGPL-3.0，FFmpeg 必须是 LGPL 变体且**动态链接**。包管理器里能装到的 GPL 变体一律不可用：`Gyan.FFmpeg`、`BtbN.FFmpeg.GPL.Shared`、Homebrew 的 `ffmpeg`、MacPorts 默认的 `+gpl2`。
+
+**Windows（x64 / MSVC）** — vcpkg 一条命令装齐（默认 features 不含 `gpl`/`nonfree`，`x64-windows` triplet 即动态链接）：
+
+```powershell
+git clone https://github.com/microsoft/vcpkg C:\vcpkg
+C:\vcpkg\bootstrap-vcpkg.bat
+C:\vcpkg\vcpkg.exe install ffmpeg libwebp --triplet x64-windows
+
+# 两个 root 指向同一个 vcpkg 前缀即可（探测分别在其 include/ 下找到 libavcodec 与 webp）
+cmake -S . -B ..\zcsr-build\win-msvc -G "Visual Studio 18 2026" -A x64 `
+      -DZCSR_FFMPEG_ROOT=C:/vcpkg/installed/x64-windows `
+      -DZCSR_LIBWEBP_ROOT=C:/vcpkg/installed/x64-windows
+```
+
+首次编译 FFmpeg 是数十分钟量级；NASM 由 vcpkg 自己拉。DLL 不用手动拷，`zcsr_copy_ffmpeg_runtime()` 会把 `bin/*.dll` 放到测试可执行文件旁边。备选 `winget install --id BtbN.FFmpeg.LGPL.Shared`（LGPL，归档内含 `include/lib`），但 winget 没有 libwebp 的开发包，WebP 仍要 vcpkg 或自建。
+
+**Debian / Kali（apt）**：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libavcodec-dev libavformat-dev libavutil-dev \
+     libswscale-dev libswresample-dev libwebp-dev libsharpyuv-dev
+cmake -S . -B ../zcsr-build/linux-gcc -DCMAKE_BUILD_TYPE=Release \
+      -DZCSR_FFMPEG_ROOT=/usr -DZCSR_LIBWEBP_ROOT=/usr
+```
+
+`libsharpyuv-dev` 从 Debian 13 / Ubuntu 24.04 起才有，Ubuntu 22.04 没有（缺它会链接失败）。Ubuntu 22.04 的 libavcodec 仍是 58，本项目是否硬依赖 ≥ 60 未逐个确认——22.04 编译失败就换发行版。
+
+**Fedora / RHEL（dnf）** — `ffmpeg-devel` 在 RPM Fusion，主仓库只有 `ffmpeg-free`：
+
+```bash
+sudo dnf install -y https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
+sudo dnf install -y ffmpeg-devel libwebp-devel
+cmake -S . -B ../zcsr-build/linux-gcc -DCMAKE_BUILD_TYPE=Release \
+      -DZCSR_FFMPEG_ROOT=/usr -DZCSR_LIBWEBP_ROOT=/usr
+```
+
+**Arch（pacman）** — `ffmpeg` 主包自带 headers：
+
+```bash
+sudo pacman -S --needed ffmpeg libwebp
+cmake -S . -B ../zcsr-build/linux-gcc -DCMAKE_BUILD_TYPE=Release \
+      -DZCSR_FFMPEG_ROOT=/usr -DZCSR_LIBWEBP_ROOT=/usr
+```
+
+Kali 上多数媒体库已预装，`apt-get install` 只补缺的 dev 包。
+
+**macOS 15+ / Xcode 16+** — 同样用 sudo 命令行，走 MacPorts（前置 `xcode-select --install`）；默认的 `+gpl2` 变体是 GPL，必须显式关掉：
+
+```bash
+sudo port install ffmpeg -gpl2 webp
+cmake -S . -B ../zcsr-build/macos -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+      -DZCSR_FFMPEG_ROOT=/opt/local -DZCSR_LIBWEBP_ROOT=/opt/local
+```
+
+Homebrew 的 `ffmpeg` 公式是 `--enable-gpl`（依赖 x264/x265/xvid），不符合许可基线；brew 也明确拒绝 sudo 运行，所以 macOS 上不用它。
+
+**Android** — 无系统包管理器，也没有官方预编译：
+
+```text
+用 NDK 交叉编译（--disable-everything 只保留所需解码器），
+或放入 per-ABI 产物 third_party/prebuilt/android-<abi>/{ffmpeg,libwebp} 后传 ZCSR_*_ROOT。
+不提供时不编译这两个后端，相关格式一律 fail-closed。
+```
+
+**维护者自己的 prebuilt**：仓库的默认探测位置仍是 `third_party/prebuilt/{win64,linux64}/{ffmpeg,libwebp}`（不入库，新 clone 里没有）。这些二进制的来源、许可与链接方式记在 `third_party/DEPENDENCIES.md`；落库版本为 FFmpeg **BtbN `n8.1` LGPL shared**、libwebp **1.4.0**。用户侧用发行版包管理器时版本随发行版走，但许可证基线（LGPL shared、禁 GPL/nonfree）不变。
 
 ## Scene Core
 
@@ -143,6 +219,8 @@ README 负责所有模块的用法总览和发布口径；`docs/` 只放底层�
 
 `docs/archive/` 只保留历史架构、API 和集成说明，用于追溯，不代表当前实现；计划、审计、一次性报告已从发布树移除，Git 历史仍可追溯。
 
-## 许可
+## License
 
-AGPLv3。衍生作品（包括网络服务）必须按同一许可开源；不能并入闭源商业产品。
+本项目按 GNU Affero General Public License v3.0（AGPL-3.0）授权，完整许可证文本见仓库根目录 `LICENSE`。版权行：Copyright (C) 2026 Talmaidev。
+
+`third_party/` 及 `modules/*/third_party/` 下第三方组件保留其原有许可（见各自目录与 `THIRD_PARTY_NOTICES.md`）。

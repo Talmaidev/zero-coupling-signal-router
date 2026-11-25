@@ -8,10 +8,12 @@
  * / _create_ex. `image` never includes a renderer; renderers never include
  * `image`. Decouples decode/processing from upload/draw.
  *
- * Implementer: modules/image (vendors stb_image, used ONLY here for multi-format decode).
- * No runtime heap: decode and all processing write into a CALLER-PROVIDED buffer; stb_image is
- * configured (STBI_MALLOC) to bump-allocate from that buffer, so there is no global heap growth.
- * The caller sizes the buffer to cover decode scratch + the packed RGBA output. */
+ * Memory contract: output pixels are caller-owned. Backends may hold scratch
+ * memory behind the opaque animation handle; there is no retained per-frame
+ * heap that grows with frame count, and no allocation happens per frame on the
+ * output path. The caller sizes the scratch+output buffer to cover decode
+ * scratch plus the packed RGBA output.
+ */
 #include "color.h"   /* zcsr_color_mode — shared with the glrender runtime path */
 #include <stdbool.h>
 #include <stdint.h>
@@ -24,12 +26,54 @@ typedef struct {
     uint8_t*       rgba; /* w*h*4 bytes, caller-buffer-owned */
 } zcsr_image;
 
+/* ---- Format identification & capability reporting ---- */
+
+/* Container/encoding identifiers. Values are part of the ABI: append new
+ * entries at the end, never renumber existing ones. `UNKNOWN` means the bytes
+ * carry no recognizable signature. */
+typedef enum {
+    ZCSR_IMAGE_FMT_UNKNOWN = 0,
+    ZCSR_IMAGE_FMT_PNG,        /* Portable Network Graphics                  */
+    ZCSR_IMAGE_FMT_JPEG,        /* JFIF / Exif JPEG                           */
+    ZCSR_IMAGE_FMT_BMP,         /* Windows BMP (DIB file)                      */
+    ZCSR_IMAGE_FMT_GIF,         /* GIF87a / GIF89a (static first frame)      */
+    ZCSR_IMAGE_FMT_WEBP,        /* WebP (static and animated)                   */
+    ZCSR_IMAGE_FMT_HDR,         /* Radiance RGBE `.hdr` (legacy, tonemapped)  */
+    ZCSR_IMAGE_FMT_ICO,          /* Windows icon container (legacy)            */
+    ZCSR_IMAGE_FMT_CUR,          /* Windows cursor container (legacy)           */
+    ZCSR_IMAGE_FMT_COUNT
+} zcsr_image_format;
+
+/* Decode capability snapshot for the current build/backend. The snapshot is
+ * static (no per-call probing): a false `decode` flag means
+ * zcsr_image_decode fails closed for that format; it never fabricates pixels.
+ * `animated` reports whether multi-frame sequences (GIF/WebP) decode as more
+ * than their first frame through the animation contract. */
+typedef struct {
+    bool decode[ZCSR_IMAGE_FMT_COUNT]; /* indexed by zcsr_image_format */
+    bool animated;                     /* true if GIF/WebP sequences decode multi-frame */
+} zcsr_image_caps_info;
+
+/* Sniff encoded bytes for a container signature. Returns
+ * ZCSR_IMAGE_FMT_UNKNOWN when the signature is absent or ambiguous. Pure:
+ * does not decode and does not touch the caller buffer. */
+zcsr_image_format zcsr_image_detect_format(const void* encoded, size_t encoded_len);
+
+/* Static capability snapshot; never NULL. */
+const zcsr_image_caps_info* zcsr_image_caps(void);
+
+/* Short stable lowercase name for a format enum (e.g. "png", "hdr", "ico").
+ * Returns "unknown" for out-of-range values. */
+const char* zcsr_image_format_name(zcsr_image_format format);
+
 /* ---- Decode (multi-format) ---- */
 
-/* Decode an encoded image from memory into RGBA32. Format is auto-detected; supported encodings
- * are PNG / JPEG / BMP / TGA / GIF / PSD / PIC. `buffer`/`bytes` is caller scratch+output (no
- * global heap) — the returned rgba points inside it. Returns {0,0,NULL} on decode failure or if
- * the buffer is too small to hold scratch + output. */
+/* Decode an encoded image from memory into RGBA32. Format is auto-detected; supported
+ * encodings are PNG / JPEG / BMP / GIF / WebP, with legacy HDR / ICO / CUR retained.
+ * `buffer`/`bytes` is caller scratch+output; the returned rgba points inside it.
+ * Returns {0,0,NULL} on decode failure, on an unsupported encoding, or if the
+ * buffer is too small to hold scratch + output. Animated sequences return their
+ * first frame only; use the animation contract for multi-frame playback. */
 zcsr_image zcsr_image_decode(const void* encoded, size_t encoded_len, void* buffer, size_t bytes);
 
 /* ---- Offline CPU processing (bake once, then upload as an ordinary static texture) ---- */
