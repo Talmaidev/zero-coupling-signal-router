@@ -1,11 +1,19 @@
 param(
     [int]$RunMs = 800,
     [int]$MaxWaitMs = 20000,
-    [string]$Exe = "C:\Users\chen\Documents\build\zcsr\zero-coupling-signal-router\win-msvc\Release\zcsr_test.exe",
-    [string]$OutDir = "C:\Users\chen\Documents\build\zcsr\zero-coupling-signal-router\verify-light2d"
+    [string]$Exe = "",
+    [string]$OutDir = ""
 )
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
+$RepoRoot = Split-Path $PSScriptRoot -Parent
+$DefaultBuildRoot = [IO.Path]::GetFullPath((Join-Path $RepoRoot '..\..\build'))
+if (-not $Exe) {
+    $Exe = Join-Path $DefaultBuildRoot 'zcsr\zero-coupling-signal-router\win-msvc\Release\zcsr_test.exe'
+}
+if (-not $OutDir) {
+    $OutDir = Join-Path $DefaultBuildRoot 'zcsr\zero-coupling-signal-router\verify-light2d'
+}
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;

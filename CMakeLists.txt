@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 # --- Hard guard: the build tree must live OUTSIDE the source tree ------------
-# Repositories under C:\Users\chen\Documents\GitHub (and their Linux checkouts)
+# ZCSR repositories (and their Linux checkouts)
 # must stay free of build output: no in-source builds, no in-repo build/ or
 # build-*/ directories, no scratch CMakeCache.txt. This is enforced here at
 # configure time so a stale command line cannot silently re-pollute the tree.
@@ -36,25 +36,27 @@ if(CMAKE_BINARY_DIR)
     endif()
   endif()
   if(_zcsr_guard_in_repo)
+    get_filename_component(_zcsr_repo_name "${CMAKE_CURRENT_SOURCE_DIR}" NAME)
+    get_filename_component(_zcsr_default_build_root
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../build" ABSOLUTE)
     message(FATAL_ERROR
       "In-repo build directory refused by ZCSR build-layout guard.\n"
       "  CMAKE_SOURCE_DIR = ${CMAKE_SOURCE_DIR}\n"
       "  CMAKE_BINARY_DIR = ${CMAKE_BINARY_DIR}\n"
       "\n"
-      "Build trees must live outside the source tree: this repository (like\n"
-      "every repository under C:\\Users\\chen\\Documents\\GitHub) must stay clean.\n"
-      "Put the build tree at one of these instead:\n"
-      "  Windows: C:\\Users\\chen\\Documents\\build\\zcsr\\zero-coupling-signal-router\\<preset>\n"
-      "  Linux:   /home/chen/zcsr-builds/zero-coupling-signal-router/<preset>\n"
+      "Build trees must live outside the source tree; the checkout must stay clean.\n"
+      "Use any absolute out-of-tree build directory. The portable default is:\n"
+      "  ${_zcsr_default_build_root}/zcsr/${_zcsr_repo_name}/<preset>\n"
       "\n"
-      "Example (Windows, Visual Studio generator):\n"
-      "  cmake -S . -B \"C:\\Users\\chen\\Documents\\build\\zcsr\\zero-coupling-signal-router\\win-msvc\" -G \"Visual Studio 18 2026\"\n"
-      "Example (Linux):\n"
-      "  cmake -S . -B /home/chen/zcsr-builds/zero-coupling-signal-router/linux-gcc\n"
+      "Example:\n"
+      "  cmake -S . -B \"${_zcsr_default_build_root}/zcsr/${_zcsr_repo_name}/win-msvc\"\n"
+      "  cmake -S . -B \"${_zcsr_default_build_root}/zcsr/${_zcsr_repo_name}/linux-gcc\"\n"
       "\n"
-      "If an old in-repo build directory already exists, delete it and use the\n"
-      "layout above; see C:\\Users\\chen\\Documents\\build\\_reports\\BUILD_LAYOUT.md.\n")
+      "Pass -B explicitly (or set ZCSR_BUILD_ROOT in your own wrapper) to use\n"
+      "another out-of-tree root.\n")
   endif()
+  unset(_zcsr_repo_name)
+  unset(_zcsr_default_build_root)
   unset(_zcsr_guard_src)
   unset(_zcsr_guard_bin)
   unset(_zcsr_guard_src_cmp)

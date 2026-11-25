@@ -1058,7 +1058,7 @@ bool zcsr_gl_l2d_gbuffer_begin(zcsr_gl_renderer* renderer,
     /* G0 is linear RGBA16F, so geometry writes linear RGB verbatim and the
      * composite samples it without a decode step. GL_FRAMEBUFFER_SRGB is
      * disabled because none of the G-buffer attachments are sRGB-encoded. */
-    glDisable(GL_FRAMEBUFFER_SRGB);
+    zcsr_gl_set_framebuffer_srgb(false);
     /* Draw-buffer order is the contract order: Albedo, Position, Normal, Emissive. */
     glDrawBuffers((GLsizei)slot->attachments, draw_buffers);
     glViewport(0, 0, width, height);
@@ -1468,7 +1468,7 @@ bool zcsr_gl_l2d_bind_composite_target(zcsr_gl_renderer* renderer,
     glViewport(0, 0, width, height);
     /* Composite shader outputs linear values; the unified frame pass applies
      * the display LUT exactly once. Do not let the FBO re-encode. */
-    glDisable(GL_FRAMEBUFFER_SRGB);
+    zcsr_gl_set_framebuffer_srgb(false);
     GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (st != GL_FRAMEBUFFER_COMPLETE) return false;
     return true;
@@ -1508,7 +1508,7 @@ bool zcsr_gl_l2d_finalize_composite(zcsr_gl_renderer* renderer,
         /* The hook draws into the same linear frame target; it must not encode. */
         if (!zcsr_gl_frame_bind(renderer)) return false;
         glViewport(0, 0, width, height);
-        glDisable(GL_FRAMEBUFFER_SRGB);
+        zcsr_gl_set_framebuffer_srgb(false);
         /* Expose composite texture on unit 9 without disturbing units 4-8. */
         zcsr_l2d_save_draw_bindings(&saved);
         glActiveTexture(GL_TEXTURE9);
@@ -1528,7 +1528,7 @@ bool zcsr_gl_l2d_finalize_composite(zcsr_gl_renderer* renderer,
         };
         if (!zcsr_gl_frame_bind(renderer)) return false;
         glViewport(0, 0, width, height);
-        glDisable(GL_FRAMEBUFFER_SRGB);
+        zcsr_gl_set_framebuffer_srgb(false);
         glDisable(GL_BLEND);
         glUseProgram(renderer->l2d_blit_prog);
         if (renderer->l2d_blit_loc_sampler >= 0)

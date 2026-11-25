@@ -51,6 +51,22 @@
 #  define ZCSR_GL_GLSL_FRAGMENT_PRECISION ""
 #endif
 
+/* GLES 3.0 has no GL_FRAMEBUFFER_SRGB enable cap; sRGB conversion is implied
+ * by the attachment format. Desktop GL needs the explicit state toggle. */
+#if defined(__ANDROID__)
+static inline void zcsr_gl_set_framebuffer_srgb(bool enable) {
+    (void)enable;
+}
+#else
+static inline void zcsr_gl_set_framebuffer_srgb(bool enable) {
+    if (enable) {
+        glEnable(GL_FRAMEBUFFER_SRGB);
+    } else {
+        glDisable(GL_FRAMEBUFFER_SRGB);
+    }
+}
+#endif
+
 /* Per-draw instance cap. Default 10k keeps the renderer's fixed memory small;
  * a build may override it to benchmark a single large instanced draw. */
 #ifndef ZCSR_GL_MAX_INSTANCES

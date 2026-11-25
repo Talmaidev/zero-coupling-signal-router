@@ -374,7 +374,7 @@ static bool zcsr_gl_frame_resize(zcsr_gl_renderer* r, int w, int h) {
         GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
         GLfloat prev_clear[4];
         glGetFloatv(GL_COLOR_CLEAR_VALUE, prev_clear);
-        glDisable(GL_FRAMEBUFFER_SRGB);
+        zcsr_gl_set_framebuffer_srgb(false);
         glDisable(GL_SCISSOR_TEST);
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -477,7 +477,7 @@ bool zcsr_gl_frame_bind(zcsr_gl_renderer* r) {
     zcsr_gl_update_size(r);
     if (!zcsr_gl_frame_resize(r, r->width, r->height)) return false;
     glBindFramebuffer(GL_FRAMEBUFFER, r->frame_fbo);
-    glDisable(GL_FRAMEBUFFER_SRGB);
+    zcsr_gl_set_framebuffer_srgb(false);
     glViewport(0, 0, r->width, r->height);
     return true;
 }
@@ -495,9 +495,9 @@ bool zcsr_gl_bind_active_target(zcsr_gl_renderer* r) {
         return false;
     }
     if (e->color_space == ZCSR_COLOR_SPACE_LINEAR) {
-        glDisable(GL_FRAMEBUFFER_SRGB);
+        zcsr_gl_set_framebuffer_srgb(false);
     } else {
-        glEnable(GL_FRAMEBUFFER_SRGB);
+        zcsr_gl_set_framebuffer_srgb(true);
     }
     r->width = e->w;
     r->height = e->h;
@@ -519,7 +519,7 @@ bool zcsr_gl_frame_encode(zcsr_gl_renderer* r) {
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_FRAMEBUFFER_SRGB);
+    zcsr_gl_set_framebuffer_srgb(false);
     glUseProgram(r->frame_prog);
     glUniform1i(r->frame_loc_tex, 0);
     glUniform1i(r->frame_loc_lut, 1);

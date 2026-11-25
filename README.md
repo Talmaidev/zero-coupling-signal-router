@@ -75,9 +75,9 @@ cmake --build ../zcsr-build/macos -j
 ./tools/verify_macos_linear.sh
 ```
 
-脚本保留给将来有真实 Mac 时复验。按用户 2026-11-23 决定，macOS 真机验收已 pass、不再作为 1.0 发布门；没有真实 Mac 时不声称已编译或运行。
+脚本保留供真实 Mac 复验。当前没有真实 Mac 构建/运行证据，macOS 标记为**未验证**，不声称 pass；它不阻塞 Windows/Linux 工作，但阻塞“四平台完全支持”的结论。
 
-当前基线是 29 个模块库、37 个 CTest（36 个旧基线 + 新增纯 CPU `light2d_math`）。Windows 旧基线 36/36，新增 `light2d_math` 29/29；Linux 补充验证分四条路径：Ubuntu 22.04 + GCC 11 + X11/GLX（Xvfb/RANDR/XTEST）35/35、原生 Wayland/EGL（Weston headless）34/34、PipeWire 0.3.48 + null sink 35/35、Ubuntu 20.04 chroot + glibc 2.31 重新构建 35/35（这些日志是新增测试前的历史结果，未重跑）。Linux 日志来自两个互不一致的云副本：`/home/user/zcsr_linux` 有最新 PipeWire/XRandR，但仍含已清理的 composite 死代码和旧 XTest 门控；`/home/user/zcsr_linux_1_0_verify` 已清理 shader/加门控，但 audio/platform 仍是旧版。按用户口径 Linux 环境不再作为门，物理机结果已过，不为副本差异重跑；macOS 与 Git tag/发布打包不属于当前工作范围。Linux 产物在 glibc 2.31 工具链上的最高符号为 `GLIBC_2.29`。Kali 物理机此前通过 35/35，按用户口径沿用、不重跑全量；云主机只有 Mesa llvmpipe，缺 GPU/声卡不作为发布阻塞。Linux AMD/NVIDIA 真实 GPU 驱动仍未单独验证；细节和限制见 `docs/LINUX_VERIFICATION.md`。测试覆盖 core、signal、hsm、platform、glrender、light2d、audio、music、input、collision、save、ui、viewport、color_pipeline、scene_camera、scene、scene_render 等模块。
+当前 Windows 基线：router **68 个 CTest 注册项**（67 通过 + 1 个硬件跳过），五仓合计 **154 个注册项**（153 通过 + 1 跳过）。同一源码在无 prebuilt 的干净快照下为 **59 通过 + 9 显式 skip / 0 失败**，skip 原因写在 CTest 输出里。Linux 当前 HEAD（Kali x86_64，GCC 16.2）为 **154 个注册项**（148 通过 + 6 显式 skip / 0 失败）；router 单独为 68 项（62 通过 + 6 skip），Clang 21 + ASan 同为 0 失败。旧 Linux 35/35、34/34 等数字是历史副本，不再作为当前 HEAD 证据。Linux 的 5 个媒体 skip 是因为干净测试环境未装 LGPL FFmpeg 开发包，不是假 pass；Windows 媒体测试在本机 LGPL prebuilt 下通过。macOS 为未验证。测试覆盖 core、signal、hsm、platform、glrender、light2d、audio、music、input、collision、save、ui、viewport、color_pipeline、camera3d、scene_camera、scene、scene_render 等模块。
 
 ## 可选媒体依赖（FFmpeg / libwebp）
 
@@ -177,7 +177,7 @@ Homebrew 的 `ffmpeg` 公式是 `--enable-gpl`（依赖 x264/x265/xvid），不�
 - editor 目标平台 Windows/Linux/macOS 三平台；平台窗口/输入/GL 仍由 engine 后端提供，editor 只通过公开 `zcsr_*` 接口消费。当前验收状态见下条。
 - 运行时只有一个可用渲染后端：GPU（OpenGL 3.3 Core / GLES 3.x）。`zcsr_render_backend` 保留 `CPU` 接口位，但 `zcsr_render_backend_available(CPU)` 返回 false，`zcsr_gl_create_with_backend(..., CPU)` 返回 NULL；不维护第二套软件光栅器。GPU 不可用时直接失败，不静默退回显示域。
 - 统一线性工作空间是 1.0 硬契约：Path A 与 Path B 都写 `RGBA16F` 线性帧，`present/read_rgba` 只做一次 LUT encode。设备必须支持 `RGBA16F` 颜色附件，否则 renderer 创建失败。
-- 平台证据：Windows 10 + Intel Arc B580 已通过真实 GPU 回读；Kali 物理机此前 X11/GLX 35/35，本次无严重改动、按用户口径沿用；Linux X11/GLX 与原生 Wayland/EGL 也在 Mesa llvmpipe 上真实回读；Linux 产物在 Ubuntu 20.04/glibc 2.31 工具链上重编并 35/35 通过，最高 `GLIBC_2.29` 符号。Linux 真实 AMD/NVIDIA 驱动仍未单独验证，云主机缺 GPU 不作为发布阻塞。macOS Cocoa 代码路径已完成静态审读；按用户 2026-11-23 决定，macOS 真机验收 pass、不作为 1.0 门，且不声称已在 Mac 上运行。
+- 平台证据：Windows 10 + Intel Arc B580 已通过真实 GPU 回读；当前 Windows 154 项注册（153 通过 + 1 硬件跳过）。Linux 当前 HEAD 已在 Kali x86_64 / GCC 16.2 上重跑：154 项注册（148 通过 + 6 显式媒体/硬件 skip / 0 失败），Clang 21 + ASan 0 失败；Editor smoke 为 llvmpipe 软件 GLX，物理 GPU 仍需单独验证。macOS Cocoa 代码路径已完成静态审读和 stub 语法检查，但**没有真实 Mac 构建/运行证据，状态为未验证，不声称 pass**。
 
 ## 性能基线（唯一可引用口径）
 

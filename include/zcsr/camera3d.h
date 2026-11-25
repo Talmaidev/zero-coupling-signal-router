@@ -48,15 +48,17 @@ bool zcsr_camera3d_project(const zcsr_camera3d* c,
                            float x, float y, float z,
                            float* out_px, float* out_py, float* out_depth);
 
-/* Inverse ground-plane query: screen pixel -> world point on z=0.
+/* Inverse ground-plane query: screen pixel -> world point on y=0.
  *
- * This is the picking primitive for 2.5D ground placement. It casts a ray
- * through the perspective camera and intersects the z=0 plane. Returns false
- * when the ray does not hit the ground in front of the camera. It is a math
- * helper, not a scene query and not a 3D picking system. */
+ * This is the picking primitive for 2.5D ground placement in a Y-up world.
+ * It casts a ray through the perspective camera and intersects the horizontal
+ * y=0 plane. out_x receives world X and out_z receives world Z. Returns false
+ * when the ray is parallel to the ground or points away from it, so a
+ * low-pitch upward ray never produces a spurious huge coordinate. It is a
+ * math helper, not a scene query and not a 3D picking system. */
 bool zcsr_camera3d_screen_to_ground(const zcsr_camera3d* c,
                                     float px, float py,
-                                    float* out_x, float* out_y);
+                                    float* out_x, float* out_z);
 
 /* Screen-space rect of a camera-facing billboard of world size `world_w` x `world_h`
  * centred at (x,y,z). Perspective shrinks it with distance. */

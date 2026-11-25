@@ -96,7 +96,7 @@ bool zcsr_camera3d_project(const zcsr_camera3d* c,
 
 bool zcsr_camera3d_screen_to_ground(const zcsr_camera3d* c,
                                     float px, float py,
-                                    float* out_x, float* out_y) {
+                                    float* out_x, float* out_z) {
     float vx, vy, vz, dx, dy, dz, f;
     float cp, sp, cy, sy, dy_view, z1;
     float t;
@@ -120,12 +120,15 @@ bool zcsr_camera3d_screen_to_ground(const zcsr_camera3d* c,
     dy = dy_view;
     dz = -vx * sy + z1 * cy;
 
-    /* Ray from eye to z=0. A ray pointing up or parallel misses the ground. */
-    if (dz >= -1e-6f) return false;
-    t = -c->eye_z / dz;
+    /* World is Y-up; the ground is the horizontal y=0 plane. A ray that is
+     * parallel to the ground, or points away from it, has no valid hit. This
+     * is what rejects a low-pitch upward ray before it can report a huge
+     * coordinate from the old z=0 intersection. */
+    if (fabsf(dy) <= 1e-6f) return false;
+    t = -c->eye_y / dy;
     if (t <= 0.0f) return false;
     if (out_x) *out_x = c->eye_x + dx * t;
-    if (out_y) *out_y = c->eye_y + dy * t;
+    if (out_z) *out_z = c->eye_z + dz * t;
     return true;
 }
 
