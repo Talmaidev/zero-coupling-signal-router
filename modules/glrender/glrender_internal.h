@@ -10,10 +10,75 @@
 
 #include "zcsr/gl_render.h"
 #include "zcsr/gl_render_light2d_ext.h"
+#include "zcsr/culling.h"
+#include "zcsr/render_tier.h"
+#include "zcsr/instance_sort.h"
 
-/* Instance VBO ring size. A frame with 7 10k batches writes 7 slots; the next
- * frame rotates back only after the driver has had a full frame to consume them. */
+/* Write-side instance sanitize (finite + range checks) is compiled out of every
+ * Release build unless this is explicitly defined to 1. When 0 the instanced
+ * hot path carries no per-instance isfinite scan over the 168 B struct. */
+#ifndef ZCSR_DEBUG_VALIDATE
+#define ZCSR_DEBUG_VALIDATE 0
+#endif
+
+/* Instance VBO ring size. The ring advances one slot per FRAME (not per upload
+ * chunk): all batches submitted in the same frame write consecutive byte ranges
+ * of the same slot; a slot is reused only after the driver has had a full frame
+ * to consume the previous draw, so an in-flight draw is never overwritten. */
 #define ZCSR_GL_INSTANCE_SLOTS 8
+
+/* ---- Ruling 2: cull-gate threshold (single definition, no scattered literals) ----
+ * A full rescan costs ~14.6 ns/instance; dropping one instance saves ~13.9 ns
+ * GPU work + ~16.8 ns upload ≈ 30 ns. Break-even 14.6 / 30 ≈ 49%, so the
+ * full-cull sweep only kicks in once the culled fraction reaches 0.5. */
+#ifndef ZCSR_CULL_FULL_SCAN_RATIO
+#define ZCSR_CULL_FULL_SCAN_RATIO 0.5f
+#endif
+
+#ifndef ZCSR_UNLIKELY
+#if defined(__GNUC__) || defined(__clang__)
+#define ZCSR_UNLIKELY(cond) __builtin_expect(!!(cond), 0)
+#else
+#define ZCSR_UNLIKELY(cond) (!!(cond))
+#endif
+#endif
+
+/* ---- Ruling 6: compile-time instance layout tier (assembly, not a per-frame arg) ---- */
+#ifndef ZCSR_INSTANCE_LAYOUT
+#define ZCSR_INSTANCE_LAYOUT ZCSR_LAYOUT_FULL
+#endif
+
+/* ---- Ruling 8: compile-time color pipeline tier (assembly, not a per-frame arg) ---- */
+#ifndef ZCSR_COLOR_TIER
+#define ZCSR_COLOR_TIER ZCSR_COLOR_OPT_LINEAR_HDR
+#endif
+
+/* ---- Ruling 9: optional three-slot persistent-mapped ring.
+ * Assemble-time opt-in. The default build keeps the original 8-slot
+ * DynamicDraw ring byte-for-byte; persistent mapping exists only when this is
+ * compiled to 1. The goal is async non-blocking writes, not fewer calls for
+ * their own sake (V3 upload_bytes=0 already measured physical upload ≈0.35 ms). */
+#ifndef ZCSR_INST_PERSISTENT_RING
+#define ZCSR_INST_PERSISTENT_RING 0
+#endif
+#if ZCSR_INST_PERSISTENT_RING
+#define ZCSR_INST_PERSISTENT_SLOTS 3
+#endif
+
+/* Persistent-mapped storage enums: the vendored loader does not carry the
+ * ARB_buffer_storage symbols, so provide numeric fallbacks (core ARB values). */
+#ifndef GL_MAP_WRITE_BIT
+#define GL_MAP_WRITE_BIT 0x0002u
+#endif
+#ifndef GL_MAP_PERSISTENT_BIT
+#define GL_MAP_PERSISTENT_BIT 0x0040u
+#endif
+#ifndef GL_MAP_COHERENT_BIT
+#define GL_MAP_COHERENT_BIT 0x0080u
+#endif
+#ifndef GL_DYNAMIC_STORAGE_BIT
+#define GL_DYNAMIC_STORAGE_BIT 0x0100u
+#endif
 
 /* Platform system headers must precede the vendored GL loader where the platform's GL headers
  * depend on them (Windows: windows.h before GL/gl.h). */
@@ -67,10 +132,14 @@ static inline void zcsr_gl_set_framebuffer_srgb(bool enable) {
 }
 #endif
 
-/* Per-draw instance cap. Default 10k keeps the renderer's fixed memory small;
- * a build may override it to benchmark a single large instanced draw. */
+/* Per-draw instance capacity. This is an init/build-time parameter, not an
+ * algorithm choice: the default is 65,535; a build may override it with
+ * -DZCSR_GL_MAX_INSTANCES=... . Chunking count is decided by the caller's loop;
+ * the engine never splits a batch on its own behalf. A request no larger than
+ * the capacity is drawn in one glDrawArraysInstanced call; the internal loop
+ * below exists only as an overflow guard for count > capacity. */
 #ifndef ZCSR_GL_MAX_INSTANCES
-#define ZCSR_GL_MAX_INSTANCES 10000
+#define ZCSR_GL_MAX_INSTANCES 65535
 #endif
 
 /* Runtime-classified GPU identity. This is diagnostic state, not a feature gate:
@@ -237,13 +306,66 @@ struct zcsr_gl_renderer {
     unsigned int inst_vbo;
     bool inst_skip_upload;      /* diagnostic: keep GPU VBO contents, skip glBufferSubData */
     bool inst_orphan;           /* diagnostic: discard VBO storage before each upload */
-    unsigned int inst_slot;     /* rotating VBO slot; avoids overwriting in-flight instance data */
+    unsigned int inst_slot;     /* current ring slot; rotates once per frame, not per batch */
+    size_t inst_frame_off;      /* bytes already written into inst_slot this frame */
     bool inst_current_mul;      /* current run uses the multiply-only program/VAO */
     int inst_uniform_view;
     int inst_uniform_tex;
     int inst_uniform_ramp;
     int inst_uniform_view_mul;
     int inst_uniform_tex_mul;
+    int inst_uniform_ramp_mul; /* ruling 10: ramp location recorded per program */
+
+    /* ---- plain instanced entry: own program / VAO / corner VBO / instance VBO.
+     * FULL / POS_UV tiers only; zeroed by zcsr_gl_create's memset. The plain VBO
+     * is its own DynamicDraw ring, independent of the general instanced ring. */
+    unsigned int plain_program;
+    unsigned int plain_vao;
+    unsigned int plain_corner_vbo;
+    unsigned int plain_vbo;
+    unsigned int plain_slot;    /* rotating plain ring slot; mirrors inst_slot */
+    size_t plain_frame_off;     /* bytes already written into plain_slot this frame */
+    int plain_uniform_view;
+    int plain_uniform_tex;
+
+    /* ---- GL state cache mirror -------------------------------------------------
+     * Last program / VAO / texture / viewport the renderer applied itself. */
+    unsigned int st_cache_program;
+    unsigned int st_cache_vao;
+    unsigned int st_cache_tex0;
+    unsigned int st_cache_tex1;
+    int st_cache_vp_w;
+    int st_cache_vp_h;
+    bool st_cache_valid;
+
+    /* Instanced selection surface (rulings 1/3/4). Pass 1 writes the culling
+     * bitmap and the 4 B index array; pass 2 walks only the index array instead
+     * of re-scanning the 168 B instance structs. inst_stage holds one gathered
+     * upload chunk (retained instances copied out of their possibly non-
+     * consecutive source slots). It is a 168 B FULL/POS_UV staging array: the
+     * COMPACT tier gathers 36 B records through its own static stage and does
+     * not carry this array. */
+    uint8_t  inst_vis[ZCSR_CULL_BITMAP_BYTES];
+    uint32_t inst_sel[ZCSR_CULL_BITMAP_CAPACITY];
+#if ZCSR_INSTANCE_LAYOUT != ZCSR_LAYOUT_COMPACT
+    zcsr_gl_instance inst_stage[ZCSR_GL_MAX_INSTANCES];
+#endif
+    size_t   stat_inst_scanned;      /* instances seen in pass 1 */
+    size_t   stat_inst_touch_bytes;  /* 4 B index-array bytes walked in pass 2 */
+    size_t   stat_inst_upload_bytes; /* 168 B struct bytes gathered for upload */
+    size_t   stat_inst_skipped;      /* rejected instances (debug sanitize / error path) */
+    /* Ruling 2: gate classification counters, accumulated inside the existing
+     * select traversal (no extra pass). */
+    size_t   stat_inst_dead;         /* debug sanitize / ramp-unbound error rejects */
+    size_t   stat_inst_offscreen;    /* quad fully outside the viewport */
+    size_t   stat_inst_alpha0;        /* modulation alpha <= 0 */
+    int      stat_inst_cull_path;     /* 0 = bitmap path, 1 = full_cull sweep */
+    size_t   stat_inst_upload_calls; /* glBufferSubData driver-upload calls (ruling 9) */
+    size_t   stat_inst_map_writes;   /* batches written into the persistent mapping */
+#if ZCSR_INST_PERSISTENT_RING
+    void*    inst_persist_map;        /* persistent coherent ring mapping (opt-in) */
+    bool     inst_persist_ready;      /* init-time capability decision; NOT a per-frame switch */
+#endif
 
     /* ---- optional GPU elapsed-time query (desktop GL 3.3) ---- */
     unsigned int gpu_timer_queries[2];
@@ -403,6 +525,17 @@ struct zcsr_gl_renderer {
 #endif
 };
 
+static inline void zcsr_gl_state_cache_invalidate(zcsr_gl_renderer* r) {
+    if (!r) return;
+    r->st_cache_valid = false;
+    r->st_cache_program = 0;
+    r->st_cache_vao = 0;
+    r->st_cache_tex0 = 0;
+    r->st_cache_tex1 = 0;
+    r->st_cache_vp_w = 0;
+    r->st_cache_vp_h = 0;
+}
+
 /* ---- Platform backend -----------------------------------------------------------------------
  * One definition of each exists per target: in glrender.c for Linux/Windows/Android, in glrender_cocoa.m
  * for macOS. zcsr_gl_create/destroy (shared, in glrender.c) call these around the GL setup.
@@ -471,6 +604,9 @@ void zcsr_gl_record_draw(zcsr_gl_renderer* r, unsigned int texture, size_t first
 /* ---- Instanced (program/init/destroy/draw/radix sort/state sort) --------------------------- */
 bool zcsr_gl_instanced_init(zcsr_gl_renderer* r);
 void zcsr_gl_instanced_destroy(zcsr_gl_renderer* r);
+void zcsr_gl_inst_advance_frame(zcsr_gl_renderer* r);
+/* Runtime probe: GL_ARB_buffer_storage advertised in the current context. */
+bool zcsr_gl_has_buffer_storage(void);
 
 /* ---- GPU elapsed-time query (desktop GL 3.3; no-op/false on Android) ---------------------- */
 void zcsr_gl_gpu_timer_destroy(zcsr_gl_renderer* r);
@@ -480,5 +616,10 @@ void zcsr_gl_gpu_timer_destroy(zcsr_gl_renderer* r);
  * (include/zcsr/gl_render_light2d_ext.h) is implemented in glrender_light2d_ext.c. */
 bool zcsr_gl_l2d_init(zcsr_gl_renderer* r);
 void zcsr_gl_l2d_destroy(zcsr_gl_renderer* r);
+
+/* ---- Platform proc-address resolver (shared by capability probing and the G2
+ * persistent-mapped ring buffer, 裁决 9). Returns NULL for a NULL name or on
+ * platforms with no matching loader. */
+void* zcsr_gl_proc_address(const char* name);
 
 #endif /* ZCSR_GLRENDER_INTERNAL_H */

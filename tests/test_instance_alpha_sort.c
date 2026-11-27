@@ -68,8 +68,17 @@ int main(void) {
 
     /* New submission APIs must reject null arguments without touching GL. */
     {
-        zcsr_gl_sorted_run runs[2];
         float ms = -1.0f;
+#if ZCSR_INSTANCE_LAYOUT == ZCSR_LAYOUT_COMPACT
+        /* COMPACT tier: only the compact entry is produced; the generic entry
+         * and the 168 B submit conveniences are compiled out at this tier
+         * (link-time capability gate, no runtime fallback). */
+        zcsr_instance_compact rec;
+        memset(&rec, 0, sizeof rec);
+        CHECK(zcsr_gl_draw_instances_compact(NULL, 1u, &rec, 1u) == 0u,
+              "draw_instances_compact null renderer returns 0");
+#else
+        zcsr_gl_sorted_run runs[2];
         memset(runs, 0, sizeof(runs));
         CHECK(zcsr_gl_draw_instances(NULL, 1u, instances, 1u) == 0u,
               "draw_instances null renderer returns 0");
@@ -81,6 +90,7 @@ int main(void) {
               "submit_sorted_runs null renderer returns 0");
         CHECK(zcsr_gl_submit_sorted_runs(NULL, NULL, 0u) == 0u,
               "submit_sorted_runs empty returns 0");
+#endif
         CHECK(!zcsr_gl_gpu_timer_begin(NULL), "gpu timer begin rejects null renderer");
         CHECK(!zcsr_gl_gpu_timer_end(NULL), "gpu timer end rejects null renderer");
         CHECK(!zcsr_gl_gpu_timer_last_ms(NULL, &ms), "gpu timer result rejects null renderer");

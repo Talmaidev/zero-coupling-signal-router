@@ -1,5 +1,12 @@
 #include "zcsr/culling.h"
 
+/* Bitmap size contract: 65,535 instances -> 1 bit each -> 8,192 bytes.
+ * 65535 / 8 = 8191.875, rounded up to 8192; 8192 bytes cover 65,536 bits. */
+_Static_assert(ZCSR_CULL_BITMAP_CAPACITY == 65535u,
+               "bitmap capacity must stay 65535");
+_Static_assert(ZCSR_CULL_BITMAP_BYTES == 8192u,
+               "65,535 instances must map to 8,192 bitmap bytes");
+
 int zcsr_aabb_in_view(const zcsr_aabb_t* b, const zcsr_view_t* v) {
     if (!b || !v) return 0;
     return b->min_x <= v->max_x && b->max_x >= v->min_x &&
@@ -103,4 +110,54 @@ float zcsr_view_coverage(const zcsr_grid_t* g, const zcsr_view_t* v) {
     if (view_w > world_w) view_w = world_w;
     if (view_h > world_h) view_h = world_h;
     return (view_w * view_h) / (world_w * world_h);
+}
+
+/* ---- instance visibility bitmap (1 bit per instance) ------------------------ */
+
+static int zcsr_bitmap_in_range(size_t index) {
+    return index < ZCSR_CULL_BITMAP_CAPACITY;
+}
+
+void zcsr_bitmap_clear(uint8_t* bits, size_t capacity_bits) {
+    size_t bytes;
+    if (!bits) return;
+    if (capacity_bits > ZCSR_CULL_BITMAP_CAPACITY) capacity_bits = ZCSR_CULL_BITMAP_CAPACITY;
+    bytes = (capacity_bits + 7u) / 8u;
+    for (size_t i = 0; i < bytes; ++i) bits[i] = 0;
+}
+
+void zcsr_bitmap_set(uint8_t* bits, size_t index) {
+    if (!bits || !zcsr_bitmap_in_range(index)) return;
+    bits[index >> 3] |= (uint8_t)(1u << (index & 7u));
+}
+
+void zcsr_bitmap_clear_bit(uint8_t* bits, size_t index) {
+    if (!bits || !zcsr_bitmap_in_range(index)) return;
+    bits[index >> 3] &= (uint8_t)~(1u << (index & 7u));
+}
+
+int zcsr_bitmap_test(const uint8_t* bits, size_t index) {
+    if (!bits || !zcsr_bitmap_in_range(index)) return 0;
+    return (bits[index >> 3] >> (index & 7u)) & 1u;
+}
+
+size_t zcsr_bitmap_count(const uint8_t* bits, size_t count) {
+    size_t n = 0, i;
+    if (!bits) return 0;
+    if (count > ZCSR_CULL_BITMAP_CAPACITY) count = ZCSR_CULL_BITMAP_CAPACITY;
+    for (i = 0; i < count; ++i) {
+        if (zcsr_bitmap_test(bits, i)) ++n;
+    }
+    return n;
+}
+
+size_t zcsr_bitmap_to_indices(const uint8_t* bits, size_t count,
+                              uint32_t* out, size_t out_capacity) {
+    size_t n = 0, i;
+    if (!bits || !out) return 0;
+    if (count > ZCSR_CULL_BITMAP_CAPACITY) count = ZCSR_CULL_BITMAP_CAPACITY;
+    for (i = 0; i < count && n < out_capacity; ++i) {
+        if (zcsr_bitmap_test(bits, i)) out[n++] = (uint32_t)i;
+    }
+    return n;
 }

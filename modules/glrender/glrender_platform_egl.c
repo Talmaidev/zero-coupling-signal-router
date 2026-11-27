@@ -7,6 +7,16 @@
 
 #include <string.h>
 
+#ifndef EGL_CONFIG_CAVEAT
+#define EGL_CONFIG_CAVEAT 0x3027
+#endif
+#ifndef EGL_SLOW_CONFIG
+#define EGL_SLOW_CONFIG 0x3050
+#endif
+#ifndef EGL_NO_CONFIG_CAVEAT
+#define EGL_NO_CONFIG_CAVEAT 0x3051
+#endif
+
 static bool zcsr_gl_egl_fail(zcsr_gl_renderer* r, const char* stage) {
     EGLint error = eglGetError();
     __android_log_print(ANDROID_LOG_ERROR, "zcsr-gl",
@@ -16,11 +26,17 @@ static bool zcsr_gl_egl_fail(zcsr_gl_renderer* r, const char* stage) {
 }
 
 bool zcsr_gl_make_current(zcsr_gl_renderer* r) {
-    return r && r->egl_initialized
-        && r->display != EGL_NO_DISPLAY
-        && r->egl_surface != EGL_NO_SURFACE
-        && r->ctx != EGL_NO_CONTEXT
-        && eglMakeCurrent(r->display, r->egl_surface, r->egl_surface, r->ctx) == EGL_TRUE;
+    if (!(r && r->egl_initialized
+          && r->display != EGL_NO_DISPLAY
+          && r->egl_surface != EGL_NO_SURFACE
+          && r->ctx != EGL_NO_CONTEXT)) return false;
+    /* eglMakeCurrent is a round-trip; skip it when already current. */
+    if (eglGetCurrentContext() == r->ctx &&
+        eglGetCurrentSurface(EGL_DRAW) == r->egl_surface &&
+        eglGetCurrentDisplay() == r->display) {
+        return true;
+    }
+    return eglMakeCurrent(r->display, r->egl_surface, r->egl_surface, r->ctx) == EGL_TRUE;
 }
 
 void zcsr_gl_update_size(zcsr_gl_renderer* r) {
@@ -35,7 +51,10 @@ void zcsr_gl_update_size(zcsr_gl_renderer* r) {
 
 bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface) {
     ANativeWindow* window;
-    EGLConfig config;
+    EGLConfig config = NULL;
+    EGLConfig configs[8];
+    int k;
+    bool picked = false;
     EGLint major = 0, minor = 0, count = 0, visual_id = 0;
     const EGLint config_attrs[] = {
         EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
@@ -60,11 +79,28 @@ bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface) {
     r->egl_initialized = true;
     if (eglBindAPI(EGL_OPENGL_ES_API) != EGL_TRUE)
         return zcsr_gl_egl_fail(r, "eglBindAPI");
-    if (eglChooseConfig(r->display, config_attrs, &config, 1, &count) != EGL_TRUE)
+    if (eglChooseConfig(r->display, config_attrs, configs, 8, &count) != EGL_TRUE)
         return zcsr_gl_egl_fail(r, "eglChooseConfig");
     if (count < 1) {
         __android_log_print(ANDROID_LOG_ERROR, "zcsr-gl",
             "No EGLConfig supports a GLES 3 window surface");
+        zcsr_gl_platform_destroy(r);
+        return false;
+    }
+    /* Match the GLX backend: do not blindly take the first candidate. Skip
+     * EGL_SLOW_CONFIG entries (often software/emulation configs) before the
+     * existing native-visual matching runs on the chosen config. */
+    for (k = 0; k < count; ++k) {
+        EGLint caveat = EGL_NO_CONFIG_CAVEAT;
+        eglGetConfigAttrib(r->display, configs[k], EGL_CONFIG_CAVEAT, &caveat);
+        if (caveat == EGL_SLOW_CONFIG) continue;
+        config = configs[k];
+        picked = true;
+        break;
+    }
+    if (!picked) {
+        __android_log_print(ANDROID_LOG_ERROR, "zcsr-gl",
+            "Only EGL_SLOW_CONFIG matches the GLES 3 window surface request");
         zcsr_gl_platform_destroy(r);
         return false;
     }

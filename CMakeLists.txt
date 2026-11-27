@@ -89,6 +89,43 @@ else()
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# --- Three independent render axes (compile-time) ---
+# No profile bundle: each axis is its own cache STRING and maps to the number
+# the tier headers expect. No axis implies another; everything resolves through
+# compile-time `#if` — there is no runtime tier table.
+#
+#   ZCSR_INSTANCE_LAYOUT : full | compact  -> FULL(0) / COMPACT(2)
+#   ZCSR_COLOR_TIER      : linear | direct -> LINEAR_HDR(0) / DIRECT_SRGB(1)
+#   ZCSR_SORT_TIER       : key | none      -> KEY(1) / NONE(0)
+set(ZCSR_INSTANCE_LAYOUT "full" CACHE STRING "Instance record layout: full | compact")
+set_property(CACHE ZCSR_INSTANCE_LAYOUT PROPERTY STRINGS full compact)
+set(ZCSR_COLOR_TIER "linear" CACHE STRING "Color pipeline tier: linear | direct")
+set_property(CACHE ZCSR_COLOR_TIER PROPERTY STRINGS linear direct)
+set(ZCSR_SORT_TIER "key" CACHE STRING "Sort stage tier: key | none")
+set_property(CACHE ZCSR_SORT_TIER PROPERTY STRINGS key none)
+
+if(ZCSR_INSTANCE_LAYOUT STREQUAL "compact")
+  set(_zcsr_layout_num 2)   # ZCSR_LAYOUT_COMPACT
+else()
+  set(_zcsr_layout_num 0)   # ZCSR_LAYOUT_FULL
+endif()
+if(ZCSR_COLOR_TIER STREQUAL "direct")
+  set(_zcsr_color_num 1)    # ZCSR_COLOR_OPT_DIRECT_SRGB
+else()
+  set(_zcsr_color_num 0)   # ZCSR_COLOR_OPT_LINEAR_HDR
+endif()
+if(ZCSR_SORT_TIER STREQUAL "none")
+  set(_zcsr_sort_num 0)     # ZCSR_SORT_TIER_NONE
+else()
+  set(_zcsr_sort_num 1)     # ZCSR_SORT_TIER_KEY
+endif()
+
+# Global definitions (not scoped to the glrender target) so module TUs and
+# every contract test inherit the same tier assembly.
+add_compile_definitions(ZCSR_INSTANCE_LAYOUT=${_zcsr_layout_num})
+add_compile_definitions(ZCSR_COLOR_TIER=${_zcsr_color_num})
+add_compile_definitions(ZCSR_SORT_TIER=${_zcsr_sort_num})
+
 # macOS backends are Objective-C (.m). Enable only on Apple so Linux/Windows builds stay pure C.
 if(APPLE)
   enable_language(OBJC)
@@ -441,6 +478,7 @@ zcsr_module(assets)   # 开发者自带资源导入（相对路径 -> 纹理/字
 target_link_libraries(zcsr_assets PUBLIC zcsr_image zcsr_glrender zcsr_audiomix)     # decode→RGBA32 + offline CPU processing (separated from rendering; vendors stb_image)
 zcsr_module(atlas)     # Texture atlas shelf-packing + region table (pure logic, no GL)
 zcsr_module(culling)   # Viewport culling: linear + uniform grid (pure logic, no GL)
+zcsr_module(instance_sort) # Pipeline-stage instance order sort (4 B key / index, pure CPU)
 zcsr_module(font)      # TrueType font loader/rasterizer (stb_truetype, no GL dependency)
 # glrender calls surface/font/atlas entry points; declare the dependency so
 # GNU ld orders them after libzcsr_glrender.a instead of reporting undefined

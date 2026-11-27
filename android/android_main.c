@@ -25,7 +25,7 @@
 #define LOGI(...) ((void)__android_log_print(ANDROID_LOG_INFO, "zcsr", __VA_ARGS__))
 #define LOGE(...) ((void)__android_log_print(ANDROID_LOG_ERROR, "zcsr", __VA_ARGS__))
 
-#define ZCSR_GL_BUFFER_BYTES (8u * 1024u * 1024u)
+#define ZCSR_GL_BUFFER_BYTES (16u * 1024u * 1024u)
 
 #define ZCSR_TEST_TEXTURE_SIZE 16
 #define ZCSR_TEST_GRID_COLS 10
@@ -394,6 +394,12 @@ static void zcsr_android_start_gl(
         LOGE("zcsr_gl_create failed; inspect zcsr-gl EGL/shader logs");
         return;
     }
+
+    /* Benchmark contract: the Android harness never leaves the driver's default
+     * swap interval in place (most drivers default to 1, throttling frames to
+     * the display). Mirror the Unity runtime's vSyncCount=0 path by disabling
+     * vsync explicitly once the renderer and its EGL context are live. */
+    zcsr_gl_set_vsync(runtime->renderer, false);
 
     version = glGetString(GL_VERSION);
     LOGI("GLES version: %s",

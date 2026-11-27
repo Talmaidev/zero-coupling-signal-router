@@ -219,6 +219,7 @@ void zcsr_gl_submit(zcsr_gl_renderer* r, const zcsr_gl_sprite* s) {
 void zcsr_gl_flush(zcsr_gl_renderer* r) {
     size_t i;
     if (!r || r->vertex_count == 0 || !zcsr_gl_make_current(r)) return;
+    zcsr_gl_state_cache_invalidate(r); /* sprite path binds its own program/VAO/texture */
     if (!zcsr_gl_bind_active_target(r)) {
         ZCSR_LOG_ERROR("glrender", "flush: active target bind failed");
         return;

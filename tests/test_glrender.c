@@ -1,4 +1,5 @@
 #include "zcsr/gl_render.h"
+#include "zcsr/render_tier.h"
 #include "zcsr/gl_render_light2d_ext.h"
 #include "zcsr/gl_render_l2d_geo.h"
 #include "zcsr/camera.h"
@@ -42,7 +43,7 @@ static zcsr_scene_entity make_scene_entity(float x, float y, float z, float h,
 }
 
 int main(void) {
-    static unsigned char renderer_buf[8 * 1024 * 1024];
+    static unsigned char renderer_buf[16 * 1024 * 1024];
     static const unsigned char rgba[16] = {
         255, 255, 255, 255, 255,   0,   0, 255,
           0, 255,   0, 255,   0,   0, 255, 255
@@ -109,6 +110,21 @@ int main(void) {
             a[i] = (zcsr_gl_instance){ .tex = seeds[i], .z = (float)i, .cx = (float)i };
             ref[i] = a[i];
         }
+#if ZCSR_SORT_TIER == ZCSR_SORT_TIER_NONE
+        /* NONE tier: sort stage compiled out, identity order; submission order
+         * preserved, runs counted over the original seed sequence. */
+        size_t runs = zcsr_sort_instances(a, N, scratch, sizeof(scratch));
+        int ok = 1;
+        for (int i = 0; i < N; ++i) {
+            if (a[i].tex != seeds[i] || a[i].cx != (float)i) { ok = 0; break; }
+        }
+        if (!ok) {
+            printf("FAIL: NONE tier must keep identity submission order\n");
+            return 1;
+        }
+        size_t expected_runs = 1;
+        for (int i = 1; i < N; ++i) if (seeds[i] != seeds[i-1]) ++expected_runs;
+#else
         /* reference stable insertion sort by tex */
         for (int i = 1; i < N; ++i) {
             zcsr_gl_instance key = ref[i];
@@ -130,6 +146,7 @@ int main(void) {
         /* count distinct texture runs */
         size_t expected_runs = 1;
         for (int i = 1; i < N; ++i) if (ref[i].tex != ref[i-1].tex) ++expected_runs;
+#endif
         if (runs != expected_runs) {
             printf("FAIL: radix sort runs=%zu expected=%zu\n", runs, expected_runs);
             return 1;
@@ -437,7 +454,11 @@ int main(void) {
 
     /* ---- unified linear frame: one decode at the texture boundary and one
      * encode at present. A 0.5 display gray must round-trip, and 50% black
-     * over white must blend in linear light (== 188 display), not 128. ---- */
+     * over white must blend in linear light (== 188 display), not 128.
+     * LINEAR_HDR-only: the DIRECT_SRGB slim tier writes the default frame
+     * directly and has no encode pass, so these round-trip numbers do not
+     * apply. Compiled out under ZCSR_COLOR_OPT_DIRECT_SRGB. ---- */
+#if ZCSR_COLOR_TIER == ZCSR_COLOR_OPT_LINEAR_HDR
     {
         unsigned char gray = 128;
         unsigned char white_px[4] = { 255, 255, 255, 255 };
@@ -497,10 +518,14 @@ int main(void) {
         zcsr_gl_texture_destroy(renderer, white_tex);
         printf("PASS: unified linear frame round-trip and linear blending\n");
     }
+#endif
 
     /* ---- selective hue remap and shared ramp atlas: both algorithms run in
      * the linear frame, after tint, and leave the legacy path untouched when
-     * their amounts are zero. ---- */
+     * their amounts are zero. LINEAR_HDR-only: the DIRECT_SRGB slim fragment
+     * compiles no hue/ramp/glow/chroma/emiss/rim stage and rejects such an
+     * instance at the selection gate instead of drawing it untransformed. ---- */
+#if ZCSR_COLOR_TIER == ZCSR_COLOR_OPT_LINEAR_HDR
     {
         unsigned char green_px[4] = { 0, 255, 0, 255 };
         unsigned char ramp_px[2][2][4] = {
@@ -795,6 +820,7 @@ int main(void) {
         zcsr_gl_texture_destroy(renderer, yellow_tex);
         printf("PASS: selective hue remap, shared ramp atlas, additive glow, chroma conditioning\n");
     }
+#endif
 
     zcsr_gl_texture_destroy(renderer, tex);
     zcsr_gl_destroy(renderer);

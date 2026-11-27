@@ -316,6 +316,7 @@ bool zcsr_gl_set_texture_quality(zcsr_gl_renderer* r, int level) {
     r->default_filter_linear = (level >= 1);
     /* 已创建的纹理也重设采样，否则设置页改完只有“之后新建的”纹理变化。 */
     if (zcsr_gl_make_current(r)) {
+        zcsr_gl_state_cache_invalidate(r);
         GLint f = (level >= 1) ? GL_LINEAR : GL_NEAREST;
         GLint minf = f;
         for (int i = 0; i < ZCSR_GL_MAX_TEXTURES; ++i) {

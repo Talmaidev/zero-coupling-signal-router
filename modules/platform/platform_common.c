@@ -127,7 +127,7 @@ void zcsr_surface_notify_focus(zcsr_surface* s, bool focused) {
 /* Window-less platforms, plus Linux built with ZCSR_LINUX_WINDOW_BACKEND=none:
  * there is no native surface to create, so the API stays linkable and callers
  * (glrender smoke, platform tests) skip gracefully. */
-#if defined(__linux__) && !defined(ZCSR_LINUX_BACKEND_X11) && !defined(ZCSR_LINUX_BACKEND_WAYLAND)
+#if defined(__linux__) && !defined(__ANDROID__) && !defined(ZCSR_LINUX_BACKEND_X11) && !defined(ZCSR_LINUX_BACKEND_WAYLAND)
 #  define ZCSR_PLATFORM_HEADLESS 1
 #endif
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(__ANDROID__) && \

@@ -127,6 +127,7 @@ void zcsr_gl_present(zcsr_gl_renderer* r) {
         }
     }
     zcsr_gl_swap(r);
+    zcsr_gl_inst_advance_frame(r);
 }
 
 bool zcsr_gl_read_rgba(zcsr_gl_renderer* r, void* rgba, size_t bytes,
@@ -171,5 +172,6 @@ bool zcsr_gl_read_rgba(zcsr_gl_renderer* r, void* rgba, size_t bytes,
     }
     if (out_w) *out_w = r->width;
     if (out_h) *out_h = r->height;
+    zcsr_gl_inst_advance_frame(r);
     return true;
 }

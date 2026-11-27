@@ -19,6 +19,7 @@ typedef void (*zcsr_pfn_begin_query)(GLenum, GLuint);
 typedef void (*zcsr_pfn_end_query)(GLenum);
 typedef void (*zcsr_pfn_get_query_uiv)(GLuint, GLenum, GLuint*);
 typedef void (*zcsr_pfn_get_query_ui64v)(GLuint, GLenum, unsigned long long*);
+typedef void (*zcsr_pfn_delete_queries)(GLsizei, GLuint*);
 
 static struct {
     bool checked;
@@ -28,6 +29,7 @@ static struct {
     zcsr_pfn_end_query end;
     zcsr_pfn_get_query_uiv available;
     zcsr_pfn_get_query_ui64v result;
+    zcsr_pfn_delete_queries del;
 } s_timer_ext;
 
 static void zcsr_gl_gpu_timer_load(void) {
@@ -47,9 +49,11 @@ static void zcsr_gl_gpu_timer_load(void) {
         "glGetQueryObjectuivEXT");
     s_timer_ext.result = (zcsr_pfn_get_query_ui64v)eglGetProcAddress(
         "glGetQueryObjectui64vEXT");
+    s_timer_ext.del = (zcsr_pfn_delete_queries)eglGetProcAddress(
+        "glDeleteQueriesEXT");
     s_timer_ext.supported =
         s_timer_ext.gen && s_timer_ext.begin && s_timer_ext.end &&
-        s_timer_ext.available && s_timer_ext.result;
+        s_timer_ext.available && s_timer_ext.result && s_timer_ext.del;
     __android_log_print(ANDROID_LOG_INFO, "zcsr-gl",
         "GL_EXT_disjoint_timer_query %s",
         s_timer_ext.supported ? "available" : "not exposed by driver");
@@ -104,7 +108,11 @@ bool zcsr_gl_gpu_timer_last_ms(zcsr_gl_renderer* r, float* out_ms) {
 void zcsr_gl_gpu_timer_destroy(zcsr_gl_renderer* r) {
     if (!r) return;
     if (r->gpu_timer_queries[0] != 0 || r->gpu_timer_queries[1] != 0) {
-        glDeleteQueries(2, r->gpu_timer_queries);
+        /* GLES3 core has no glDeleteQueries symbol; the query objects were
+         * created through the EXT entry, so release them through the matching
+         * glDeleteQueriesEXT entry loaded in s_timer_ext. */
+        if (s_timer_ext.supported && s_timer_ext.del)
+            s_timer_ext.del(2, r->gpu_timer_queries);
         r->gpu_timer_queries[0] = 0;
         r->gpu_timer_queries[1] = 0;
     }

@@ -59,6 +59,8 @@ void zcsr_gl_platform_destroy(zcsr_gl_renderer* r) {
 bool zcsr_gl_make_current(zcsr_gl_renderer* r) {
     NSOpenGLContext* ctx = zcsr_gl_ctx(r);
     if (!ctx) return false;
+    /* makeCurrentContext is a round-trip; skip it when already current. */
+    if ([NSOpenGLContext currentContext] == ctx) return true;
     [ctx makeCurrentContext];
     return true;
 }

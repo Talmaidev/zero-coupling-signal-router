@@ -19,7 +19,12 @@ static GLADgenericproc zcsr_wgl_load(const char* name) {
 }
 
 bool zcsr_gl_make_current(zcsr_gl_renderer* r) {
-    return r && r->hdc && r->ctx && wglMakeCurrent(r->hdc, r->ctx) == TRUE;
+    if (!r || !r->hdc || !r->ctx) return false;
+    /* wglMakeCurrent is a driver round-trip; calling it per draw batch dominated
+     * the 65-batch submit. If this context/drawable is already current, the
+     * GL entry points are valid and the call is a no-op. */
+    if (wglGetCurrentContext() == r->ctx && wglGetCurrentDC() == r->hdc) return true;
+    return wglMakeCurrent(r->hdc, r->ctx) == TRUE;
 }
 
 void zcsr_gl_update_size(zcsr_gl_renderer* r) {
@@ -55,7 +60,11 @@ bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface) {
     pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
     pfd.iPixelType = PFD_TYPE_RGBA;
     pfd.cColorBits = 32;
-    pfd.cDepthBits = 24;
+    /* Align the pixel-format request with the GLX / EGL backends: the renderer
+     * keeps depth testing globally disabled, so the default framebuffer carries
+     * no depth buffer (depth 0); alpha is explicitly requested at 8 bits. */
+    pfd.cDepthBits = 0;
+    pfd.cAlphaBits = 8;
     pfd.iLayerType = PFD_MAIN_PLANE;
     pf = ChoosePixelFormat(hdc, &pfd);
     if (!pf || !SetPixelFormat(hdc, pf, &pfd)) {

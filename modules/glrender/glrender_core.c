@@ -382,6 +382,7 @@ static bool zcsr_gl_frame_resize(zcsr_gl_renderer* r, int w, int h) {
         if (scissor) glEnable(GL_SCISSOR_TEST);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    zcsr_gl_state_cache_invalidate(r); /* dimensions / target rebuilt */
     return true;
 }
 
@@ -509,6 +510,7 @@ bool zcsr_gl_frame_encode(zcsr_gl_renderer* r) {
     GLboolean blend, depth, scissor;
     if (r == NULL || r->frame_tex == 0u || r->frame_prog == 0u ||
         r->l2d_color_lut_tex == 0u) return false;
+    zcsr_gl_state_cache_invalidate(r); /* encode pass binds its own program/VAO/tex */
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     zcsr_gl_update_size(r);
     if (r->width <= 0 || r->height <= 0) return false;
@@ -572,6 +574,7 @@ void zcsr_gl_clear(zcsr_gl_renderer* r, float red, float green,
                    float blue, float alpha) {
     GLfloat linear[4];
     if (!r || !zcsr_gl_make_current(r)) return;
+    zcsr_gl_state_cache_invalidate(r);
     /* Clear the unified linear frame, not the display backbuffer. */
     r->target = 0;
     if (!zcsr_gl_frame_bind(r)) {
@@ -587,6 +590,7 @@ void zcsr_gl_clear_target(zcsr_gl_renderer* r, float red, float green,
     GLfloat clear[4];
     bool decode = true;
     if (!r || !zcsr_gl_make_current(r)) return;
+    zcsr_gl_state_cache_invalidate(r);
     if (r->target != 0) {
         zcsr_gl_tex_entry* e = zcsr_gl_find_tex(r, r->target);
         if (e != NULL && e->color_space == ZCSR_COLOR_SPACE_LINEAR) decode = false;
@@ -676,6 +680,7 @@ zcsr_gl_texture zcsr_gl_texture_create_ex(zcsr_gl_renderer* r, const uint8_t* rg
     zcsr_gl_apply_texture_filter(r, mips);
     *e = (zcsr_gl_tex_entry){ tex, w, h, true, color_space, has_alpha };
     zcsr_tex_index_insert(r, tex, (uint8_t)(e - r->textures));
+    zcsr_gl_state_cache_invalidate(r); /* texture id space changed */
     return tex;
 }
 
@@ -696,6 +701,7 @@ bool zcsr_gl_texture_query_meta(const zcsr_gl_renderer* r, zcsr_gl_texture t,
 
 void zcsr_gl_texture_filter(zcsr_gl_renderer* r, zcsr_gl_texture t, bool linear) {
     if (!r || !zcsr_gl_find_tex(r, t) || !zcsr_gl_make_current(r)) return;
+    zcsr_gl_state_cache_invalidate(r);
     glBindTexture(GL_TEXTURE_2D, t);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, linear ? GL_LINEAR : GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, linear ? GL_LINEAR : GL_NEAREST);
@@ -714,6 +720,7 @@ bool zcsr_gl_texture_upload(zcsr_gl_renderer* r, zcsr_gl_texture t, const uint8_
     /* A new base level invalidates the old mip chain; regenerate it before the
      * next sampling call. */
     zcsr_gl_apply_texture_filter(r, zcsr_gl_generate_mips(r));
+    zcsr_gl_state_cache_invalidate(r);
     return true;
 }
 
@@ -723,11 +730,13 @@ void zcsr_gl_texture_destroy(zcsr_gl_renderer* r, zcsr_gl_texture t) {
     zcsr_tex_index_remove(r, (uint32_t)t);
     glDeleteTextures(1, &e->id);
     *e = (zcsr_gl_tex_entry){ 0 };
+    zcsr_gl_state_cache_invalidate(r); /* freed id may be reused by the next create */
 }
 
 void zcsr_gl_set_target(zcsr_gl_renderer* r, zcsr_gl_texture target_or_zero) {
     zcsr_gl_tex_entry* e;
     if (!r || !zcsr_gl_make_current(r)) return;
+    zcsr_gl_state_cache_invalidate(r); /* target / viewport may change */
     ZCSR_LOG_DEBUG("glrender", "set_target called: target=%d (0=linear frame)",
                    (int)target_or_zero);
     if (target_or_zero == 0) {

@@ -1,6 +1,7 @@
 /* State sort unit tests — opaque/translucent partition, opaque texture order, translucent
  * back-to-front z order. Pure logic, headless. Uses CHECK (runs in Release). */
 #include "zcsr/gl_render.h"
+#include "zcsr/render_tier.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -32,9 +33,27 @@ int main(void) {
         items[i] = make(tex, translucent ? 0.5f : 1.0f, z, 0.0f);
     }
 
+    static zcsr_gl_instance orig[N];
+    memcpy(orig, items, sizeof items);
     zcsr_sort_state(items, N, scratch, sizeof(scratch), &opaque);
     CHECK(opaque == 10);
 
+#if ZCSR_SORT_TIER == ZCSR_SORT_TIER_NONE
+    /* NONE tier: the sort stage is compiled out; only the opaque/translucent
+     * partition runs. Verify the front group is opaque, the back group is
+     * translucent, and no instance was lost or duplicated (texture multiset
+     * matches the original). Internal order is not promised by this tier. */
+    for (size_t i = 0; i < opaque; ++i) CHECK(items[i].a == 1.0f);
+    for (size_t i = opaque; i < N; ++i) CHECK(items[i].a == 0.5f);
+    {
+        int cnt_orig[11] = { 0 }, cnt_got[11] = { 0 };
+        for (int i = 0; i < N; ++i) {
+            cnt_orig[orig[i].tex]++;
+            cnt_got[items[i].tex]++;
+        }
+        for (int t = 1; t <= 10; ++t) CHECK(cnt_orig[t] == cnt_got[t]);
+    }
+#else
     /* first 10 are opaque, sorted by tex ascending */
     for (size_t i = 0; i < opaque; ++i) {
         CHECK(items[i].a == 1.0f);
@@ -46,6 +65,7 @@ int main(void) {
         CHECK(items[i].a == 0.5f);
         if (i > opaque) CHECK(items[i].z <= items[i - 1].z);
     }
+#endif
 
     /* MIX/ADD with a=1 is still translucent */
     {

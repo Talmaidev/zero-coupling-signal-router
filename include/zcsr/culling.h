@@ -64,4 +64,34 @@ size_t zcsr_grid_query(const zcsr_grid_t* grid, const zcsr_aabb_t* boxes, size_t
 /* Fraction of the world covered by the view (0..1), to choose a strategy. */
 float zcsr_view_coverage(const zcsr_grid_t* grid, const zcsr_view_t* view);
 
+/* ---- instance visibility bitmap (1 bit per instance) -------------------------
+ * Selection surface shared by the culling gate and the instanced renderer path.
+ * One bit per instance; capacity 65,535 instances maps to 8,192 bytes
+ * (ceil(65535 / 8) = 8192; the byte array covers 65,536 bits). The caller owns
+ * the storage; the bitmap allocates nothing and contains no GL state. */
+#define ZCSR_CULL_BITMAP_CAPACITY 65535u
+#define ZCSR_CULL_BITMAP_BYTES \
+    (((ZCSR_CULL_BITMAP_CAPACITY) + 7u) / 8u)  /* 8,192 bytes */
+
+/* Clear the bits in [0, capacity_bits). capacity_bits beyond the capacity is
+ * clamped; a NULL bits pointer is a no-op. */
+void zcsr_bitmap_clear(uint8_t* bits, size_t capacity_bits);
+
+/* Mark instance `index` selected/visible. Out-of-range index is ignored. */
+void zcsr_bitmap_set(uint8_t* bits, size_t index);
+
+/* Clear (hide/reject) instance `index`. Out-of-range index is ignored. */
+void zcsr_bitmap_clear_bit(uint8_t* bits, size_t index);
+
+/* Test bit `index`: 1 set, 0 clear; 0 for a NULL bits pointer or out-of-range. */
+int  zcsr_bitmap_test(const uint8_t* bits, size_t index);
+
+/* Count set bits in [0, count). */
+size_t zcsr_bitmap_count(const uint8_t* bits, size_t count);
+
+/* Compact the set indices into `out` (uint32, 4 B stride), ascending order.
+ * Stops at out_capacity. Returns the number of indices written. */
+size_t zcsr_bitmap_to_indices(const uint8_t* bits, size_t count,
+                              uint32_t* out, size_t out_capacity);
+
 #endif /* ZCSR_CULLING_H */

@@ -9,6 +9,7 @@
  *   swap             — glXSwapBuffers
  *   vsync            — glXSwapIntervalEXT（缺扩展时退回 glXSwapIntervalMESA）
  *
+ * 回落：父窗口视觉无匹配 FBConfig 时，在其上自建子窗口作为 GL drawable，事件/输入仍归父窗口。
  * 只在 CMake 选中 X11 后端时编译（ZCSR_LINUX_BACKEND_X11）。
  */
 #if defined(__linux__) && !defined(__ANDROID__) && defined(ZCSR_LINUX_BACKEND_X11)
@@ -41,6 +42,13 @@ static void glx_proc_copy(const char* name, void* out, size_t out_size) {
     memcpy(out, &raw, out_size < sizeof(raw) ? out_size : sizeof(raw));
 }
 
+/* Fallback child drawable. The engine creates a single GLX renderer per process;
+ * this state lives in this translation unit so the renderer struct in the
+ * internal header does not grow an X11-only field. When 0, the GLX drawable is
+ * the SDL-provided parent window; otherwise it is the child window created on
+ * the fallback FBConfig's visual. Events/input still belong to the parent. */
+static Window s_glx_child_window = 0;
+
 bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface);
 bool zcsr_gl_make_current(zcsr_gl_renderer* r);
 
@@ -54,6 +62,7 @@ bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface) {
     VisualID window_visual = 0;
     XWindowAttributes window_attrs;
     int major = 0, minor = 0;
+    bool visual_matched = false;
     PFN_glXCreateContextAttribsARB create_attribs;
     int ctx_attrs[] = {
         GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
@@ -112,19 +121,20 @@ bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface) {
         if (vi) {
             bool match = (window_visual == 0 || vi->visualid == window_visual);
             XFree(vi);
-            if (match) { chosen = configs[i]; break; }
+            if (match) { chosen = configs[i]; visual_matched = true; break; }
         }
     }
     if (!chosen) {
-        /* Fall back to any non-slow double-buffered config only when the window
-         * visual could not be queried; a known visual mismatch is fatal. */
-        if (window_visual == 0) {
-            for (i = 0; i < n_configs; ++i) {
-                int double_buffer = 0, caveat = 0;
-                glXGetFBConfigAttrib(dpy, configs[i], GLX_DOUBLEBUFFER, &double_buffer);
-                glXGetFBConfigAttrib(dpy, configs[i], GLX_CONFIG_CAVEAT, &caveat);
-                if (double_buffer && caveat != GLX_SLOW_CONFIG) { chosen = configs[i]; break; }
-            }
+        /* No FBConfig shares the parent window's visual (hybrid PRIME offload:
+         * the NVIDIA FBConfig visuals do not match the Mesa/modesetting root
+         * visual). Do not fatal: pick the first non-slow double-buffered
+         * RGBA8 config; the GLX drawable will be a child window on that
+         * config's visual instead of the parent SDL window. */
+        for (i = 0; i < n_configs; ++i) {
+            int double_buffer = 0, caveat = 0;
+            glXGetFBConfigAttrib(dpy, configs[i], GLX_DOUBLEBUFFER, &double_buffer);
+            glXGetFBConfigAttrib(dpy, configs[i], GLX_CONFIG_CAVEAT, &caveat);
+            if (double_buffer && caveat != GLX_SLOW_CONFIG) { chosen = configs[i]; break; }
         }
     }
     XFree(configs);
@@ -147,7 +157,42 @@ bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface) {
         return false;
     }
 
-    if (!glXMakeCurrent(dpy, win, r->glx_context)) {
+    /* Visual-mismatch fallback: the parent SDL window keeps its own visual and
+     * owns events/input; GL draws into a child window created on the chosen
+     * FBConfig's visual. On the matched path the drawable stays the parent. */
+    if (window_visual != 0 && !visual_matched) {
+        XVisualInfo* fvi = glXGetVisualFromFBConfig(dpy, chosen);
+        Colormap child_cmap;
+        XSetWindowAttributes cwa;
+        Window child;
+        int cw = 0, ch = 0;
+        if (!fvi) {
+            fprintf(stderr, "[glx] fallback: no visual for chosen FBConfig\n");
+            glXDestroyContext(dpy, r->glx_context);
+            r->glx_context = NULL;
+            return false;
+        }
+        zcsr_surface_get_client_size(surface, &cw, &ch);
+        if (cw <= 0) cw = 800;
+        if (ch <= 0) ch = 600;
+        child_cmap = XCreateColormap(dpy, RootWindow(dpy, DefaultScreen(dpy)),
+                                    fvi->visual, AllocNone);
+        cwa.colormap = child_cmap;
+        cwa.event_mask = ExposureMask;
+        child = XCreateWindow(dpy, win, 0, 0, cw, ch, 0, fvi->depth,
+                              InputOutput, fvi->visual, CWColormap | CWEventMask, &cwa);
+        /* The server keeps a colormap reference while the window references it;
+         * the local handle can be released right after window creation. */
+        XFreeColormap(dpy, child_cmap);
+        XFree(fvi);
+        XMapWindow(dpy, child);
+        s_glx_child_window = child;
+        r->glx_window = (unsigned long)child;
+    } else {
+        s_glx_child_window = 0;
+    }
+
+    if (!glXMakeCurrent(dpy, (Window)(uintptr_t)r->glx_window, r->glx_context)) {
         fprintf(stderr, "[glx] glXMakeCurrent failed\n");
         glXDestroyContext(dpy, r->glx_context);
         r->glx_context = NULL;
@@ -175,6 +220,10 @@ void zcsr_gl_platform_destroy(zcsr_gl_renderer* r) {
         Display* dpy = (Display*)r->glx_display;
         glXMakeCurrent(dpy, None, NULL);
         if (r->glx_context) glXDestroyContext(dpy, r->glx_context);
+        if (s_glx_child_window) {
+            XDestroyWindow(dpy, s_glx_child_window);
+            s_glx_child_window = 0;
+        }
     }
     r->glx_context = NULL;
     r->glx_fbconfig = NULL;
@@ -188,6 +237,12 @@ bool zcsr_gl_make_current(zcsr_gl_renderer* r) {
     Display* dpy;
     if (!r || !r->glx_display || !r->glx_context) return false;
     dpy = (Display*)r->glx_display;
+    /* glXMakeCurrent is a server round-trip; skip it when this context/drawable
+     * is already current. Per-draw-batch make-current dominated submission. */
+    if (glXGetCurrentContext() == r->glx_context &&
+        glXGetCurrentDrawable() == (GLXDrawable)(uintptr_t)r->glx_window) {
+        return true;
+    }
     return glXMakeCurrent(dpy, (Window)(uintptr_t)r->glx_window, r->glx_context) ? true : false;
 }
 
@@ -198,6 +253,9 @@ void zcsr_gl_update_size(zcsr_gl_renderer* r) {
     if (w > 0 && h > 0) {
         r->width = w;
         r->height = h;
+        if (s_glx_child_window) {
+            XMoveResizeWindow((Display*)r->glx_display, s_glx_child_window, 0, 0, w, h);
+        }
     }
 }
 

@@ -27,6 +27,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "zcsr/render_tier.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,6 +45,38 @@ typedef struct zcsr_color_pipeline_desc {
     /* display-encoded [0,1] -> linear-light [0,1]. */
     float (*to_linear)(float display_value);
 } zcsr_color_pipeline_desc;
+
+/* Tier capability descriptor (裁决 8). This is an assembly-time / compile-time
+ * description: which working domain and which shader-side stages a tier
+ * compiles in. It is NOT a per-frame bool switch (裁决 5) — nothing on the hot
+ * path reads these fields per draw.
+ *
+ *   LINEAR_HDR   : RGBA16F linear working frame, one LUT encode pass at
+ *                  present/readback; recolor, ramp, OKLab and chroma stages
+ *                  are compiled in.
+ *   DIRECT_SRGB  : write the default framebuffer directly; no encode pass,
+ *                  no linear frame, and the okLab/recolor/i_ramp/chroma stages
+ *                  are compiled out.
+ */
+typedef struct zcsr_color_tier_desc {
+    zcsr_color_tier tier;
+    /* Stable key for project/diagnostic identity; never a localized label. */
+    const char* stable_key;
+    /* Transfer pair for decode/encode; NULL for DIRECT_SRGB (direct write). */
+    const zcsr_color_pipeline_desc* transfer;
+    bool linear_frame; /* RGBA16F linear frame + single LUT encode pass */
+    bool recolor;      /* selective hue-family remap stage (i_recolor) */
+    bool ramp;         /* 1D gradient atlas stage (i_ramp) */
+    bool oklab;        /* OKLab chroma preserve-L ramp mode */
+    bool chroma;       /* saturation/value conditioning stage */
+} zcsr_color_tier_desc;
+
+/* Descriptor for a color tier. Never NULL; unknown tiers resolve to the
+ * LINEAR_HDR default. The descriptor is static storage and outlives the caller. */
+const zcsr_color_tier_desc* zcsr_color_pipeline_tier(zcsr_color_tier tier);
+
+/* Convenience: true when the tier compiles an encode/linear-frame pass. */
+bool zcsr_color_pipeline_tier_encodes(const zcsr_color_tier_desc* desc);
 
 /* Default sRGB transfer pair used by the unified frame encode. Both Path A
  * and Path B render linear and pass through this pipeline once. */

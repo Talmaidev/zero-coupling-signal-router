@@ -59,7 +59,7 @@ int main(void) {
     zcsr_gl_renderer* renderer;
     zcsr_gl_gpu_info info;
     void* arena;
-    const size_t arena_bytes = 8u * 1024u * 1024u;
+    const size_t arena_bytes = 16u * 1024u * 1024u;
     int rc = 1;
 
     surface = zcsr_surface_create("ZCSR GPU probe", bounds);

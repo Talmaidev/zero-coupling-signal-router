@@ -484,6 +484,7 @@ bool zcsr_gl_l2d_geo_begin(zcsr_gl_renderer* renderer,
     }
     if (renderer->l2d_geo_active) return false; /* nested begin */
     if (!zcsr_gl_make_current(renderer)) return false;
+    zcsr_gl_state_cache_invalidate(renderer); /* geo pass binds its own program/VAO/texture */
     /* LIT is a G-buffer pass, not a default-framebuffer painter. Reject the
      * call if the caller skipped zcsr_light2d_begin_geometry instead of
      * silently drawing faces into whatever target happens to be bound. */

@@ -22,6 +22,7 @@
 #include "color.h"          /* zcsr_color_mode */
 #include "color_pipeline.h" /* replaceable display-transfer descriptor */
 #include "texture_atlas.h"  /* zcsr_atlas_region */
+#include "render_tier.h"    /* zcsr_instance_compact, layout tier macros */
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -32,9 +33,10 @@ typedef uint32_t zcsr_gl_texture;                 /* GPU texture handle; 0 = inv
 /* Create a GL 3.3 Core context on the surface (Win32 wgl / X11 GLX / Cocoa NSOpenGL) and the
  * renderer state inside the caller buffer. NULL on failure / buffer too small.
  *
- * The renderer is large: a fixed vertex batch sized for the 10k-sprite cap dominates it (~2.3 MiB),
- * so give the buffer a few MiB (the bundled tests/benches use 8 MiB). The layout is opaque and is
- * never heap-allocated; an oversized static/arena buffer is the intended usage. */
+ * The renderer is large: the fixed vertex batch and the per-tier instance staging
+ * array dominate it. The bundled tests/tools/Android host reserve a 16 MiB
+ * static/arena pool; the layout is opaque and is never heap-allocated, so an
+ * oversized static/arena buffer is the intended usage. */
 zcsr_gl_renderer* zcsr_gl_create(zcsr_surface* surface, void* buffer, size_t bytes);
 void              zcsr_gl_destroy(zcsr_gl_renderer*);
 
@@ -111,6 +113,25 @@ typedef struct zcsr_gl_capabilities {
     bool mrt4;
     int  max_color_attachments;
     int  max_draw_buffers;
+    /* ---- F4: tail-only appended reporting fields. -------------------------
+     * Compatibility: the seven fields above keep their original order and
+     * types; every new field lives after them. zcsr_gl_query_capabilities()
+     * memset()s the whole struct before filling, so an older caller that only
+     * knows the original prefix is unaffected. These report hardware facts; no
+     * entry point gates an algorithm on them. The instanced entries use the
+     * pointer rebase unconditionally: on the Windows GL 3.3 driver measured here,
+     * glDrawArraysInstancedBaseInstance is slower per call than rebasing the
+     * attribute pointers, so a capability probe must not be read as "faster". */
+    bool  gpu_timer_available;       /* GL_TIME_ELAPSED core / EXT_disjoint_timer_query */
+    bool  instanced_base_instance;  /* base-instance instanced draw (core 4.2 / ARB_base_instance);
+                                      * reported only; not used to select the draw path. */
+    bool  indirect_draw;             /* indirect draw (core 4.0 / ARB_draw_indirect) */
+    int   max_texture_size;          /* GL_MAX_TEXTURE_SIZE */
+    int   max_msaa_samples;           /* GL_MAX_SAMPLES */
+    float max_anisotropy;            /* GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT; 0 when absent */
+    bool  linear_workflow;           /* behavior report, not a hardware probe: true only when
+                                      * this build's color tier is LINEAR_HDR (RGBA16F frame +
+                                      * LUT encode). DIRECT_SRGB writes the default FB directly. */
 } zcsr_gl_capabilities;
 bool zcsr_gl_query_capabilities(const zcsr_gl_renderer* r,
                                 zcsr_gl_capabilities* out);
@@ -340,6 +361,75 @@ typedef zcsr_gl_instance zcsr_gl_rectangle_instance;
 size_t zcsr_gl_draw_instances(zcsr_gl_renderer*, zcsr_gl_texture texture,
                               const zcsr_gl_instance* instances, size_t count);
 
+/* Sibling entry to zcsr_gl_draw_instances: the caller guarantees every one of
+ * the `count` instances is visible. This entry does NO select/cull, no
+ * per-instance bitmap test and no gather/reorder: the 168 B records are
+ * uploaded consecutively and drawn in submission order. zcsr_gl_draw_instances
+ * keeps its own cull + select + gather rearrangement; which entry the game
+ * calls is the game's choice — the engine never routes between the two.
+ *
+ * Tier ownership (compile-time, no runtime fallback): like
+ * zcsr_gl_draw_instances, this symbol is produced only by the FULL / POS_UV
+ * layout tiers; the COMPACT tier produces neither. Calling an entry the
+ * active tier did not compile fails at link time (no runtime return-0 stub).
+ *
+ * Returns the number of instances actually submitted (count on success, 0 on
+ * invalid renderer/texture/array). Compare with count to detect failure. */
+size_t zcsr_gl_draw_instances_visible(zcsr_gl_renderer*, zcsr_gl_texture texture,
+                                      const zcsr_gl_instance* instances, size_t count);
+
+/* ---- Plain instanced entry: no tint / mode / amount / recolor / ramp / glow ------
+ * A minimal same-texture multiply record. Per-instance data is center / size /
+ * UV rect / rotation / alpha only; the record carries no tint color, blend mode,
+ * blend amount, recolor, ramp, glow, chroma, emissive or rim slot. The fragment
+ * result is texel * vec4(1,1,1,a), the same equation the general entry produces
+ * at tint=1, MULTIPLY, no optional stage active.
+ *
+ * The entry has its own program, VAO and VBO. Its unit quad is a 4-vertex
+ * GL_TRIANGLE_STRIP (the general entry expands a 6-vertex two-triangle quad).
+ * No cull, no select, no per-instance bitmap test, no gather/reorder, no sort,
+ * no depth test, no MSAA: records are uploaded consecutively and drawn in
+ * submission order. "Use this entry" is the caller's choice; the engine never
+ * routes between it and the general entries.
+ *
+ * Tier ownership (compile-time, no runtime fallback): like
+ * zcsr_gl_draw_instances, this symbol is produced only by the FULL / POS_UV
+ * layout tiers; the COMPACT tier produces neither. Calling an entry the
+ * active tier did not compile fails at link time (no runtime return-0 stub).
+ *
+ * Returns the number of instances actually submitted (count on success, 0 on
+ * invalid renderer/texture/array). Requests larger than
+ * ZCSR_GL_MAX_INSTANCES are split into consecutive draw chunks internally; no
+ * instance is dropped. Compare the return with count to detect failure. */
+typedef struct zcsr_gl_instance_plain {
+    float cx, cy;          /* center position (pixels) */
+    float w, h;            /* size (pixels) */
+    float u0, v0, u1, v1;  /* atlas UV sub-rectangle (use 0,0,1,1 for a full texture) */
+    float rotation;        /* radians, about the center */
+    float a;               /* alpha 0..1 */
+} zcsr_gl_instance_plain;  /* 10 floats = 40 bytes; no tint/mode/amount/ramp/glow/layer */
+
+size_t zcsr_gl_draw_instances_plain(zcsr_gl_renderer*, zcsr_gl_texture texture,
+                                    const zcsr_gl_instance_plain* records, size_t count);
+
+/* Compact-tier entry: draws `count` 36 B zcsr_instance_compact records
+ * (center / size / UV + one packed rotation/alpha word). The record carries
+ * no tint / mode / amount / recolor / ramp / glow / chroma / emiss / rim; those
+ * stages are not compiled in this tier. The entry performs its own cull/select,
+ * upload and draw over the 36 B records directly — there is no 168 B record
+ * staging or conversion on this path.
+ *
+ * Tier ownership (compile-time, no runtime fallback): the COMPACT layout tier
+ * produces this symbol only; the FULL / POS_UV tiers produce
+ * zcsr_gl_draw_instances / zcsr_gl_draw_instances_visible instead. Calling an
+ * entry that the active tier did not compile fails at link time (no runtime
+ * return-0 stub).
+ *
+ * Returns the number of records actually submitted (count on success, 0 on
+ * invalid renderer/texture/array). Compare with count to detect failure. */
+size_t zcsr_gl_draw_instances_compact(zcsr_gl_renderer*, zcsr_gl_texture texture,
+                                       const zcsr_instance_compact* records, size_t count);
+
 /* Bind the shared 1D ramp atlas used by zcsr_color_transform.ramp_row. The
  * atlas is a normal Path A DISPLAY texture whose rows are independent
  * display-domain gradients (row 0 is the first gradient). The sRGB sampler
@@ -356,6 +446,30 @@ void zcsr_gl_set_color_ramp(zcsr_gl_renderer*, zcsr_gl_texture texture, int rows
  * separate upload/synchronization cost from rasterization cost. */
 void zcsr_gl_set_instance_upload(zcsr_gl_renderer*, bool enabled);
 void zcsr_gl_set_instance_orphan(zcsr_gl_renderer*, bool enabled);
+
+/* Instanced-path diagnostics: instances scanned in the write-side pass,
+ * 4 B index-array bytes walked by the second pass, 168 B struct bytes gathered
+ * for upload, and rejected/skipped instances. Counters accumulate since renderer
+ * creation; reset clears them. Getters return 0 for a NULL renderer. Added for
+ * probe/test readback of the validation-selection path; no caps field changes. */
+size_t zcsr_gl_instance_scanned(const zcsr_gl_renderer*);
+size_t zcsr_gl_instance_touch_bytes(const zcsr_gl_renderer*);
+size_t zcsr_gl_instance_upload_bytes(const zcsr_gl_renderer*);
+size_t zcsr_gl_instance_skipped(const zcsr_gl_renderer*);
+/* Ruling 2: gate classification counters and the cull-path marker selected
+ * per batch (0 = bitmap path, 1 = full_cull sweep). Read-only diagnostics. */
+size_t zcsr_gl_instance_dead(const zcsr_gl_renderer*);
+size_t zcsr_gl_instance_offscreen(const zcsr_gl_renderer*);
+size_t zcsr_gl_instance_alpha0(const zcsr_gl_renderer*);
+int    zcsr_gl_instance_cull_path(const zcsr_gl_renderer*);
+/* Ruling 9: upload calls recorded for the active ring path. */
+size_t zcsr_gl_instance_upload_calls(const zcsr_gl_renderer*);
+/* Ruling 9: batches written into the persistent coherent mapping (0 on the
+ * default DynamicDraw ring). */
+size_t zcsr_gl_instance_map_writes(const zcsr_gl_renderer*);
+/* Ruling 9: true only when the opt-in persistent ring probed usable at init. */
+bool   zcsr_gl_instance_persistent_ready(const zcsr_gl_renderer*);
+void   zcsr_gl_instance_stats_reset(zcsr_gl_renderer*);
 
 /* One caller-ordered texture run for zcsr_gl_submit_sorted_runs. `instances` must
  * remain valid for the duration of the call; runs are not copied or reordered. */
@@ -389,7 +503,7 @@ void zcsr_instance_run(const zcsr_gl_instance* sorted, size_t count, size_t run_
  * texture order. The relative order of instances across texture boundaries is not preserved;
  * callers with overlap dependencies must sort first with zcsr_sort_state and draw manually.
  * Returns the number of instances actually submitted; 0 on invalid arguments.
- * The 10k instance cap is applied per uploaded chunk, not as a whole-batch rejection. */
+ * The instance cap (`ZCSR_GL_MAX_INSTANCES`) is applied per uploaded chunk, not as a whole-batch rejection. */
 size_t zcsr_gl_submit_instance_batch(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count,
                                      void* temp, size_t temp_bytes);
 
@@ -432,7 +546,7 @@ size_t zcsr_sort_state(zcsr_gl_instance* instances, size_t count, void* temp, si
  * Does NOT swap/present buffers: call zcsr_gl_present afterwards when targeting the
  * window. `temp` is caller scratch (>= count * sizeof instance).
  * Returns the number of instances actually submitted; 0 on invalid arguments.
- * The 10k instance cap is applied per uploaded chunk, not as a whole-batch rejection. */
+ * The instance cap (`ZCSR_GL_MAX_INSTANCES`) is applied per uploaded chunk, not as a whole-batch rejection. */
 size_t zcsr_gl_submit_state(zcsr_gl_renderer*, zcsr_gl_instance* instances, size_t count,
                             void* temp, size_t temp_bytes);
 

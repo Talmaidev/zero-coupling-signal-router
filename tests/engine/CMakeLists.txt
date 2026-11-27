@@ -127,6 +127,8 @@ endforeach()
 
 zcsr_add_engine_test(glrender test_glrender.c)
 set_tests_properties(glrender PROPERTIES RESOURCE_LOCK zcsr_gui_display)
+zcsr_add_engine_test(compact_pixel test_compact_pixel.c)
+set_tests_properties(compact_pixel PROPERTIES RESOURCE_LOCK zcsr_gui_display)
 zcsr_add_engine_test(hsm test_hsm.c)
 zcsr_add_engine_test(image test_image.c)
 # image_hdr's capability-table contract asserts the WebP decode/animated slots

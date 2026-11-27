@@ -1053,6 +1053,7 @@ bool zcsr_gl_l2d_gbuffer_begin(zcsr_gl_renderer* renderer,
     slot = zcsr_l2d_slot(renderer, target);
     if (slot == NULL) return false;
     if (!zcsr_gl_make_current(renderer)) return false;
+    zcsr_gl_state_cache_invalidate(renderer); /* G-buffer FBO / viewport bound */
 
     glBindFramebuffer(GL_FRAMEBUFFER, slot->fbo);
     /* G0 is linear RGBA16F, so geometry writes linear RGB verbatim and the
@@ -1097,6 +1098,7 @@ bool zcsr_gl_l2d_bind_default_target(zcsr_gl_renderer* renderer,
     if (!zcsr_gl_make_current(renderer)) return false;
     /* Unified contract: the composite goes to the linear frame target, not the
      * display backbuffer. zcsr_gl_present/read_rgba performs the single encode. */
+    zcsr_gl_state_cache_invalidate(renderer);
     renderer->target = 0;
     if (!zcsr_gl_frame_bind(renderer)) return false;
     glViewport(0, 0, width, height);
@@ -1113,6 +1115,7 @@ bool zcsr_gl_l2d_bind_target_textures(zcsr_gl_renderer* renderer,
     if (slot == NULL) return false;
     if (renderer->white_tex == 0u) return false;
     if (!zcsr_gl_make_current(renderer)) return false;
+    zcsr_gl_state_cache_invalidate(renderer); /* G-buffer textures bound on units 4..8 */
 
     for (i = 0; i < slot->attachments; ++i) {
         glActiveTexture(GL_TEXTURE0 + (GLenum)(first_texture_unit + i));
@@ -1133,6 +1136,7 @@ bool zcsr_gl_l2d_set_program(zcsr_gl_renderer* renderer,
                              zcsr_gl_l2d_program program) {
     unsigned int prog;
     if (renderer == NULL || !zcsr_gl_make_current(renderer)) return false;
+    zcsr_gl_state_cache_invalidate(renderer); /* explicit program switch outside instanced path */
     if (program == ZCSR_GL_L2D_PROGRAM_RADIAL) {
         prog = renderer->l2d_prog_radial;
     } else if (program == ZCSR_GL_L2D_PROGRAM_DEFERRED) {
@@ -1458,6 +1462,7 @@ bool zcsr_gl_l2d_bind_composite_target(zcsr_gl_renderer* renderer,
                                        int width, int height) {
     if (renderer == NULL || width <= 0 || height <= 0) return false;
     if (!zcsr_gl_make_current(renderer)) return false;
+    zcsr_gl_state_cache_invalidate(renderer); /* composite FBO / viewport bound */
     if (!zcsr_l2d_ensure_composite_target(renderer, width, height)) return false;
     glBindFramebuffer(GL_FRAMEBUFFER,
                       (renderer->l2d_msaa_samples > 1 && renderer->l2d_msaa_fbo != 0u)
@@ -1493,6 +1498,7 @@ bool zcsr_gl_l2d_finalize_composite(zcsr_gl_renderer* renderer,
     zcsr_l2d_draw_bindings saved;
     if (renderer == NULL || width <= 0 || height <= 0) return false;
     if (!zcsr_gl_make_current(renderer)) return false;
+    zcsr_gl_state_cache_invalidate(renderer); /* finalize binds blit program / fsq VAO / comp tex */
 
     /* MSAA 解析：多重采样 renderbuffer -> comp 纹理（后续 hook/present 仍读 comp_tex）。 */
     if (renderer->l2d_msaa_samples > 1 && renderer->l2d_msaa_fbo != 0u &&
@@ -1570,6 +1576,7 @@ bool zcsr_gl_l2d_shadow_begin(zcsr_gl_renderer* renderer,
     if (!isfinite(dir_x) || !isfinite(dir_y) || !isfinite(distance_px)) return false;
     if (distance_px <= 0.0f) return false;
     if (!zcsr_gl_make_current(renderer)) return false;
+    zcsr_gl_state_cache_invalidate(renderer); /* shadow FBO / program / viewport bound */
     if (!zcsr_l2d_ensure_shadow_target(renderer, mask_w, mask_h)) return false;
 
     /* the mask is about to be rendered into: drop any binding of it on unit 8 */
@@ -1711,6 +1718,7 @@ bool zcsr_gl_l2d_lightbuf_begin(zcsr_gl_renderer* renderer,
     }
     if (!isfinite(px_per_unit) || px_per_unit <= 0.0f) return false;
     if (!zcsr_gl_make_current(renderer)) return false;
+    zcsr_gl_state_cache_invalidate(renderer); /* light FBO / program / viewport bound */
     if (!zcsr_l2d_ensure_light_target(renderer, buf_w, buf_h)) return false;
 
     glBindFramebuffer(GL_FRAMEBUFFER, renderer->l2d_light_fbo);

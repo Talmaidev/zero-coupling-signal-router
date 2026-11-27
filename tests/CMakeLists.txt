@@ -153,7 +153,7 @@ endif()
 
 add_executable(instance_alpha_sort_test test_instance_alpha_sort.c)
 target_link_libraries(instance_alpha_sort_test PRIVATE
-    zcsr_glrender zcsr_platform zcsr_font zcsr_atlas zcsr_image zcsr_core)
+    zcsr_glrender zcsr_culling zcsr_platform zcsr_font zcsr_atlas zcsr_image zcsr_core)
 if(WIN32)
     target_link_libraries(instance_alpha_sort_test PRIVATE user32 gdi32 opengl32)
 endif()

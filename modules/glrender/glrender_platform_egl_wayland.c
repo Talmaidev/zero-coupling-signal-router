@@ -21,10 +21,23 @@
 #include <wayland-egl.h>
 #include <string.h>
 
+#ifndef EGL_CONFIG_CAVEAT
+#define EGL_CONFIG_CAVEAT 0x3027
+#endif
+#ifndef EGL_SLOW_CONFIG
+#define EGL_SLOW_CONFIG 0x3050
+#endif
+#ifndef EGL_NO_CONFIG_CAVEAT
+#define EGL_NO_CONFIG_CAVEAT 0x3051
+#endif
+
 bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface) {
     EGLint major = 0, minor = 0;
     EGLConfig config = NULL;
+    EGLConfig configs[8];
     EGLint n = 0;
+    int k;
+    bool picked = false;
     struct wl_display* wl_dpy;
     struct wl_surface* wl_surf;
     int w, h;
@@ -55,9 +68,20 @@ bool zcsr_gl_platform_init(zcsr_gl_renderer* r, zcsr_surface* surface) {
             EGL_DEPTH_SIZE, 0, EGL_STENCIL_SIZE, 0,
             EGL_NONE
         };
-        if (!eglChooseConfig(r->egl_display, cfg_attrs, &config, 1, &n) || n < 1)
+        if (!eglChooseConfig(r->egl_display, cfg_attrs, configs, 8, &n) || n < 1)
             goto fail_init;
     }
+    /* Match the GLX / Android EGL backends: skip EGL_SLOW_CONFIG candidates
+     * instead of taking the first returned config. */
+    for (k = 0; k < n; ++k) {
+        EGLint caveat = EGL_NO_CONFIG_CAVEAT;
+        eglGetConfigAttrib(r->egl_display, configs[k], EGL_CONFIG_CAVEAT, &caveat);
+        if (caveat == EGL_SLOW_CONFIG) continue;
+        config = configs[k];
+        picked = true;
+        break;
+    }
+    if (!picked) goto fail_init;
 
     zcsr_surface_get_client_size(surface, &w, &h);
     r->egl_window = wl_egl_window_create(wl_surf, w > 0 ? w : 800, h > 0 ? h : 600);
@@ -120,8 +144,14 @@ void zcsr_gl_platform_destroy(zcsr_gl_renderer* r) {
 }
 
 bool zcsr_gl_make_current(zcsr_gl_renderer* r) {
-    return r && r->egl_display != EGL_NO_DISPLAY
-        && eglMakeCurrent(r->egl_display, r->egl_surface, r->egl_surface, r->egl_context) == EGL_TRUE;
+    if (!(r && r->egl_display != EGL_NO_DISPLAY)) return false;
+    /* eglMakeCurrent is a round-trip; skip it when already current. */
+    if (eglGetCurrentContext() == r->egl_context &&
+        eglGetCurrentSurface(EGL_DRAW) == r->egl_surface &&
+        eglGetCurrentDisplay() == r->egl_display) {
+        return true;
+    }
+    return eglMakeCurrent(r->egl_display, r->egl_surface, r->egl_surface, r->egl_context) == EGL_TRUE;
 }
 
 void zcsr_gl_update_size(zcsr_gl_renderer* r) {

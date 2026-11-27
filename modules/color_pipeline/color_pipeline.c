@@ -33,6 +33,42 @@ const zcsr_color_pipeline_desc* zcsr_color_pipeline_default(void) {
     return &g_default_pipeline;
 }
 
+/* ---- Tier descriptors (裁决 8) -------------------------------------------------
+ * LINEAR_HDR keeps the linear RGBA16F frame and the full recolor/ramp/okLab/
+ * chroma stage set; DIRECT_SRGB writes display pixels directly and compiles
+ * those stages out. The flags are static tier capabilities consumed at
+ * assembly/shader-source time, never read per frame. */
+static const zcsr_color_tier_desc g_tier_linear_hdr = {
+    ZCSR_COLOR_TIER_LINEAR_HDR,
+    "zcsr.linear-hdr",
+    &g_default_pipeline,
+    true,  /* linear_frame */
+    true,  /* recolor      */
+    true,  /* ramp         */
+    true,  /* oklab        */
+    true   /* chroma       */
+};
+
+static const zcsr_color_tier_desc g_tier_direct_srgb = {
+    ZCSR_COLOR_TIER_DIRECT_SRGB,
+    "zcsr.direct-srgb",
+    NULL,  /* no decode/encode pair: direct display write */
+    false, /* linear_frame */
+    false, /* recolor      */
+    false, /* ramp         */
+    false, /* oklab        */
+    false  /* chroma       */
+};
+
+const zcsr_color_tier_desc* zcsr_color_pipeline_tier(zcsr_color_tier tier) {
+    if (tier == ZCSR_COLOR_TIER_DIRECT_SRGB) return &g_tier_direct_srgb;
+    return &g_tier_linear_hdr;
+}
+
+bool zcsr_color_pipeline_tier_encodes(const zcsr_color_tier_desc* desc) {
+    return desc != NULL && desc->linear_frame;
+}
+
 bool zcsr_color_pipeline_build_encode_lut(const zcsr_color_pipeline_desc* pipeline,
                                           uint8_t* rgba, int entries) {
     int i;
