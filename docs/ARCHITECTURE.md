@@ -2,7 +2,7 @@
 
 ## Repository boundaries
 
-This repository is the engine layer. It contains 25 independently built module libraries and the shared contract headers under `include/zcsr/`.
+This repository is the engine layer. It contains independently built module libraries and the shared contract headers under `include/zcsr/`. The authoritative module set is the active `zcsr_module()` entries in the top-level `CMakeLists.txt`; prose does not maintain a hard-coded count.
 
 UIM, the runtime shell, the editor and the 2.5D tools are separate repositories. They consume engine targets through CMake; the engine does not include their sources or know their product types.
 

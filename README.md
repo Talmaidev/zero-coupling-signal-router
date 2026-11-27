@@ -34,21 +34,22 @@ runtime host
   ├── game module
   └── engine (include/zcsr + static libs)
         core / signal / hsm / platform
-        glrender / sprite / culling / atlas / font / image / color_pipeline
-        light2d / camera / camera3d / scene_camera / scene / scene_render
-        audio / audiomix / music / input / inputext / assets / resource / file_service
+        glrender / sprite / culling / instance_sort / atlas / font / image / color_pipeline
+        light2d / light2d_environment / camera / camera3d / scene_camera
+        scene / scene_io / scene_render / scene_submit
+        audio / audiomix / music / video / input / inputext / assets / resource / file_service
         collision / save / ui / viewport
 ```
 
-29 个 module 独立编译，module 之间不 include 对方 source。组合发生在 product 层。
+`modules/` 下的 target 独立编译；module 集合以顶层 `CMakeLists.txt` 的 `zcsr_module()` 为准。module 之间不 include 对方 source。组合发生在 product 层。
 
 | group | modules |
 |---|---|
 | base | `core` `signal` `hsm` `platform` |
-| render | `glrender` `sprite` `culling` `atlas` `font` `image` `color_pipeline` |
-| light / camera | `light2d` `camera` `camera3d` `scene_camera` |
-| scene | `scene` `scene_render` |
-| media | `audio` `audiomix` `music` |
+| render | `glrender` `sprite` `culling` `instance_sort` `atlas` `font` `image` `color_pipeline` |
+| light / camera | `light2d` `light2d_environment` `camera` `camera3d` `scene_camera` |
+| scene | `scene` `scene_io` `scene_render` `scene_submit` |
+| media | `audio` `audiomix` `music` `video` |
 | input / resource | `input` `inputext` `assets` `resource` `file_service` |
 | game / UI | `collision` `save` `ui` `viewport` |
 
