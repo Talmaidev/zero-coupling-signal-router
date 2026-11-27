@@ -79,7 +79,7 @@ FULL / POS\_UV 档编出 `draw_instances`、`draw_instances_visible`、`draw_ins
 
 * 默认容量 `ZCSR_GL_MAX_INSTANCES = 65,535`；可用构建宏覆盖（`-DZCSR_GL_MAX_INSTANCES=...`），不提供 runtime 参数、bool 开关或环境变量。
 
-* 容量是参数，不是算法选择：count ≤ 容量时一次 `glDrawArraysInstanced` 画完（`draw_calls=1`）；只有 count > 容量才进入内部循环分片，该循环仅是防溢出保护，不参与算法选择。分片次数由调用方循环决定，引擎不替 game 决定一批画多少。
+* 容量是参数，不是算法选择：count ≤ 容量时一次 `glDrawArraysInstanced` 画完（`draw_calls=1`）；只有 count > 容量才进入内部循环分片，该循环仅是防溢出保护，不参与算法选择，调用方不能通过参数选择分片大小，也不需要自己循环。
 
 * 内存占用（按容量 × stride 预留的 ring）与调用次数都由 game 按自己的场景选；引擎不把分批当成 cull、sort 或任何着色能力。
 
