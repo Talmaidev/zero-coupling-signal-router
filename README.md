@@ -501,7 +501,7 @@ Benchmark coverage：
 | `docs/PERFORMANCE.md` | measurement protocol 与完整数据 |
 | `docs/TESTING.md` | automated / manual test split |
 | `docs/LINUX_VERIFICATION.md` | Linux backend verification |
-| `docs/MACOS_VERIFICATION.md` | macOS acceptance gates |
+| `docs/MACOS_VERIFICATION.md` | macOS Cocoa backend contract 与 acceptance gates |
 | `docs/DEVIATIONS.md` | known deviations |
 
 `docs/archive/` 只保留历史 architecture 与 API 说明，不代表当前实现。

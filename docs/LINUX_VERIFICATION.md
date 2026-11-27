@@ -110,4 +110,3 @@ Weston、PipeWire、media-session 和 Xorg 是测试环境 daemon，不是引擎
 - 不能声称 Linux AMD/NVIDIA 驱动或 Steam Deck 已验收。
 - 不能声称物理扬声器已出声；null sink 只证明流和 link。
 - 不能声称 GNOME/KDE Wayland、fractional scaling、VRR/HDR 已验收。
-- 不能声称 macOS 已编译/运行；按用户决定该项 pass、不作为 1.0 门，见 `docs/MACOS_VERIFICATION.md`。
