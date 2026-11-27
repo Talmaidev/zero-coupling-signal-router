@@ -287,7 +287,34 @@ MiB = 1024² bytes；MB = 10⁶ bytes。除 ring VBO 外，renderer 结构体内
 
 `sizeof(zcsr_gl_renderer)`：`full` 13,930,824 B（13.29 MiB）；`compact` 2,920,944 B（2.79 MiB）。
 
-## Caller pipeline
+## Usage
+
+```c
+#include <zcsr/gl_render.h>
+```
+
+Link `zcsr_glrender`。`zcsr_surface` 由 runtime host 提供；renderer state 位于 caller buffer。
+
+```c
+static unsigned char arena[16u << 20];
+
+zcsr_gl_renderer* r = zcsr_gl_create(surface, arena, sizeof arena);
+if (!r) return 1;
+
+zcsr_gl_texture tex = zcsr_gl_texture_create(r, rgba, w, h);
+zcsr_gl_texture_filter(r, tex, false); /* nearest */
+
+zcsr_gl_clear(r, 0.02f, 0.025f, 0.035f, 1.0f);
+zcsr_gl_draw_instances_plain(r, tex, records, count);
+zcsr_gl_present(r);
+
+zcsr_gl_texture_destroy(r, tex);
+zcsr_gl_destroy(r);
+```
+
+`zcsr_gl_texture_create` 创建 DISPLAY texture；`zcsr_gl_texture_create_ex` 显式声明 encoding；texture `0` 为 invalid。
+
+Frame sequence：
 
 1. 构造 record array：`zcsr_gl_instance`、`zcsr_gl_instance_plain` 或 `zcsr_instance_compact`。
 2. 多 texture 场景先按 texture 分区；需要 painter order 时调用 `zcsr_sort_instance_order`。
@@ -445,7 +472,20 @@ Probe 要求 header 与 lib 同时存在：FFmpeg 五个 lib（avcodec / avforma
 
 B580 无法锁定 clock；第一轮 cold clock 不计入。ZCSR 1 draw 对 Unity 的 65 draw：GPU frame 快 18%，CPU submit 快约 10×。Unity 的 65 draw 来自 `DrawMeshInstanced` 的 1,023-instance 上限，不是可选的性能算法。
 
-完整测量条件、record stride 对照与 pixel gate 见 `docs/PERFORMANCE.md`。
+Complex linear path（ZCSR only，linear HDR，65,535 instances / 1920×1080 / nearest / alpha 0.75 / 1 draw）：168 B general linear 为 1.263 ms；激活 hue / ramp / glow / chroma / emiss / rim 后为 6.266 ms（GPU frame median，5 × 330 samples，B580）。
+
+Benchmark coverage：
+
+| case | ZCSR | Unity bench | comparison |
+|---|---|---|---|
+| simple instanced sprite，plain 40 B | measured | `DrawMeshInstanced` / indirect shader | cross-engine |
+| linear HDR，168 B general | measured | no equivalent path | ZCSR only |
+| complex color stages：hue / ramp / glow / chroma / emiss / rim | measured | no equivalent path | ZCSR only |
+| Light2D / shadow | engine module + tests | no equivalent path | ZCSR only |
+
+跨引擎结论仅适用于 simple instanced path。Unity 侧 benchmark 不含 linear HDR、complex color stage、Light2D 或 shadow 的对应实现，ZCSR-only 数据不能写成 Unity 输。Unity 的 editor、asset pipeline、plugin/社区生态不在 draw benchmark 口径内；本表不构成全平台/全生态排名。ZCSR 验证平台为 Windows GL 3.3、Linux GLX、macOS Cocoa、Android GLES3。
+
+完整测量条件、linear complex 数据、record stride 对照与 pixel gate 见 `docs/PERFORMANCE.md`。
 
 ## Documentation
 

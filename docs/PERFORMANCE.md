@@ -31,6 +31,49 @@ Unity 的 65 draw 来自 `Graphics.DrawMeshInstanced` 的单次 1,023 instance �
 
 Upload 口径：ZCSR 的 GPU frame 包含 entry 内 `glBufferSubData` 2.62 MB（40 B × 65,535）；Unity `gpuFrameTime` 不包含每帧 4.19 MB（64 B × 65,535）matrix upload。ZCSR 在更宽的计时面内仍领先 18%。
 
+## Complex linear path (ZCSR only)
+
+Windows / Arc B580，`full` layout，`linear` HDR，`sort none`，65,535 instances，1920×1080，general 168 B record，1 draw，finish，5 × 330 samples。
+
+| path | GPU frame median (ms) | GPU range (ms) | CPU submit (ms) | frame median (ms) |
+|---|---|---|---|---|
+| general 168 B linear，no optional stage | 1.263 | 1.165–1.370 | 1.67 | 4.03 |
+| general 168 B linear + hue / ramp / glow / chroma / emiss / rim | 6.266 | 6.238–7.242 | 1.67 | 9.43 |
+
+Complex 组激活 `hue_amount`、`ramp_amount`、`glow_amount`、`sat_boost` / `sat_floor` / `value_gain` / `value_contrast`、`emiss_amount`、`rim_amount`；ramp atlas 绑定到 texture row 0。Pixel coverage 为 2,073,481 / 2,073,600 = 99.9943%，证明 frame 非空、不是空 draw；entry 返回值用于检查 submitted records。
+
+Unity benchmark 只有 `DrawMeshInstanced` 与 indirect sprite shader，没有 linear HDR、ramp/recolor、Light2D 或 shadow 对应实现。该组为 ZCSR path validation，不作跨 engine 比值。
+
+## Reproduction
+
+Linear complex：
+
+```
+cd build\bench-visible\Release
+zcsr_stress_iso168hdr.exe --count 65535 --frames 330 --warmup 30 \
+  --path general --capacity 65535 --shared-cfg --finish \
+  --gpu-timer --gpu-scope frame --complex
+```
+
+`build\bench-visible` 的 cache 必须为：
+
+```
+ZCSR_INSTANCE_LAYOUT=full
+ZCSR_COLOR_TIER=linear
+ZCSR_SORT_TIER=none
+```
+
+Direct plain baseline：
+
+```
+cd build\bench-plain-direct\Release
+zcsr_stress_plain.exe --count 65535 --frames 330 --warmup 30 \
+  --path plain --capacity 65535 --shared-cfg --finish \
+  --gpu-timer --gpu-scope frame
+```
+
+`build\bench-plain-direct` 的 cache 必须为 `full / direct / none`。两组使用同一 texture、同 count、同 client size、同 finish 口径。
+
 ## Plain 40 B vs general 168 B
 
 Windows / Arc B580，65,535 instances，1920×1080，nearest，alpha 0.75，direct，单 texture，一次 draw，无 cull/sort；5 × 150 coherent query samples，finish 口径。
