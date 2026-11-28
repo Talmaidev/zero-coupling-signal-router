@@ -2,7 +2,7 @@
 
 ## Measurement protocol
 
-- 同机、同 build、同条件 A/B。跨机、跨 engine、跨分辨率、跨 draw shape 不混成单一比值；跨 draw shape 只作为 control，必须标注是否为生产路径与 upload 口径。
+- 同机、同 build、同条件 A/B。跨机、跨 engine、跨分辨率、跨 draw shape 不混成单一比值；不同提交形状只各自记录，不相互换算。
 - GPU frame 为 finish-equivalent：GL timer query 在 swap 前结束；Unity 使用 `FrameTimingManager.gpuFrameTime`。present 不计入。
 - CPU 列分 `data_gen` / `submit` / `frame`。`submit` 为 draw entry 调用区间，`frame` 为 clear + draw。
 - 每格为多轮 median。取不到的值记 `n/a`，不估算。
@@ -21,19 +21,9 @@ Windows / Arc B580 / ZCSR GL 3.3 / Unity D3D11，65,535 instances，1920×1080�
 
 `0.847 < 1.0219`：即使 2.62 MB 上传只计入 ZCSR 一侧，每帧 GPU 成本仍低约 17%。`0.833 < 1.0219` 是两边都排除上传的 GPU-only 面，低约 18.5%。
 
-ZCSR 单次提交 65,535，capacity 即计数上限；Unity `DrawMeshInstanced` 的 1,023 上限才把同一负载拆成 65 次。65 次是接口限制的结果，不是性能算法，也不作为胜负指标。ZCSR 自身跑 65 draw 对照为 2.390，反而慢于 1 draw，因此 65 draw 不进入生产路径。
+ZCSR 单次提交 65,535，capacity 即计数上限；Unity `DrawMeshInstanced` 的 1,023 上限才把同一负载拆成 65 次。65 次是接口限制的结果，不是性能算法，也不作为胜负指标。ZCSR 不提供分组提交路径，不存在分组形状需要比较。
 
 Unity 的 1-draw `DrawMeshInstancedIndirect` 实测 2.282，慢于 `DrawMeshInstanced` 的 1.0219；因此对 Unity 而言，带 1,023 上限的 `DrawMeshInstanced` 是 best available path。
-
-## Control references
-
-| control | GPU frame median (ms) | samples | note |
-|---|---|---|---|
-| ZCSR 1,023-cap control | 2.390 | 5 × 330 | 慢于自身 1 draw；不用于生产路径 |
-| Unity indirect 1-draw control | 2.282 | 587 / 600 | 慢于 Unity 1,023-cap control；不作为 Unity best path |
-| Unity 1,023-cap control | 1.0219 | 595 / 600 | Unity best available path |
-
-CPU submit：ZCSR `plainrun` 1,023-cap control 为 `0.104`，Unity `DrawMeshInstanced` 同形状 control 为 `1.0829`，提交段相差约 10.4×；ZCSR 1 draw 的提交为 0.101–0.118（`plainrun_1draw` 组）。该列不与 GPU best-path 单元混用。
 
 Upload 口径：`0.847` 含 2.62 MB entry upload，`0.833` 是 `--noupload`；Unity `gpuFrameTime` 不含 4.19 MB matrix upload。`0.847` 对 `1.0219` 是“上传只计入 ZCSR 一侧”的保守比较；`0.833` 对 `1.0219` 是两边都排除上传的 GPU-only 比较。两行不可互换。
 

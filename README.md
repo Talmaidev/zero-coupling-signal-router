@@ -474,9 +474,9 @@ Probe 要求 header 与 lib 同时存在：FFmpeg 五个 lib（avcodec / avforma
 
 `0.847 < 1.0219`：即使 2.62 MB 上传只计入 ZCSR 一侧，每帧 GPU 成本仍低约 17%。`0.833 < 1.0219` 是两边都排除上传的 GPU-only 面，低约 18.5%。ZCSR 单次提交 65,535，capacity 即计数上限；Unity 的 1,023 上限才把同一负载拆成多次。拆分次数是接口限制的结果，不是性能算法，也不作为胜负指标。
 
-ZCSR 自身跑 1,023-cap 控制组为 2.390，反而慢于 1 draw，因此该形状不进入生产路径。Unity 的 1-draw `DrawMeshInstancedIndirect` 为 2.282，慢于 `DrawMeshInstanced` 的 1.0219；对 Unity 而言，带 1,023 上限的 `DrawMeshInstanced` 是 best available path。
+ZCSR 不提供分组提交路径：容量即计数上限，一次提交 65,535，没有分片形状可比较。Unity 的 1-draw `DrawMeshInstancedIndirect` 为 2.282，慢于 `DrawMeshInstanced` 的 1.0219；对 Unity 而言，带 1,023 上限的 `DrawMeshInstanced` 是 best available path。
 
-CPU submit：ZCSR `plainrun` 1,023-cap control 为 `0.104`，Unity 同形状 control 为 `1.0829`，提交段相差约 10.4×；ZCSR 1 draw 的提交为 0.101–0.118。`0.847` 含 2.62 MB 上传，`0.833` 为 `--noupload`，两行不可互换。
+`0.847` 含 2.62 MB 上传，`0.833` 为 `--noupload`，两行不可互换。
 
 Complex linear path（ZCSR only，linear HDR，65,535 instances / 1920×1080 / nearest / alpha 0.75 / 1 draw）：168 B general linear 为 1.263 ms；激活 hue / ramp / glow / chroma / emiss / rim 后为 6.266 ms（GPU frame median，5 × 330 samples，B580）。
 
