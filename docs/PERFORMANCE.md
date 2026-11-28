@@ -9,32 +9,35 @@
 - Arc B580 无法锁定 clock。第一轮 cold clock 数据不计入；warmup ≥ 30 frames。
 - Android retail device 无法锁定 clock。warmup ≥ 10 s，≥ 5 轮取 median，记录机身温度。
 
-## Best available path (GPU-only)
+## Best available path (GPU cost, not draw count)
 
-Windows / Arc B580 / ZCSR GL 3.3 / Unity D3D11，65,535 instances，1920×1080，nearest，alpha 0.75，direct，单 texture，无 cull/sort。比较对象是各 engine 的实际实现选择，不是强迫 ZCSR 复制 Unity 的 65-draw 形状。
+Windows / Arc B580 / ZCSR GL 3.3 / Unity D3D11，65,535 instances，1920×1080，nearest，alpha 0.75，direct，单 texture，无 cull/sort。指标是每帧 GPU 成本；draw count 只是 API 上限造成的提交形状，不列入主表、不作比较项。
 
-| engine | path | draw_calls | GPU frame median (ms) | GPU timing includes instance upload |
+| engine | path | GPU frame median (ms) | samples | GPU timing includes instance upload |
 |---|---|---|---|---|
-| ZCSR | plain 1 draw，`--noupload` | 1 | 0.833 | no |
-| Unity | `DrawMeshInstanced` 65 draw | 65 | 1.0219 | no（`gpuFrameTime` excludes matrix upload） |
+| ZCSR | 1 draw，upload included，current | 0.847 | 5 × 300 | yes（2.62 MB entry upload） |
+| ZCSR | 1 draw，GPU-only `--noupload` | 0.833 | 3 × 300 | no |
+| Unity | `DrawMeshInstanced`（1,023 cap） | 1.0219 | 595 / 600 | no（`gpuFrameTime` excludes 4.19 MB matrix upload） |
 
-`0.833 < 1.0219`：ZCSR best available path 在 GPU-only 面低约 18%。这里的 1 draw 对 65 draw 不是把 ZCSR 改成 Unity 的形状，而是两边各自的实现选择：ZCSR 单次提交 65,535、无 1,023 上限；Unity `DrawMeshInstanced` 的 1,023 上限才产生 65 draw。ZCSR 的 65-draw 路径没有收益，反而更慢，不作为生产路径。
+`0.847 < 1.0219`：即使 2.62 MB 上传只计入 ZCSR 一侧，每帧 GPU 成本仍低约 17%。`0.833 < 1.0219` 是两边都排除上传的 GPU-only 面，低约 18.5%。
 
-Unity 的 1-draw `DrawMeshInstancedIndirect` 实测 2.282，慢于 65-draw instanced 的 1.0219；因此 65 draw 是 Unity 在该 API 下的 best available path，不是 ZCSR 的。
+ZCSR 单次提交 65,535，capacity 即计数上限；Unity `DrawMeshInstanced` 的 1,023 上限才把同一负载拆成 65 次。65 次是接口限制的结果，不是性能算法，也不作为胜负指标。ZCSR 自身跑 65 draw 对照为 2.390，反而慢于 1 draw，因此 65 draw 不进入生产路径。
+
+Unity 的 1-draw `DrawMeshInstancedIndirect` 实测 2.282，慢于 `DrawMeshInstanced` 的 1.0219；因此对 Unity 而言，带 1,023 上限的 `DrawMeshInstanced` 是 best available path。
 
 ## Control references
 
 | control | GPU frame median (ms) | samples | note |
 |---|---|---|---|
-| ZCSR plain 65 draw，capacity 1,023 | 2.390 | 5 × 330 | ZCSR 对照，慢于自身 1 draw；不用于生产路径 |
-| Unity `DrawMeshInstancedIndirect` 1 draw | 2.282 | 587 / 600 | 慢于 Unity 65 draw；不作为 Unity best path |
-| Unity `DrawMeshInstanced` 65 draw | 1.0219 | 595 / 600 | Unity best available path |
+| ZCSR 1,023-cap control | 2.390 | 5 × 330 | 慢于自身 1 draw；不用于生产路径 |
+| Unity indirect 1-draw control | 2.282 | 587 / 600 | 慢于 Unity 1,023-cap control；不作为 Unity best path |
+| Unity 1,023-cap control | 1.0219 | 595 / 600 | Unity best available path |
 
-CPU submit：ZCSR `plainrun_65draw_final`（capacity 1,023，65 draw）为 `0.104`，Unity `DrawMeshInstanced` 65 draw 为 `1.0829`，同形状提交段相差约 10.4×；ZCSR 1 draw 的提交为 0.101–0.118（`plainrun_1draw` 组）。该列不与 GPU best-path 单元混用。
+CPU submit：ZCSR `plainrun` 1,023-cap control 为 `0.104`，Unity `DrawMeshInstanced` 同形状 control 为 `1.0829`，提交段相差约 10.4×；ZCSR 1 draw 的提交为 0.101–0.118（`plainrun_1draw` 组）。该列不与 GPU best-path 单元混用。
 
-Upload 口径：`0.833` 是 `--noupload` 的 GPU-only 中位（3 × 300 frames）；Unity `gpuFrameTime` 也不含 matrix upload。主表两边都排除上传，不能把它与 upload-included 的 1.468 混成同一行。`1.468` 是 make-current 修正前的 upload-included locked 值，只保留在下面的 record 对照，不是当前 1-draw 值。
+Upload 口径：`0.847` 含 2.62 MB entry upload，`0.833` 是 `--noupload`；Unity `gpuFrameTime` 不含 4.19 MB matrix upload。`0.847` 对 `1.0219` 是“上传只计入 ZCSR 一侧”的保守比较；`0.833` 对 `1.0219` 是两边都排除上传的 GPU-only 比较。两行不可互换。
 
-Unity API：`DrawMeshInstanced` 单次 1,023 instance 上限，65,535 需 65 draw。`DrawMeshInstancedIndirect` 可 1 draw 提交 65,535，实测 2.282，比 65 draw instanced 的 1.0219 慢。准确说法是该 API 的提交形状上限，不是 Unity 不能单次 draw。indirect shader 未按实例切 UV，与 instanced 的 UV 路径不同，见 `gpu-shape.md` §4。
+Unity API：`DrawMeshInstanced` 单次 1,023 instance 上限，65,535 必须拆成多次提交；`DrawMeshInstancedIndirect` 可 1 draw 提交 65,535，实测 2.282，慢于 `DrawMeshInstanced` 的 1.0219。准确说法是该 API 的提交形状上限，不是 Unity 不能单次 draw。indirect shader 未按实例切 UV，与 instanced 的 UV 路径不同，见 `gpu-shape.md` §4。
 
 ## Complex linear path (ZCSR only)
 

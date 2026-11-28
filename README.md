@@ -464,18 +464,19 @@ Probe 要求 header 与 lib 同时存在：FFmpeg 五个 lib（avcodec / avforma
 
 ## Performance reference
 
-固定负载：65,535 instances、1920×1080、nearest、alpha 0.75、`direct`、单 texture、无 cull/sort。比较对象是各 engine 的实际实现选择，不是强迫 ZCSR 复制 Unity 的 65-draw 形状。GPU 为 finish-equivalent frame time，present 不计入。
+固定负载：65,535 instances、1920×1080、nearest、alpha 0.75、`direct`、单 texture、无 cull/sort。指标是每帧 GPU 成本；draw count 只是 API 上限造成的提交形状，不列入主表、不作比较项。GPU 为 finish-equivalent frame time，present 不计入。
 
-| engine | path | draw_calls | GPU frame median (ms) |
+| engine | path | GPU frame median (ms) | upload in GPU timing |
 |---|---|---|---|
-| ZCSR | 1 draw，GPU-only `--noupload` | 1 | 0.833 |
-| Unity | `DrawMeshInstanced`，65 draw | 65 | 1.0219 |
+| ZCSR | 1 draw，upload included，current | 0.847 | yes（2.62 MB） |
+| ZCSR | 1 draw，GPU-only `--noupload` | 0.833 | no |
+| Unity | `DrawMeshInstanced`（1,023 cap） | 1.0219 | no（`gpuFrameTime` excludes 4.19 MB） |
 
-`0.833 < 1.0219`：ZCSR best available path 在 GPU-only 面低约 18%。1 draw 对 65 draw 不是把 ZCSR 改成 Unity 的形状，而是两边各自的实际提交：ZCSR 单次提交 65,535、无 1,023 上限；Unity 的 1,023 上限才产生 65 draw。ZCSR 的 65-draw 对照为 2.390，慢于自身 1 draw，不用于生产路径。Unity 的 1-draw indirect 为 2.282，慢于 65-draw instanced 的 1.0219，因此 65 draw 是 Unity 的 best available path。
+`0.847 < 1.0219`：即使 2.62 MB 上传只计入 ZCSR 一侧，每帧 GPU 成本仍低约 17%。`0.833 < 1.0219` 是两边都排除上传的 GPU-only 面，低约 18.5%。ZCSR 单次提交 65,535，capacity 即计数上限；Unity 的 1,023 上限才把同一负载拆成多次。拆分次数是接口限制的结果，不是性能算法，也不作为胜负指标。
 
-CPU submit：ZCSR `plainrun` 65 draw（capacity 1,023）为 `0.104`，Unity 65 draw 为 `1.0829`，同形状提交段相差约 10.4×；ZCSR 1 draw 的提交为 0.101–0.118。`0.833` 是 3 轮 `--noupload` 的 GPU-only 中位；旧 upload-included locked 值不替代 `0.833` 作为当前 1-draw 值。
+ZCSR 自身跑 1,023-cap 控制组为 2.390，反而慢于 1 draw，因此该形状不进入生产路径。Unity 的 1-draw `DrawMeshInstancedIndirect` 为 2.282，慢于 `DrawMeshInstanced` 的 1.0219；对 Unity 而言，带 1,023 上限的 `DrawMeshInstanced` 是 best available path。
 
-Unity `DrawMeshInstanced` 的 1,023-instance 上限要求 65 draw；`DrawMeshInstancedIndirect` 可 1 draw 提交 65,535，实测 2.282 ms，比 65 draw instanced 的 1.0219 ms 慢。该限制是 API 提交形状，不是 Unity 不能单次 draw。
+CPU submit：ZCSR `plainrun` 1,023-cap control 为 `0.104`，Unity 同形状 control 为 `1.0829`，提交段相差约 10.4×；ZCSR 1 draw 的提交为 0.101–0.118。`0.847` 含 2.62 MB 上传，`0.833` 为 `--noupload`，两行不可互换。
 
 Complex linear path（ZCSR only，linear HDR，65,535 instances / 1920×1080 / nearest / alpha 0.75 / 1 draw）：168 B general linear 为 1.263 ms；激活 hue / ramp / glow / chroma / emiss / rim 后为 6.266 ms（GPU frame median，5 × 330 samples，B580）。
 
