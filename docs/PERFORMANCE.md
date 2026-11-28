@@ -22,13 +22,13 @@ ZCSR 1→65 draw：1.468→2.390（+0.922 ms）；Unity 65→1 draw：1.0219→2
 
 | reference cell | GPU frame median (ms) | samples | GPU timing includes instance upload |
 |---|---|---|---|
-| ZCSR plain 1 draw，upload included，locked existing | 1.468 | 5 × 150 | yes（2.62 MB entry upload） |
-| ZCSR plain 1 draw，`--noupload` diagnostic | 0.833 | diagnostic | no |
+| ZCSR plain 1 draw，upload included，pre-fix locked | 1.468 | 5 × 150 | yes（2.62 MB entry upload） |
+| ZCSR plain 1 draw，GPU-only `--noupload` | 0.833 | 3 × 300 | no |
 | ZCSR plain 65 draw，capacity 1,023 | 2.390 | 5 × 330 | yes（same 2.62 MB，split 65 calls） |
 | Unity `DrawMeshInstancedIndirect` 1 draw | 2.282 | 587 / 600 | no（`gpuFrameTime` excludes 5.24 MB record upload） |
 | Unity `DrawMeshInstanced` 65 draw | 1.0219 | 595 / 600 | no（`gpuFrameTime` excludes 4.19 MB matrix upload） |
 
-`0.833` 是 `--noupload` 诊断，不是 2×2 矩阵单元；不能与 `1.0219` 组成“1 draw 对 65 draw”的 cross-engine 比值。`1.468` 是 locked existing 1-draw 参考，`2.390` 是本轮 65-draw 新跑；两者不是同一 build。
+`0.833` 是 3 轮 `--noupload` 的 GPU-only 中位（3 × 300 frames），原始数值低于 Unity `1.0219`；但它对应 1 draw 且不含 2.62 MB 上传，不能作为“1:65 同形状、同上传”的控制变量胜负。`1.468` 是 upload-included 的 pre-fix locked 1-draw 参考，`2.390` 是 current 65-draw；两者不是同一 build。
 
 CPU submit：`0.104` 出自 ZCSR `plainrun_65draw_final`（capacity 1,023，65 draw），`1.0829` 出自 Unity `DrawMeshInstanced` 65 draw；两者同形状，提交段相差约 10.4×。ZCSR 1 draw 的提交为 0.101–0.118（`plainrun_1draw` 组）。该列不与 GPU 矩阵单元混用。
 

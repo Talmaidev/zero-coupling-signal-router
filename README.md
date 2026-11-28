@@ -471,7 +471,7 @@ Probe 要求 header 与 lib 同时存在：FFmpeg 五个 lib（avcodec / avforma
 | 1 draw | 1.468 ms（plain，upload included） | 2.282 ms（`DrawMeshInstancedIndirect`） |
 | 65 draw | 2.390 ms（plain，capacity 1,023） | 1.0219 ms（`DrawMeshInstanced`） |
 
-ZCSR 1→65 draw 为 1.468→2.390；Unity 65→1 draw 为 1.0219→2.282。四个 reference cell 上形状方向相反；`1.468` 是 locked pre-fix 参考，不能当作与 2.390 同 build 的差值。`0.833` 是 ZCSR `--noupload` 诊断，不是 cross-engine 单元；`1.468` / `2.390` 的 GPU 窗口含 2.62 MB entry upload，Unity `gpuFrameTime` 不含 matrix / indirect record upload。CPU submit `0.104`（ZCSR `plainrun` 65 draw，capacity 1,023）对 `1.0829`（Unity 65 draw）是同形状提交段差，约 10.4×；ZCSR 1 draw 的提交为 0.101–0.118。
+ZCSR 1→65 draw 为 1.468→2.390；Unity 65→1 draw 为 1.0219→2.282。四个 reference cell 上形状方向相反；`1.468` 是 pre-fix locked 参考，不能当作与 2.390 同 build 的差值。`0.833` 是 3 轮 `--noupload` 的 GPU-only 中位，原始数值低于 `1.0219`，但它是 1 draw 且不含上传，不是“1:65 同形状、同上传”的控制变量胜负；`1.468` / `2.390` 的 GPU 窗口含 2.62 MB entry upload，Unity `gpuFrameTime` 不含 matrix / indirect record upload。CPU submit `0.104`（ZCSR `plainrun` 65 draw，capacity 1,023）对 `1.0829`（Unity 65 draw）是同形状提交段差，约 10.4×；ZCSR 1 draw 的提交为 0.101–0.118。
 
 Unity `DrawMeshInstanced` 的 1,023-instance 上限要求 65 draw；`DrawMeshInstancedIndirect` 可 1 draw 提交 65,535，实测 2.282 ms，比 65 draw instanced 的 1.0219 ms 慢。该限制是 API 提交形状，不是 Unity 不能单次 draw。
 
