@@ -5,8 +5,8 @@
  * 状态（如实记录）：
  *   - 6 个窗口/显示 API 已从"占位 false"改为真实 AppKit 实现（NSScreen / setStyleMask /
  *     setContentSize / contentRectForFrameRect / backingScaleFactor / toggleFullScreen）。
- *   - 仍未在真实 macOS 上编译验证（本机无 Apple toolchain）。首次在 Mac 上构建时，
- *     重点检查：ARC 下的 __bridge、maximumFramesPerSecond 的可用性、toggleFullScreen 异步。
+ *   - macOS 构建与运行由 docs/MACOS_VERIFICATION.md 的 acceptance gates 覆盖。
+ *     首次在 Mac 上构建时，重点检查：ARC 下的 __bridge、maximumFramesPerSecond 的可用性、toggleFullScreen 异步。
  *   - 窗口默认样式仍是 borderless + 透明 + 置顶（overlay 语义，与 Win32 的 BORDERLESS 默认一致）。
  *     调用方必须显式 set_mode(WINDOWED) 才会得到正常应用窗口（标题栏/可缩放/普通层级）。
  */

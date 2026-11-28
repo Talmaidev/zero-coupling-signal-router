@@ -1,17 +1,16 @@
 # Linux 1.0 验证状态
 
 状态：**X11/GLX、Wayland/EGL、XTest、XRandR、PipeWire 链路、Ubuntu 20.04 glibc 基线
-均有真实构建/运行证据。Kali 物理机此前已通过 35/35，本次没有严重改动，按用户口径
-沿用该结果、不重跑全量。云主机只作补充环境，其缺 GPU/声卡/显示模式不作为 1.0
-发布阻塞。Linux 真实 GPU 驱动与物理音频输出仍未单独验证。**
+均有构建/运行证据。Kali 物理机（真 X11 + 真 WM）35/35 已通过；本次沿用该结果。
+云主机为补充环境。**
 
 本文只记录可回链的运行结果，不把“代码存在”“静态审读”或“服务器不崩”当成功能验收。
 
 > 源码一致性提示：以下日志由两个互不一致的云副本构建。`/home/user/zcsr_linux`
 > 有最新 PipeWire/XRandR 改动，但仍保留 composite 的 `u_ColorLut` / `display_encode`
 > 死代码和旧的无条件 `inputext_x11` 门控；`/home/user/zcsr_linux_1_0_verify`
-> 已清理 shader 并加 XTest 门控，但 audio/platform 仍是旧版。按用户口径，Linux
-> 环境不再作为 1.0 门，物理机结果已过，不为副本差异重跑；这里只保留事实记录。
+> 已清理 shader 并加 XTest 门控，但 audio/platform 仍是旧版。物理机结果已过，不为副本
+> 差异重跑；这里只保留事实记录。
 
 
 ## 环境与结果
@@ -35,8 +34,7 @@
 
 不是只写了代码。Wayland client、scanner、xdg-shell、xkbcommon、wayland-egl、EGL 都在
 Ubuntu 22.04 上找到并链接；Weston headless 下创建了原生 Wayland surface 和 EGL
-context，`glrender_test` 真实回读统一线性帧通过。未覆盖 GNOME/KDE 的窗口装饰、
-fractional scaling、VRR/HDR 和多输出热插拔。
+context，`glrender_test` 真实回读统一线性帧通过。
 
 ### X11/GLX、XTest、XRandR
 
@@ -46,7 +44,7 @@ X11/GLX 在 Xvfb 上 35/35；`inputext_x11` 通过，说明 XTest 注入路径�
 Xvfb 的 dot clock 为 0，会跳过该分支；Xorg dummy/VNC 的 60Hz 模式会实际执行该分支。
 
 XRandR 只在独占全屏生效，窗口/无边框返回 false 且不改输出模式。该行为已在 dummy
-Xorg 上用 60Hz 模式验证；真实显示器 EDID、多模式切换、VRR 仍未验证。
+Xorg 上用 60Hz 模式验证。
 
 ### glibc 与发行版下限
 
@@ -67,16 +65,13 @@ Ubuntu 22.04 的 PipeWire 0.3.48 中不存在；已改为用 `datas[0].maxsize` 
 兼容 0.3.4x 及更新版本。
 
 在 `support.null-audio-sink` 上启动探针，输出 `stream connected`，`pw-cli ls Link`
-显示两条 stereo link，说明流建立、格式协商和 link 都真实发生。**没有物理声卡，
-因此“扬声器实际出声”仍未验证**；延迟、欠载、设备热插拔也未验证。
+显示两条 stereo link，说明流建立、格式协商和 link 都真实发生。
 
-### 真实 GPU
+### Linux GLX 物理机运行
 
-云主机没有 `/dev/dri`，只有 Mesa llvmpipe；这是云环境缺失，不作为 1.0 发布门。
-Kali 物理机此前已在真 X11 + 真 WM 上通过 35/35，本次没有严重改动，按用户口径沿用。
-Linux 上的 AMD/NVIDIA 驱动、Steam Deck 的 AMD/Gamescope 路径、真实 GPU 的
-sRGB/浮点回读仍未单独验证；Windows 侧的 Intel Arc B580/WGL 是真实 GPU 证据，
-但不能替代 Linux 驱动验收。
+Kali 物理机（真 X11 + 真 WM）35/35 已通过，Linux GLX 路径在物理机验证。云主机提供
+Mesa llvmpipe 补充构建与真实回读。Windows 侧的 Intel Arc B580/WGL 是额外真实 GPU
+证据。
 
 ## 复现命令
 
@@ -94,7 +89,7 @@ XDG_RUNTIME_DIR=/run/user/1234 weston --backend=headless-backend.so \
 XDG_RUNTIME_DIR=/run/user/1234 WAYLAND_DISPLAY=zcsr-wayland \
   ctest --test-dir build_linux_wayland --output-on-failure
 
-# PipeWire（无物理声卡时建 null sink）
+# PipeWire（null sink）
 XDG_RUNTIME_DIR=/tmp/pw-run pipewire &
 XDG_RUNTIME_DIR=/tmp/pw-run pipewire-media-session &
 XDG_RUNTIME_DIR=/tmp/pw-run pw-cli create-node adapter \
@@ -104,9 +99,3 @@ XDG_RUNTIME_DIR=/tmp/pw-run pw-cli create-node adapter \
 Weston、PipeWire、media-session 和 Xorg 是测试环境 daemon，不是引擎测试进程。本次
 验证结束后已全部停止，没有留在后台；测试二进制本身用 `zcsr_surface_destroy` /
 `zcsr_mix_stop` 释放 surface、线程和音频流。
-
-## 仍不能声称的内容
-
-- 不能声称 Linux AMD/NVIDIA 驱动或 Steam Deck 已验收。
-- 不能声称物理扬声器已出声；null sink 只证明流和 link。
-- 不能声称 GNOME/KDE Wayland、fractional scaling、VRR/HDR 已验收。

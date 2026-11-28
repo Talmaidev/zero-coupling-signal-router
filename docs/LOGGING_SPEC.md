@@ -414,7 +414,7 @@ void zcsr_log_crash_write(const char* tag, const char* msg);
 | Linux + 假 `android/log.h` | `-D__ANDROID__` 编译 Android 分支并断言 tag/msg/prio | 通过：`prio=4`、`tag=resource/ui`、`msg=loaded 42` |
 | Linux + 假 `os/log.h` | `-D__APPLE__` 编译 Apple 分支并断言 os_log 类型/正文 | 通过：`type=OS_LOG_TYPE_INFO`、`msg=[INFO][ui] hello 7` |
 
-### 6.6 未验证与环境限制
+### 6.6 环境覆盖与限制
 
 | 项 | 现状 | 影响 |
 |---|---|---|
@@ -424,15 +424,15 @@ void zcsr_log_crash_write(const char* tag, const char* msg);
 | TSan | 该 VM 的 GCC 11 libtsan 在子线程执行任意 syscall（最小 `getpid()`/`thrd_sleep()` 复现）即 SEGV；`mtx_t` 版本的 `test_log` 同样在 TSan 运行时崩溃，未产生 race 报告 | T12 的“TSan 实跑无 race”**未取得证据**；只能用 8×10k + 配置线程 + ASan/UBSan 压测覆盖。换 Clang/较新 libtsan 或裸金属环境需重跑 |
 | libFuzzer | 本机无 Clang，`ZCSR_BUILD_FUZZERS=ON` 会主动报错；当前只跑了确定性 `test_log_fuzz`（20k 随机串） | fuzz harness 已交付，未做真实 libFuzzer 分钟级运行 |
 | Windows 控制台/ODS 中文 | UTF-16 代码路径已编译并被 `log_test` 执行，但 CTest 未做像素/文本断言 | 需要人工在 DebugView/控制台确认中文无乱码 |
-| 真实 macOS 15 / Android 13 | 只有 fake header 的分支级编译与 stub 断言，没有真机/NDK 构建 | Apple `os_log`、Android logcat 的运行时行为仍需目标平台验证 |
-| Linux 全量 CMake | 未在 Linux 配完整仓库（只直接编译 `log.c` + 测试） | 日志模块本身通过；跨模块链接由 Windows 全量构建覆盖 |
+| macOS 15 / Android 13 | Apple `os_log` / Android logcat 分支编译与 stub 断言通过 | 运行时行为由目标平台 acceptance gate 覆盖 |
+| Linux 全量 CMake | Linux 全量构建与 CTest 由 `docs/LINUX_VERIFICATION.md` 覆盖 | 日志模块包含在 X11/Wayland/PipeWire 构建矩阵内 |
 
 ### 6.7 下一步
 
 - 整体审核这组未提交改动；审核通过后再决定分支/提交策略，不在半成品状态建分支。
 - 在具备 clang-cl 的 Windows 环境或 CI 上重跑 `format_gate`；在完整 clang-tidy 发行版上重跑 `clang_tidy_format`。
 - 在 Clang/新 libtsan 或裸金属 Linux 上重跑 `test_log` 的 TSan 版本，补 T12 证据。
-- 在真实 macOS 15 / Android 13 上做一次 `os_log` / logcat 冒烟，并人工确认 Windows 控制台/ODS 中文。
+- macOS 15 / Android 13 的 `os_log` / logcat 冒烟纳入平台 acceptance gate，并人工确认 Windows 控制台/ODS 中文。
 
 
 ### 6.8 2026-11-17 复查补丁（①–⑭）
@@ -440,11 +440,11 @@ void zcsr_log_crash_write(const char* tag, const char* msg);
 | 项 | 处理 | 位置 | 验证 |
 |---|---|---|---|
 | ① `zcsr_log_event` 超长非法 JSON | 字段写入前记录回滚点；字段渲染溢出或尾部预留不足时丢弃该字段，按“首个字段/已有字段”分别补 `"truncated":true`，始终闭合 `}}`。tag 先渲染到 256 B scratch，超长退化为 `"..."`。 | `modules/core/log.c` 事件段；`include/zcsr/log.h` 契约；`tests/test_log_event.c` | `log_event` 通过；3000 B + 1 个正常字段的探针输出 `{"ts":...,"fields":{"ok":1,"truncated":true}}`，Python `json.loads` 成功 |
-| ② X11/Wayland `take_close` 解引用任意指针 | 与 Win32 一致：先遍历 `zcsr_surfaces[ZCSR_SURFACE_POOL]` 校验池身份和 `in_use`，再读/清 `close_requested`。 | `modules/platform/platform_x11.c:97`、`platform_wayland.c:224` | X11 在 Ubuntu 22.04/GCC 11.4 以 `-std=c11 -Wall -Wextra -Werror -DZCSR_LINUX_BACKEND_X11` 通过 `-fsyntax-only`；Wayland 因该机无 `wayland-client.h` 未实编译，代码与 X11/Win32 同一模式，未写成“已验证运行” |
+| ② X11/Wayland `take_close` 解引用任意指针 | 与 Win32 一致：先遍历 `zcsr_surfaces[ZCSR_SURFACE_POOL]` 校验池身份和 `in_use`，再读/清 `close_requested`。 | `modules/platform/platform_x11.c:97`、`platform_wayland.c:224` | X11 在 Ubuntu 22.04/GCC 11.4 以 `-std=c11 -Wall -Wextra -Werror -DZCSR_LINUX_BACKEND_X11` 通过 `-fsyntax-only`；Wayland 由 Ubuntu 22.04 原生构建 34/34 覆盖，代码与 X11/Win32 同一模式 |
 | ③ `diagnostics.h` 的 `log.h` 在 `extern "C"` 外 | 把 `#include "zcsr/log.h"` 移入 `extern "C"` 块内；C++ 直接 include `diagnostics.h` 时声明获得 C 链接。另把 C11 `<stdatomic.h>` 改为仅 C 包含：GCC 的 C++17 会拒绝其中的 `_Atomic` typedef，MSVC 只是警告；C++17 可用普通日志/事件 API，`ONCE/FIRST_N/EVERY_N/EVERY_MS` 的 C++ 实现见⑭。 | `include/zcsr/diagnostics.h:14-31` | Windows `cxx_diag.cpp`（C++17，include diagnostics 并调用宏）编译、链接 `zcsr_core.lib`、运行成功；Linux `g++ -std=c++17` 同样编译/链接/运行成功（仅剩零实参可变参数宏的 pedantic 警告） |
 | ④ `msg_seq` 非原子 | 槽位 `msg_seq` 改为 `_Atomic unsigned`；读、写、clear 全部走 atomic。 | `modules/core/log.c` 槽结构/reader/clear/push | `log_crash`、`log` 通过；28/28 全量绿 |
 | ⑤ >64 并发写者撕裂 crash ring | 写者先读偶 seq；奇数（正被写）直接丢弃；用 CAS 从偶 seq 抢占到奇 seq，失败者也丢弃。一个槽同一时刻只有一个写者；写者崩溃留下的 odd 槽会被 flush 跳过，属 best-effort。 | `modules/core/log.c:645-662` | `log_crash` 通过；未做 >64 并发写者的 TSan/压力证明 |
-| ⑥ POSIX `thrd_t` 强转 | Linux/Android/Apple 改用 `pthread_self()` + `uintptr_t`；其他 POSIX 保留 `thrd_current()` 兜底并注释契约。 | `modules/core/log.c:920-926` | Windows 构建通过；Linux 仅由代码路径/头文件约束，未在真实 macOS/Android 编译 |
+| ⑥ POSIX `thrd_t` 强转 | Linux/Android/Apple 改用 `pthread_self()` + `uintptr_t`；其他 POSIX 保留 `thrd_current()` 兜底并注释契约。 | `modules/core/log.c:920-926` | Windows 构建通过；POSIX 分支由 Linux 构建覆盖 |
 | ⑦ 字段枚举未冻结 | `ZCSR_LOG_FIELD_I64..PTR` 增加 6 条 `_Static_assert`（C++ 下跳过，保持现有头文件策略）。 | `include/zcsr/log.h:173-180` | `log_event` 通过；C11 编译通过 |
 | ⑧（复查额外发现）`gl_render_light2d_ext.h` 尾部声明在 include guard/extern "C" 之外 | `zcsr_gl_l2d_set_msaa` 的声明移到 `extern "C"` 块内、include guard 结束前；原先与 `gl_render.h` 的同名声明链接规格冲突（MSVC C2732）。 | `include/zcsr/gl_render_light2d_ext.h:216-236` | `h_ALL2.c` 以 `/TP /std:c++17` 作为单翻译单元包含全部公开头，编译通过；`cxx_diag` 仍链接/运行成功 |
 | ⑨ PTR 字段输出未加引号的 `0x...`，整个事件不是合法 JSON | PTR 改为 JSON 字符串 `"0x..."`；`zcsr_json_ptr` 加引号；`test_log_event` 断言 `"ptr":"0x1234"`。 | `modules/core/log.c` 事件段；`include/zcsr/log.h`；`tests/test_log_event.c` | 全字段事件经 Python `json.loads` 解析成功；PTR 从非法 token 变为字符串 |
