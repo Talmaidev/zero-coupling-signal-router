@@ -464,14 +464,16 @@ Probe 要求 header 与 lib 同时存在：FFmpeg 五个 lib（avcodec / avforma
 
 ## Performance reference
 
-固定负载：65,535 instances、1920×1080、nearest、alpha 0.75、`direct`、单 texture、一次 draw、无 cull/sort。GPU 为 finish-equivalent frame time，present 不计入。
+固定负载：65,535 instances、1920×1080、nearest、alpha 0.75、`direct`、单 texture、无 cull/sort。ZCSR 与 Unity 各自按可用 API 形状提交，不是同形状 A/B。GPU 为 finish-equivalent frame time，present 不计入。
 
-| path | draw shape | GPU frame median (ms) | CPU submit (ms) |
-|---|---|---|---|
-| ZCSR `plain` 40 B | 1 draw | 0.833 | 0.104 |
-| Unity `DrawMeshInstanced` | 65 draw | 1.0219 | 1.0829 |
+| draw shape | ZCSR GL 3.3 | Unity D3D11 |
+|---|---|---|
+| 1 draw | 1.468 ms（plain，upload included） | 2.282 ms（`DrawMeshInstancedIndirect`） |
+| 65 draw | 2.390 ms（plain，capacity 1,023） | 1.0219 ms（`DrawMeshInstanced`） |
 
-B580 无法锁定 clock；第一轮 cold clock 不计入。ZCSR 1 draw 对 Unity 的 65 draw：GPU frame 快 18%，CPU submit 快约 10×。Unity 的 65 draw 来自 `DrawMeshInstanced` 的 1,023-instance 上限，不是可选的性能算法。
+ZCSR 1→65 draw 为 1.468→2.390；Unity 65→1 draw 为 1.0219→2.282。四个 reference cell 上形状方向相反；`1.468` 是 locked pre-fix 参考，不能当作与 2.390 同 build 的差值。`0.833` 是 ZCSR `--noupload` 诊断，不是 cross-engine 单元；`1.468` / `2.390` 的 GPU 窗口含 2.62 MB entry upload，Unity `gpuFrameTime` 不含 matrix / indirect record upload。CPU submit `0.104`（ZCSR `plainrun` 65 draw，capacity 1,023）对 `1.0829`（Unity 65 draw）是同形状提交段差，约 10.4×；ZCSR 1 draw 的提交为 0.101–0.118。
+
+Unity `DrawMeshInstanced` 的 1,023-instance 上限要求 65 draw；`DrawMeshInstancedIndirect` 可 1 draw 提交 65,535，实测 2.282 ms，比 65 draw instanced 的 1.0219 ms 慢。该限制是 API 提交形状，不是 Unity 不能单次 draw。
 
 Complex linear path（ZCSR only，linear HDR，65,535 instances / 1920×1080 / nearest / alpha 0.75 / 1 draw）：168 B general linear 为 1.263 ms；激活 hue / ramp / glow / chroma / emiss / rim 后为 6.266 ms（GPU frame median，5 × 330 samples，B580）。
 
